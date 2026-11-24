@@ -69,6 +69,10 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     evaluate_speech_policy,
     normalize_speech_policy,
 )
+from gsuid_core.ai_core.configs.provider_router import (
+    provider_router,
+    priority_for_create_by,
+)
 
 
 def _response_has_function_tool_call(parts: Sequence[object]) -> bool:
@@ -140,7 +144,6 @@ class LoopPhase:
         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
         # 工具回执先落盘，再标下一轮对话。否则瀑布把回执画进后一轮。
         self._session_logger.log_node_transition("ModelRequestNode")
-        st.req_start = time.perf_counter()
         st.first_event_at = None
         st.last_event_at = None
         st.thinking_streamed = False
@@ -153,27 +156,35 @@ class LoopPhase:
         splitter = ThinkTagSplitter(tags[0], tags[1])
         with effort_capture() as effort_slot:
             try:
-                async with node.stream(agent_run.ctx) as request_stream:
-                    _log_captured_thinking_effort(self, effort_slot)
-                    try:
-                        async for event in request_stream:
-                            if st.cancel_ev is not None and st.cancel_ev.is_set():
-                                st.generation_cancelled = True
-                                logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
-                                break
-                            st.last_event_at = time.perf_counter()
-                            if st.first_event_at is None:
-                                st.first_event_at = st.last_event_at
-                            await _handle_stream_event(self, st, event, text_starts=text_starts, splitter=splitter)
-                    finally:
-                        vis, th = splitter.flush()
-                        if th:
-                            st.thinking_streamed = True
-                            self._emit_trace("thinking_delta", th)
-                        if vis:
-                            await _push_stream_text_delta(self, st, vis, None)
-                        if bot is not None:
-                            await bot.flush_text_delta()
+                slot_cfg = self._active_config_name or ""
+                slot_priority = priority_for_create_by(self.create_by, is_subagent=self.is_subagent)
+                async with provider_router.request_slot(slot_cfg, priority=slot_priority):
+                    if st.cancel_ev is not None and st.cancel_ev.is_set():
+                        st.generation_cancelled = True
+                        logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                        return
+                    st.req_start = time.perf_counter()
+                    async with node.stream(agent_run.ctx) as request_stream:
+                        _log_captured_thinking_effort(self, effort_slot)
+                        try:
+                            async for event in request_stream:
+                                if st.cancel_ev is not None and st.cancel_ev.is_set():
+                                    st.generation_cancelled = True
+                                    logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                                    break
+                                st.last_event_at = time.perf_counter()
+                                if st.first_event_at is None:
+                                    st.first_event_at = st.last_event_at
+                                await _handle_stream_event(self, st, event, text_starts=text_starts, splitter=splitter)
+                        finally:
+                            vis, th = splitter.flush()
+                            if th:
+                                st.thinking_streamed = True
+                                self._emit_trace("thinking_delta", th)
+                            if vis:
+                                await _push_stream_text_delta(self, st, vis, None)
+                            if bot is not None:
+                                await bot.flush_text_delta()
             finally:
                 _log_captured_thinking_effort(self, effort_slot)
 

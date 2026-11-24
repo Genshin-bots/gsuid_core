@@ -496,3 +496,100 @@ def test_github_auth_stars_and_store_sorting(
 
     _, bogus_sort = _fetch_page(0, "bogus")
     assert bogus_sort == "default"
+
+
+def test_web_fetch_ssrf_guard_blocks_private_and_redirect_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """web_fetch SSRF 守卫拒绝内网/回环/元数据地址、私网 DNS 解析以及重定向到内网。"""
+    import socket
+    import asyncio
+
+    import gsuid_core.ai_core.web_fetch as wf
+    import gsuid_core.ai_core.web_fetch.url_safety as url_safety
+
+    for blocked in (
+        "http://127.0.0.1:8765/app",
+        "http://localhost/api",
+        "http://host.docker.internal:8765/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.1/internal",
+        "http://[::1]:8080/",
+        "file:///etc/passwd",
+        "http://service.internal/admin",
+    ):
+        with pytest.raises(ValueError):
+            url_safety.validate_public_url_syntax(blocked)
+        with pytest.raises(ValueError):
+            asyncio.run(wf.fetch_webpage_as_markdown(blocked))
+
+    url_safety.validate_public_url_syntax("https://example.com/guide")
+
+    # DNS 解析到私网/回环 IP 时必须在连出前拦截
+    async def _dns_private(
+        _self: asyncio.AbstractEventLoop,
+        host: str,
+        _port: object,
+        **_kw: object,
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        if host == "evil-rebind.example":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "getaddrinfo", _dns_private)
+    with pytest.raises(ValueError, match="内网/环回"):
+        asyncio.run(url_safety.validate_public_url_dns("https://evil-rebind.example/page"))
+    asyncio.run(url_safety.validate_public_url_dns("https://public-ok.example/page"))
+
+    # 建连阶段 PublicOnlyResolver 直接校验解析出的 IP，阻断 DNS 重绑定 TOCTOU
+    async def _check_resolver() -> None:
+        resolver = url_safety.PublicOnlyResolver()
+        try:
+            with pytest.raises(ValueError, match="内网/环回"):
+                await resolver.resolve("evil-rebind.example", 443, socket.AF_INET)
+            ok = await resolver.resolve("public-ok.example", 443, socket.AF_INET)
+            assert ok and ok[0]["host"] == "93.184.216.34"
+        finally:
+            await resolver.close()
+
+    asyncio.run(_check_resolver())
+
+    # 302 跳转目标指向 127.0.0.1 时必须在下一跳前拦截，绝不连接内网
+    visited_urls: list[str] = []
+
+    class _FakeResp:
+        def __init__(self, status: int, headers: dict[str, str]) -> None:
+            self.status = status
+            self.headers = headers
+            self.content_type = "text/html"
+
+        async def __aenter__(self) -> _FakeResp:
+            return self
+
+        async def __aexit__(self, *_a: object) -> None:
+            return None
+
+    class _FakeSession:
+        def __init__(self, **_kw: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeSession:
+            return self
+
+        async def __aexit__(self, *_a: object) -> None:
+            return None
+
+        def get(self, url: str, **_kw: object) -> _FakeResp:
+            visited_urls.append(url)
+            return _FakeResp(302, {"Location": "http://127.0.0.1:8765/secret"})
+
+    monkeypatch.setattr(wf.aiohttp, "ClientSession", _FakeSession)
+    with pytest.raises(ValueError, match="环回或私有网段"):
+        asyncio.run(wf._fetch_via_local("https://public-ok.example/start"))
+    assert visited_urls == ["https://public-ok.example/start"]
+
+    # 环境变量代理（如 HTTPS_PROXY=http://localhost:7890）在 trust_env=True 时放行代理域名解析
+    monkeypatch.setattr(wf, "getproxies", lambda: {"https": "http://localhost:7890"})
+    assert wf._uses_proxy(None, True) is True
+    assert wf._uses_proxy(None, False) is False
+    monkeypatch.setattr(wf, "getproxies", lambda: {})
+    assert wf._uses_proxy(None, True) is False
+    assert wf._uses_proxy("http://localhost:7890", False) is True

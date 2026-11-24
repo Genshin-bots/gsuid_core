@@ -730,3 +730,75 @@ def test_static_safetensors_cache_and_local_provider(tmp_path, monkeypatch: pyte
             gc.collect()
     finally:
         local_embedding_config.get_config("embedding_model_name").data = orig_model
+
+
+def test_qdrant_circuit_breaker_and_search_tools_bm25_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HttpQdrant 连续断连触发熔断快速失败，且 search_tools 断连时无缝降级到内存 BM25 词法召回。"""
+    import httpx2
+    from pydantic_ai.tools import Tool
+
+    import gsuid_core.ai_core.rag.base as rag_base
+    import gsuid_core.ai_core.rag.tools as rag_tools
+    from gsuid_core.ai_core.models import ToolBase, ToolContext
+    from gsuid_core.ai_core.rag.qhttp import HttpQdrant
+    from gsuid_core.ai_core.rag.tool_lexical import rebuild_index
+
+    # 1. HttpQdrant 连续 2 次连接拒绝后进入熔断，第 3 次不发真实 HTTP 请求直接快速失败
+    calls = {"n": 0}
+
+    def _refuse(request: httpx2.Request) -> httpx2.Response:
+        calls["n"] += 1
+        raise httpx2.ConnectError("connection refused", request=request)
+
+    async def _verify_breaker() -> None:
+        client = HttpQdrant(url="http://127.0.0.1:6333", api_key=None, timeout=1.0)
+        client._http = httpx2.AsyncClient(base_url="http://127.0.0.1:6333", transport=httpx2.MockTransport(_refuse))
+        try:
+            assert client.is_circuit_open is False
+            for _ in range(2):
+                with pytest.raises(httpx2.ConnectError):
+                    await client.collection_exists("demo_col")
+            assert client.is_circuit_open is True
+            assert calls["n"] == 2
+            with pytest.raises(httpx2.ConnectError, match="circuit open"):
+                await client.collection_exists("demo_col")
+            assert calls["n"] == 2
+            client.reset_circuit_breaker()
+            assert client.is_circuit_open is False
+        finally:
+            await client.close()
+
+    asyncio.run(_verify_breaker())
+
+    # 2. search_tools 在 Qdrant 断连异常时不得提前返回空列表，必须降级走 tool_lexical BM25 召回
+    def _demo_calc() -> str:
+        return "ok"
+
+    demo_tool: Tool[ToolContext] = Tool(_demo_calc, name="demo_ascension_calculator", takes_ctx=False)
+    fake_tb = ToolBase(
+        name="demo_ascension_calculator",
+        tool=demo_tool,
+        description="计算角色突破材料缺口与采集路线",
+        plugin="DemoPlugin",
+        covers=["突破材料", "升级缺口", "ascension gap"],
+        aliases=["材料计算器"],
+    )
+    rebuild_index({"demo_ascension_calculator": fake_tb})
+
+    class _DeadEmbedder:
+        async def aembed_query(self, _text: str) -> list[float]:
+            return [0.1, 0.2]
+
+    class _DeadQdrant:
+        async def query_points(self, **_kw: object) -> object:
+            raise httpx2.ConnectError("qdrant down")
+
+    monkeypatch.setattr(rag_base, "embedding_model", _DeadEmbedder())
+    monkeypatch.setattr(rag_base, "client", _DeadQdrant())
+    monkeypatch.setattr(rag_tools, "get_all_tools", lambda: {"demo_ascension_calculator": fake_tb})
+    monkeypatch.setattr(rag_tools, "get_registered_tools", lambda: {"common": {"demo_ascension_calculator": fake_tb}})
+
+    cjk_hits = asyncio.run(rag_tools.search_tools("角色突破材料缺口", limit=5, rerank=False))
+    en_hits = asyncio.run(rag_tools.search_tools("ascension gap", limit=5, rerank=False))
+    assert "demo_ascension_calculator" in [t.name for t in cjk_hits]
+    assert "demo_ascension_calculator" in [t.name for t in en_hits]

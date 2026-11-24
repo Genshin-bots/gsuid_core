@@ -2722,3 +2722,238 @@ def test_kanban_wall_clock_routing_artifact_priority_and_stale_guard(
     )
     asyncio.run(_wake_main_agent_for_delivery_now(stale_group, "延迟结果"))
     assert touched == []
+
+
+def test_phase1_routing_exclusivity_breaker_and_xml_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 1 核心防线：双车道并发、独占工具共享不连坐、单工具精确熔断、XML参数修复与巡检互斥。"""
+    from datetime import datetime
+    from dataclasses import dataclass
+
+    from pydantic_ai.tools import Tool
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core import register as tool_reg
+    from gsuid_core.ai_core.models import ToolBase, ToolContext
+    from gsuid_core.ai_core.tool_risk import TOOLS_EXECUTION_GATED_KEY
+    from gsuid_core.ai_core.agent_node import INTERNAL_DATA_PACK, AgentNode, get_node, registry as node_reg
+    from gsuid_core.ai_core.inbox.state import SessionInbox
+    from gsuid_core.ai_core.session_logger import AISessionLogger
+    from gsuid_core.ai_core.agent_run.state import RunOnceState
+    from gsuid_core.ai_core.history_compact import _canonicalize_tool_call_args_in_parts
+    from gsuid_core.ai_core.inbox.scheduler import TurnOutcome, InboxScheduler
+    from gsuid_core.ai_core.agent_run.guards import ToolCircuitBreaker
+    from gsuid_core.ai_core.agent_run.support import _capability_exclusive_tool_names
+    from gsuid_core.ai_core.heartbeat.inspector import HeartbeatInspector
+    from gsuid_core.ai_core.buildin_tools.subagent import _TRANSIENT_DEFAULT_PROFILES
+    from gsuid_core.ai_core.configs.provider_router import ProviderRouter, priority_for_create_by
+    from gsuid_core.ai_core.capability_agents.profiles import register_builtin_profiles
+
+    # 1. ProviderRouter 双车道：cap=2 时后台最多占 1 槽，交互立刻拿到预留槽，且交互等待时后台让路
+    assert priority_for_create_by("Chat") == "interactive"
+    assert priority_for_create_by("CapabilityAgent") == "background"
+    assert priority_for_create_by("Chat", is_subagent=True) == "background"
+
+    async def _verify_lanes() -> None:
+        import gsuid_core.ai_core.configs.provider_router as pr_mod
+
+        router = ProviderRouter()
+        monkeypatch.setattr(pr_mod, "get_max_concurrency_for_config", lambda _cfg: 2)
+        bg1 = await router.acquire_request_slot("cfg_a", priority="background", timeout=1.0)
+        assert bg1 is True
+        # 后台已达 max(1, cap-1)=1：第二个后台必须阻塞，而交互请求可立即拿到预留槽位
+        bg2_task = asyncio.create_task(router.acquire_request_slot("cfg_a", priority="background", timeout=2.0))
+        await asyncio.sleep(0.02)
+        assert not bg2_task.done()
+        inter = await asyncio.wait_for(
+            router.acquire_request_slot("cfg_a", priority="interactive", timeout=1.0),
+            timeout=0.5,
+        )
+        assert inter is True
+        assert not bg2_task.done()
+        await router.release_request_slot("cfg_a", priority="interactive")
+        await router.release_request_slot("cfg_a", priority="background")
+        assert await asyncio.wait_for(bg2_task, timeout=0.5) is True
+        await router.release_request_slot("cfg_a", priority="background")
+
+    asyncio.run(_verify_lanes())
+
+    # 2. 独占工具精准隔离 + shared_tool_names 放行 + internal_reporter 走只读内部包且异步执行
+    register_builtin_profiles()
+    rep = get_node("internal_reporter")
+    assert rep is not None and INTERNAL_DATA_PACK in rep.tool_packs
+    assert "internal_reporter" not in _TRANSIENT_DEFAULT_PROFILES
+
+    def _dummy_tool() -> str:
+        return "ok"
+
+    dummy_t: Tool[ToolContext] = Tool(_dummy_tool, takes_ctx=False)
+    fake_tools: dict[str, ToolBase] = {
+        "demo_shared": ToolBase(
+            name="demo_shared", description="shared", plugin="Demo", tool=dummy_t, capability_domain="测试领域"
+        ),
+        "demo_priv": ToolBase(
+            name="demo_priv", description="priv", plugin="Demo", tool=dummy_t, capability_domain="测试领域"
+        ),
+        "demo_sibling": ToolBase(
+            name="demo_sibling", description="sibling", plugin="Demo", tool=dummy_t, capability_domain="测试领域"
+        ),
+    }
+    fake_nodes = {
+        "demo_cap": AgentNode(
+            node_id="demo_cap",
+            display_name="测试能力代理",
+            when_to_use="测试独占边界",
+            prompt="p",
+            tool_packs=[INTERNAL_DATA_PACK],
+            tool_names=["demo_shared", "demo_priv"],
+            shared_tool_names=["demo_shared"],
+        )
+    }
+    with monkeypatch.context() as mp:
+        mp.setattr(node_reg, "_NODES", fake_nodes)
+        mp.setattr(tool_reg, "get_all_tools", lambda: fake_tools)
+        excl = _capability_exclusive_tool_names()
+        assert "demo_priv" in excl
+        assert "demo_shared" not in excl
+        assert "demo_sibling" not in excl
+        warns: list[str] = []
+        mp.setattr(node_reg.logger, "warning", lambda msg, *a, **kw: warns.append(str(msg)))
+        node_reg.register_agent_node(
+            AgentNode(
+                node_id="demo_pack_shared",
+                display_name="包共享测试",
+                when_to_use="测试 pack 共享不误报",
+                prompt="p",
+                tool_packs=[INTERNAL_DATA_PACK],
+                shared_tool_names=["artifact_put"],
+            )
+        )
+        assert not warns
+        node_reg.register_agent_node(
+            AgentNode(
+                node_id="demo_typo_shared",
+                display_name="拼写误报测试",
+                when_to_use="测试未挂载共享告警",
+                prompt="p",
+                tool_packs=[INTERNAL_DATA_PACK],
+                shared_tool_names=["not_mounted_tool"],
+            )
+        )
+        assert len(warns) == 1 and "not_mounted_tool" in warns[0]
+
+    # 3. ToolCircuitBreaker：CapabilityAgent 单工具并行失败 6 次仅封禁该工具，绝不触发全盘门禁，也不封 artifact_put
+    ev = Event("OneBot", "900000001", "k1", "group", "group_1", "100000001", {}, 0, text="测试任务")
+    tctx = ToolContext(ev=ev, allow_user_outbound=False)
+    st = RunOnceState(
+        user_message="测试任务",
+        bot=None,
+        ev=ev,
+        rag_context=None,
+        tools=[],
+        return_mode="return",
+        output_type=None,
+        intent=None,
+        has_active_task=False,
+        budget_gate=False,
+        suppress_intermediate_text=False,
+        fake_done_retry=False,
+        turn_graph=None,
+        is_framework_injection=False,
+        context=tctx,
+    )
+    req = ModelRequest(
+        parts=[
+            ToolReturnPart(
+                tool_name="flaky_kb", content="❌ connection refused", tool_call_id=f"c{i}", outcome="failed"
+            )
+            for i in range(6)
+        ]
+        + [
+            ToolReturnPart(tool_name="artifact_put", content="❌ transient io", tool_call_id=f"a{i}", outcome="failed")
+            for i in range(4)
+        ]
+    )
+    slogger = AISessionLogger("test_phase1_breaker")
+    summary = asyncio.run(
+        ToolCircuitBreaker.process_tool_returns(
+            st,
+            req,
+            create_by="CapabilityAgent",
+            session_id="test_phase1_breaker",
+            persona_name=None,
+            session_logger=slogger,
+            emit_trace=lambda _k, _v: None,
+        )
+    )
+    assert st.total_tool_failures == 2
+    assert "flaky_kb" in summary.tripped_tools
+    ToolCircuitBreaker.inject_post_return_nudges(
+        st,
+        req,
+        summary,
+        create_by="CapabilityAgent",
+        session_id="test_phase1_breaker",
+        capability_node_id="demo_cap",
+    )
+    assert "flaky_kb" in tctx.blocked_tool_names
+    assert "artifact_put" not in tctx.blocked_tool_names
+    assert TOOLS_EXECUTION_GATED_KEY not in tctx.extra
+
+    # 4. MiniMax XML 包裹参数修复（str 与 dict 两种形态）
+    p_str = ToolCallPart(
+        tool_name="call_tool",
+        args=json.dumps(
+            {
+                "tool_name": "demo_fn",
+                "arguments_json": "<text>测试参数</text>",
+                "items": "<item>甲</item><item>乙</item>",
+            },
+            ensure_ascii=False,
+        ),
+        tool_call_id="xml_1",
+    )
+    p_dict = ToolCallPart(
+        tool_name="demo_list",
+        args={"names": "<item>条目A</item>\n<item>条目B</item>"},
+        tool_call_id="xml_2",
+    )
+    p_item_arg = ToolCallPart(
+        tool_name="call_tool",
+        args=json.dumps({"tool_name": "demo_fn", "arguments_json": "<item>甲</item><item>乙</item>"}),
+        tool_call_id="xml_3",
+    )
+    _canonicalize_tool_call_args_in_parts([p_str, p_dict, p_item_arg])
+    assert p_str.args_as_dict()["items"] == ["甲", "乙"]
+    assert json.loads(str(p_str.args_as_dict()["arguments_json"])) == {"text": "测试参数"}
+    assert p_dict.args_as_dict()["names"] == ["条目A", "条目B"]
+    assert p_item_arg.args_as_dict()["arguments_json"] == "<item>甲</item><item>乙</item>"
+
+    # 5. Heartbeat 活跃会话互斥：InboxScheduler 活跃时 _pre_check_session 直接跳过
+    @dataclass
+    class _FakeMsg:
+        role: str
+        timestamp: datetime
+        user_id: str = "100000001"
+
+    async def _noop_sleep(_s: float) -> None:
+        return None
+
+    async def _noop_runner(_turn: object, _ws: object) -> TurnOutcome:
+        return TurnOutcome(reached_model=False, error=False, answered=frozenset())
+
+    inspector = HeartbeatInspector()
+    sched = InboxScheduler(clock=lambda: 0.0, sleep=_noop_sleep, runner=_noop_runner)
+    sched._inboxes[(ev.session_id, "测试人格")] = SessionInbox(
+        session_id=ev.session_id, persona_name="测试人格", phase="running"
+    )
+    assert sched.has_active_session(ev.session_id) is True
+    with monkeypatch.context() as mp:
+        mp.setattr(inspector, "_get_history", lambda _e: [_FakeMsg(role="user", timestamp=datetime.now())])
+        mp.setattr("gsuid_core.ai_core.inbox.scheduler.get_inbox_scheduler", lambda: sched)
+        should_run, reason = inspector._pre_check_session(ev)
+        assert should_run is False and "活跃处理中" in reason

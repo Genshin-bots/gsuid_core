@@ -519,15 +519,18 @@ async def _remember_and_index_artifact(
         async def _index() -> None:
             from gsuid_core.ai_core.planning.artifact_index import index_artifact
 
-            await index_artifact(
-                art_id=art.id,
-                summary=art.summary or "",
-                text=payload[:800],
-                owner_user_id=owner,
-                scope_key=task.group_id if task is not None and task.group_id else scope_key,
-                date_str=as_of,
-                profile=art.from_profile or "",
-            )
+            try:
+                await index_artifact(
+                    art_id=art.id,
+                    summary=art.summary or "",
+                    text=payload[:800],
+                    owner_user_id=owner,
+                    scope_key=task.group_id if task is not None and task.group_id else scope_key,
+                    date_str=as_of,
+                    profile=art.from_profile or "",
+                )
+            except Exception as idx_e:
+                logger.debug(t("log.ai.cognition_node_sync_fail", kind="artifact_index", ref=art.id, e=idx_e))
 
         asyncio.create_task(_index())
     except Exception as e:

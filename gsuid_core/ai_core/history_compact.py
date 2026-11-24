@@ -640,20 +640,68 @@ def _is_framework_prompt_content(content: str) -> bool:
     return s.startswith(_LEGACY_FRAMEWORK_PREFIXES)
 
 
+_XML_ITEMS_FULL_RE = re.compile(r"^\s*(?:<item>(.*?)</item>\s*)+$", re.DOTALL)
+_XML_ITEM_RE = re.compile(r"<item>(.*?)</item>", re.DOTALL)
+_XML_KV_RE = re.compile(r"<([A-Za-z_][A-Za-z0-9_]*)>(.*?)</\1>", re.DOTALL)
+
+
+def _normalize_xml_wrapped_value(key: str, val: object) -> tuple[object, bool]:
+    """还原弱模型泄漏的 XML 参数包装（如 <item>...</item> 列表或 <k>v</k> arguments_json）。"""
+    if isinstance(val, dict):
+        changed = False
+        rebuilt: Dict[str, object] = {}
+        for k, v in val.items():
+            nv, c = _normalize_xml_wrapped_value(str(k), v)
+            if c:
+                changed = True
+            rebuilt[str(k)] = nv
+        return (rebuilt, True) if changed else (val, False)
+    if not isinstance(val, str):
+        return val, False
+    stripped = val.strip()
+    if not stripped or not stripped.startswith("<") or not stripped.endswith(">"):
+        return val, False
+    if key == "arguments_json":
+        try:
+            json.loads(stripped)
+            return val, False
+        except ValueError:
+            pass
+        matches = list(_XML_KV_RE.finditer(stripped))
+        if (
+            matches
+            and len(matches) == len({m.group(1) for m in matches})
+            and "".join(m.group(0) for m in matches).replace(" ", "").replace("\n", "")
+            == stripped.replace(" ", "").replace("\n", "")
+        ):
+            obj: Dict[str, object] = {}
+            for m in matches:
+                tag = m.group(1)
+                inner, _ = _normalize_xml_wrapped_value(tag, m.group(2).strip())
+                obj[tag] = inner
+            return json.dumps(obj, ensure_ascii=False), True
+        return val, False
+    if _XML_ITEMS_FULL_RE.match(stripped):
+        items = [m.group(1).strip() for m in _XML_ITEM_RE.finditer(stripped)]
+        return [item for item in items if item], True
+    return val, False
+
+
 def _canonicalize_tool_call_args_in_parts(
     parts: Sequence[ModelResponsePart],
 ) -> List[ModelResponsePart]:
-    """把 ToolCallPart 的字符串参数 json 解析后重序列化（规范化 + 去重复键）。
+    """规范化 ToolCallPart 参数：去除重复键并还原弱模型泄漏的 XML 包装。
 
-    弱模型退化输出会产生重复键参数串（如 ``"args": {}`` 重复上百次）：本地
-    ``json.loads`` 视为合法（后键覆盖），但 pydantic_ai 会把**原始串**回放给
-    provider，部分网关（MiniMax）对重复键直接 400 且被判为不可重试，导致整个
-    run 静默死亡（见 plans/prod_session_review §2）。解析失败的参数原样保留，
-    交由 pydantic_ai 的工具参数校验 → 模型重试流程处理。原地改写 part.args，
-    使工具执行、history 回放、session 日志三处一致。
+    原地改写 part.args，使工具执行、history 回放、session 日志三处一致；
+    解析失败的非法 JSON 原样保留交由 pydantic_ai 校验重试。
     """
     for part in parts:
         if not isinstance(part, ToolCallPart):
+            continue
+        if isinstance(part.args, dict):
+            normalized, xml_changed = _normalize_xml_wrapped_value("", part.args)
+            if xml_changed and isinstance(normalized, dict):
+                part.args = json.dumps(normalized, ensure_ascii=False)
             continue
         if not isinstance(part.args, str) or not part.args.strip():
             continue
@@ -671,9 +719,10 @@ def _canonicalize_tool_call_args_in_parts(
             parsed = json.loads(part.args, object_pairs_hook=_pairs_hook)
         except ValueError:
             continue
-        if not dup_found:
+        normalized_obj, xml_changed = _normalize_xml_wrapped_value("", parsed)
+        if not dup_found and not xml_changed:
             continue
-        canonical = json.dumps(parsed, ensure_ascii=False)
+        canonical = json.dumps(normalized_obj, ensure_ascii=False)
         if canonical != part.args:
             logger.warning(
                 i18n_t(

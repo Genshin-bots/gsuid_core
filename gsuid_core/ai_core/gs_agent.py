@@ -80,6 +80,7 @@ from gsuid_core.ai_core.multimodal.payload import (
 from gsuid_core.ai_core.interaction_scaffold import TurnGraph
 from gsuid_core.ai_core.configs.provider_router import (
     provider_router,
+    priority_for_create_by,
     looks_like_provider_failure,
 )
 from gsuid_core.ai_core.control.outbound_detectors import (
@@ -391,6 +392,11 @@ class GsCoreAIAgent(RunOnceMixin):
             create_by=create_by,
             is_subagent=is_subagent,
         )
+
+    @property
+    def is_running(self) -> bool:
+        """当前会话是否正在执行一轮 run（对外公开状态，避免跨模块触碰 _run_lock）。"""
+        return self._run_lock.locked()
 
     @property
     def last_run_sent_visible_reply(self) -> bool:
@@ -1938,71 +1944,75 @@ class GsCoreAIAgent(RunOnceMixin):
                 secondary=_secondary_cfg or "(未配置)",
             )
         )
+        _route_priority = priority_for_create_by(self.create_by, is_subagent=self.is_subagent)
         for _attempt in range(2):
             if _attempt > 0:
                 await self.refresh_model_if_changed()
-            async with provider_router.slot(
-                self.task_level, session_id=self.session_id, task_kind=self.task_kind
-            ) as routed_name:
+            routed_name = provider_router.pick_route(
+                self.task_level,
+                session_id=self.session_id,
+                task_kind=self.task_kind,
+                priority=_route_priority,
+            )
+            logger.debug(
+                i18n_t(
+                    "log.agent.attempt_routed_config_name",
+                    attempt=_attempt + 1,
+                    routed_name=routed_name,
+                )
+            )
+            temp_model = None
+            orig_model = self.model
+            orig_active_cfg = self._active_config_name
+            if routed_name and routed_name != self.model_config_name:
+                try:
+                    temp_model = get_model_by_full_name(routed_name)
+                    self.model = temp_model
+                except Exception as e:
+                    logger.warning(
+                        i18n_t(
+                            "log.agent.backup_config_routed_name",
+                            routed_name=routed_name,
+                            e=e,
+                        )
+                    )
+                    routed_name = self.model_config_name
+            self._active_config_name = routed_name or self.model_config_name
+            try:
+                result = await _do_run()
+                _is_error_str = isinstance(result, str) and result.startswith(ERROR_RESULT_PREFIX)
+                _is_provider_failure = _is_error_str and looks_like_provider_failure(result)
                 logger.debug(
                     i18n_t(
-                        "log.agent.attempt_routed_config_name",
-                        attempt=_attempt + 1,
-                        routed_name=routed_name,
+                        "log.agent.run_str_fail_provider",
+                        is_str=isinstance(result, str),
+                        is_error=_is_error_str,
+                        is_failure=_is_provider_failure,
+                        attempt=_attempt,
                     )
                 )
-                temp_model = None
-                orig_model = self.model
-                orig_active_cfg = self._active_config_name
-                if routed_name and routed_name != self.model_config_name:
-                    try:
-                        temp_model = get_model_by_full_name(routed_name)
-                        self.model = temp_model
-                    except Exception as e:
-                        logger.warning(
-                            i18n_t(
-                                "log.agent.backup_config_routed_name",
-                                routed_name=routed_name,
-                                e=e,
-                            )
-                        )
-                        routed_name = self.model_config_name
-                self._active_config_name = routed_name or self.model_config_name
-                try:
-                    result = await _do_run()
-                    _is_error_str = isinstance(result, str) and result.startswith(ERROR_RESULT_PREFIX)
-                    _is_provider_failure = _is_error_str and looks_like_provider_failure(result)
-                    logger.debug(
+                if _attempt == 0 and _is_provider_failure:
+                    provider_router.mark_failure(routed_name or self.model_config_name)
+                    logger.warning(
                         i18n_t(
-                            "log.agent.run_str_fail_provider",
-                            is_str=isinstance(result, str),
-                            is_error=_is_error_str,
-                            is_failure=_is_provider_failure,
-                            attempt=_attempt,
+                            "log.agent.provider_level_inner_retries",
+                            r=result[:200],
                         )
                     )
-                    if _attempt == 0 and _is_provider_failure:
-                        provider_router.mark_failure(routed_name or self.model_config_name)
-                        logger.warning(
-                            i18n_t(
-                                "log.agent.provider_level_inner_retries",
-                                r=result[:200],
-                            )
-                        )
-                        continue
-                    provider_router.mark_success(routed_name or self.model_config_name)
-                    logger.info(i18n_t("log.agent.lock_ok"))
-                    return result
-                except Exception as e:
-                    if _attempt == 0 and looks_like_provider_failure(str(e)):
-                        provider_router.mark_failure(routed_name or self.model_config_name)
-                        logger.warning(i18n_t("log.agent.provider_level_switching_route", e=e))
-                        continue
-                    raise
-                finally:
-                    if temp_model is not None:
-                        self.model = orig_model
-                    self._active_config_name = orig_active_cfg
+                    continue
+                provider_router.mark_success(routed_name or self.model_config_name)
+                logger.info(i18n_t("log.agent.lock_ok"))
+                return result
+            except Exception as e:
+                if _attempt == 0 and looks_like_provider_failure(str(e)):
+                    provider_router.mark_failure(routed_name or self.model_config_name)
+                    logger.warning(i18n_t("log.agent.provider_level_switching_route", e=e))
+                    continue
+                raise
+            finally:
+                if temp_model is not None:
+                    self.model = orig_model
+                self._active_config_name = orig_active_cfg
         return "" if output_type is None else None
 
 

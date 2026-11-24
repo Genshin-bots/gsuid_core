@@ -78,6 +78,20 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
 DeliveryStage = Literal["free", "silence_only", "render_delegated", "framework_deliver", "fused"]
 
 _MAX_TOOL_CALLS_PER_RESPONSE = 30
+# 能力代理交付/落盘通道永不被单工具失败熔断封杀，避免收集完数据却无法 artifact_put。
+_CAPABILITY_DELIVERY_TOOLS: frozenset[str] = frozenset(
+    {
+        "artifact_put",
+        "artifact_get",
+        "artifact_list",
+        "record_put",
+        "record_get",
+        "record_list",
+        "record_append",
+        "record_update",
+        "record_summary",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -87,6 +101,7 @@ class ToolReturnSummary:
     has_tool_return: bool
     tripped_fail_tool: str
     tripped_fail_streak: int
+    tripped_tools: tuple[str, ...] = ()
 
 
 class DeliveryGuard:
@@ -499,6 +514,8 @@ class ToolCircuitBreaker:
         has_tool_return = False
         tripped_fail_tool = ""
         tripped_fail_streak = 0
+        tripped_tools: list[str] = []
+        batch_failed_tools: set[str] = set()
 
         for part in request.parts:
             if not isinstance(part, ToolReturnPart):
@@ -515,12 +532,19 @@ class ToolCircuitBreaker:
                 if tool_return_is_hard_error(part):
                     nxt = (st.tool_fail_streaks[eff_name] if eff_name in st.tool_fail_streaks else 0) + 1
                     st.tool_fail_streaks[eff_name] = nxt
-                    st.total_tool_failures += 1
+                    # 同批并行调同一故障工具只记 1 次总失败，避免单源断连 1 轮触发全盘熔断
+                    if not eff_name or eff_name not in batch_failed_tools:
+                        st.total_tool_failures += 1
+                        if eff_name:
+                            batch_failed_tools.add(eff_name)
                     if eff_name:
                         st.failed_tools.add(eff_name)
-                    if nxt >= 4 and nxt > tripped_fail_streak:
-                        tripped_fail_tool = eff_name
-                        tripped_fail_streak = nxt
+                    if nxt >= 4:
+                        if eff_name and eff_name not in tripped_tools:
+                            tripped_tools.append(eff_name)
+                        if nxt > tripped_fail_streak:
+                            tripped_fail_tool = eff_name
+                            tripped_fail_streak = nxt
                 elif eff_name:
                     st.tool_fail_streaks[eff_name] = 0
                     st.succeeded_tools.add(eff_name)
@@ -671,6 +695,7 @@ class ToolCircuitBreaker:
             has_tool_return=has_tool_return,
             tripped_fail_tool=tripped_fail_tool,
             tripped_fail_streak=tripped_fail_streak,
+            tripped_tools=tuple(tripped_tools),
         )
 
     @staticmethod
@@ -696,10 +721,21 @@ class ToolCircuitBreaker:
                         streak=summary.tripped_fail_streak or st.total_tool_failures,
                     )
                 )
-            if create_by == "CapabilityAgent" and (summary.tripped_fail_streak >= 6 or cap_exhausted):
-                from gsuid_core.ai_core.tool_risk import TOOLS_EXECUTION_GATED_KEY
-
-                _require_context(st).extra[TOOLS_EXECUTION_GATED_KEY] = True
+            if create_by == "CapabilityAgent":
+                # 仅按故障工具名精确熔断，绝不误用交互聊天的全盘门禁封杀 artifact_put 等交付通道
+                blocked = _require_context(st).blocked_tool_names
+                for tname in summary.tripped_tools:
+                    if tname and tname not in _CAPABILITY_DELIVERY_TOOLS:
+                        blocked.add(tname)
+                if cap_exhausted:
+                    active_failing = [
+                        tname
+                        for tname in st.failed_tools
+                        if tname in st.tool_fail_streaks and st.tool_fail_streaks[tname] > 0
+                    ]
+                    for tname in active_failing or list(st.failed_tools):
+                        if tname and tname not in _CAPABILITY_DELIVERY_TOOLS:
+                            blocked.add(tname)
 
         if summary.has_tool_return and create_by in _INTERACTIVE_CREATE_BY:
             any_fail = False

@@ -15,6 +15,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
 from .models import AgentNode
+from .tool_packs import TASK_BASICS_PACK, INTERNAL_DATA_PACK, resolve_pack_tool_names
 from .persona_proj import get_persona_node, list_persona_nodes
 
 # node_id -> AgentNode（保持插入序：resolve_node 的关键词命中顺序依赖它）
@@ -111,6 +112,19 @@ def register_agent_node(node: AgentNode) -> None:
         logger.warning(t("log.ai.agentnode_node_id_empty_ignore"))
         return
     _fill_plugin_if_empty(node)
+    if node.shared_tool_names:
+        has_custom_packs = any(p not in (TASK_BASICS_PACK, INTERNAL_DATA_PACK) for p in node.tool_packs)
+        if not has_custom_packs:
+            mounted = set(resolve_pack_tool_names(node.tool_packs)) | set(node.tool_names)
+            stray = [name for name in node.shared_tool_names if name not in mounted]
+            if stray:
+                logger.warning(
+                    t(
+                        "log.ai.agentnode_shared_tool_not_mounted",
+                        p0=node.node_id,
+                        p1=", ".join(stray),
+                    )
+                )
     _NODES[node.node_id] = node
     logger.info(t("log.ai.agentnode_registered_node_source", p0=node.node_id, p1=node.display_name, p2=node.source))
 

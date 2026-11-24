@@ -134,6 +134,13 @@ class InboxScheduler:
         self._last_read_seq: OrderedDict[tuple[str, str], int] = OrderedDict()
         self._recent_exact: OrderedDict[tuple[str, str], OrderedDict[_ExactDedupKey, _SettledExact]] = OrderedDict()
 
+    def has_active_session(self, session_id: str) -> bool:
+        """指定会话是否有待收敛或正在执行的收件箱轮次。"""
+        return any(
+            sid == session_id and (inbox.phase != "idle" or bool(inbox.items))
+            for (sid, _persona), inbox in self._inboxes.items()
+        )
+
     def submit(self, ws: _Bot, entry: PendingEntry) -> None:
         key = (entry.event.session_id, entry.persona_name)
         self._ws[key] = ws

@@ -460,27 +460,24 @@ def _pool_overlaps_capability_agent(tool_names_in_pool: set[str]) -> str:
 
 
 def _capability_exclusive_tool_names() -> set[str]:
-    """能力代理**专属**工具名（不含主人格保底/日常基建）。
+    """能力代理**专属**工具名（不含主人格保底/日常基建与显式共享工具）。
 
-    主人格交互会话应剥离专业域工具，只留 create_subagent 委派入口——否则模型永远
-    走「直接调专业工具」捷径。共享集合 = task_basics + 保底分类(self/buildin/meta)
-    + 与主人格日常对话重叠的 common 基建（提醒管理/审批/表情等）——
-    能力代理可复用这些工具，但不得把它们从主人格池里「独占剥离」。
-    节点域下非 shared 工具全部 exclusive（含未写入 tool_names 的同域名）。
+    仅剥离节点显式声明的非共享 ``tool_names``，以及 ``tool_packs`` 中整族声明的域工具；
+    不再按单工具的 ``capability_domain`` 连坐封杀同域未列出的只读工具。
     """
     from gsuid_core.ai_core.register import (
-        find_tool_base,
         get_registered_tools,
         get_tools_by_capability_domain,
     )
     from gsuid_core.ai_core.agent_node import (
         DYNAMIC_PACK,
         TASK_BASICS_PACK,
+        INTERNAL_DATA_PACK,
         list_nodes,
         resolve_pack_tool_names,
     )
 
-    shared: set[str] = set(resolve_pack_tool_names([TASK_BASICS_PACK]))
+    shared: set[str] = set(resolve_pack_tool_names([TASK_BASICS_PACK, INTERNAL_DATA_PACK]))
     registered = get_registered_tools()
     # 保底分类永不独占剥离；common 只保留日常基建（有域白名单 / 无域=通用基建）
     for cat in ("self", "buildin", "meta"):
@@ -493,30 +490,19 @@ def _capability_exclusive_tool_names() -> set[str]:
             if not _dom or _dom in _daily_common_domains:
                 shared.add(_name)
 
+    skip_packs = frozenset({DYNAMIC_PACK, TASK_BASICS_PACK, INTERNAL_DATA_PACK})
     exclusive: set[str] = set()
     for node in list_nodes():
         if node.source in ("persona", "mcp") or node.node_id == "capability_evaluator":
             continue
+        node_shared = shared | set(node.shared_tool_names)
         owned = set(resolve_pack_tool_names(node.tool_packs) + list(node.tool_names))
-        exclusive |= owned - shared
-        domains: set[str] = set()
+        exclusive |= owned - node_shared
         for pack in node.tool_packs:
-            if pack in (DYNAMIC_PACK, TASK_BASICS_PACK):
+            if pack in skip_packs or pack in _daily_common_domains:
                 continue
-            domain_tools = get_tools_by_capability_domain(pack)
-            if domain_tools:
-                domains.add(pack)
-        for name in owned:
-            tb = find_tool_base(name)
-            if tb is not None:
-                dom = tb.capability_domain
-                if dom:
-                    domains.add(dom)
-        for dom in domains:
-            if dom in _daily_common_domains:
-                continue
-            for tb in get_tools_by_capability_domain(dom):
-                if tb.name not in shared:
+            for tb in get_tools_by_capability_domain(pack):
+                if tb.name not in node_shared:
                     exclusive.add(tb.name)
     return exclusive
 

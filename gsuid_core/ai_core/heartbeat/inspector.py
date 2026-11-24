@@ -244,6 +244,10 @@ class HeartbeatInspector:
             if time_diff > timedelta(hours=INACTIVE_THRESHOLD_HOURS):
                 return False, f"群已 {INACTIVE_THRESHOLD_HOURS} 小时不活跃"
 
+        # 前置并发互斥：会话正在运行或收件箱有待处理唤醒项时直接跳过
+        if self._is_session_busy(event):
+            return False, "会话正在活跃处理中（防与被动回复撞车）"
+
         # 检查最后消息是否是 AI 主动发的（防刷屏）
         if self._has_recent_ai_response(history):
             return False, "AI 最近已发言（防刷屏）"
@@ -375,6 +379,27 @@ class HeartbeatInspector:
             return
         mood, message, generator_log_files = meta
 
+        # 发送前二次复核：避免 run_heartbeat 耗时期间会话已进入被动回复或已发出应答
+        if self._is_session_busy(event):
+            logger.debug(
+                t(
+                    "log.ai.heartbeat_skipping_session_key_skip",
+                    session_key=event,
+                    skip_reason="发送前复核：会话已进入活跃处理",
+                )
+            )
+            return
+        latest_history = self._get_history(event)
+        if not latest_history or latest_history[-1].role == "assistant" or self._has_recent_ai_response(latest_history):
+            logger.debug(
+                t(
+                    "log.ai.heartbeat_skipping_session_key_skip",
+                    session_key=event,
+                    skip_reason="发送前复核：会话刚有新回复",
+                )
+            )
+            return
+
         # 6. 发送阶段：走统一 emitter，由它一并完成 bot.send / message_history
         #    / 主 session 历史同步 / proactive_emission entry / C8 网关登记。
         from gsuid_core.ai_core.proactive import emit_proactive_message
@@ -413,6 +438,17 @@ class HeartbeatInspector:
                     dispatcher.consume_staged(target_key, source="autonomy", persona_name=session_persona_name)
                     consolidate_for_target(_arcs, _gid, _uid)
                     await save_micro_arcs(session_persona_name, _arcs)
+
+    def _is_session_busy(self, event: Event) -> bool:
+        """会话正在执行 run、或收件箱处于待收敛/运行中时返回 True。"""
+        from gsuid_core.ai_core.inbox.scheduler import get_inbox_scheduler
+        from gsuid_core.ai_core.session_registry import get_ai_session_registry
+
+        sid = event.session_id
+        session = get_ai_session_registry().get_ai_session(sid)
+        if session is not None and session.is_running:
+            return True
+        return get_inbox_scheduler().has_active_session(sid)
 
     def _get_history(self, event: Event) -> List[Any]:
         """获取会话的全部历史记录"""

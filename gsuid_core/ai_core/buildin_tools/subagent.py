@@ -120,11 +120,9 @@ def _kanban_wait_sec(parent_create_by: str) -> float:
     return 0.0
 
 
-# 纯 lookup 默认同步 ad-hoc（transient），不建看板卡。
-# 外部检索默认 Kanban：超时可回灌，取消不会把事实包扔掉。
+# 仅超轻纯单步 lookup 默认同步 ad-hoc（transient）；重盘点/外部检索走 Kanban 异步回灌，不阻塞群聊。
 _TRANSIENT_DEFAULT_PROFILES = frozenset(
     {
-        "internal_reporter",
         "memory_curator",
         "scheduler_assistant",
     }
