@@ -135,7 +135,8 @@ if "提及应答" in ai_mode:
 1. handler 写 A 轨：_record_inbound_history 给每条消息分配会话内单调 seq（EventLink）
 2. classify_wake 判定唤醒类型：private/mention/name/quote_self/followup/receipt（hard/soft）
 3. InboxScheduler.submit(PendingEntry)：同会话单飞，pending 进 settle 合并窗口
-   （群聊 hard 1.5s / 私聊 hard 0.8s / soft 5s）；_build_turn 执行同批同说话人幂等折叠与
+   （私聊/群聊 hard 4.0s / 群聊未说完起手式与 soft 8.0s / 上限 12.0s；同一发言人等待期内续发
+   无 @ 消息亦自动顺延并并入 turn.entries）；_build_turn 执行同批同说话人幂等折叠与
    90s 跨轮非个人绑定（无工具观测且 memory_intent=="none"）精确消解，一次落定后入队 TaskContext(run_turn)
 4. handle_inbox_turn(turn)：并发信号量 + 长度防护 → get_ai_session → 一段开口门
    → TurnRouter（群聊收件箱轮在 source=="llm" 时统一消费 soft_speak: bool 拦截复读/三方提及/软触发无关；
@@ -186,7 +187,7 @@ MAX_SUMMARY_LENGTH = 15000    # 超过则子 Agent 摘要
 | `follow_up_max_total` | 300s | 硬天花板 |
 | `follow_up_max_replies` | 2 | 单窗口内续聊成功回复上限 |
 
-（收件箱落定上限 `_INBOX_SETTLE_MAX_S=5.0s` 与高活跃群静默阈值 `12 条/分` 已内置为固定常量。）
+（收件箱落定上限 `_INBOX_SETTLE_MAX_S=12.0s` 与高活跃群静默阈值 `12 条/分` 已内置为固定常量。）
 
 `statistics` 触发分布按 wake kind 记录。
 

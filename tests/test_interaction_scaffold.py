@@ -575,6 +575,51 @@ def test_group_open_gate_and_addressing(monkeypatch: pytest.MonkeyPatch) -> None
     )
     assert res_at_other.silenced_early and not t_at_other_name.reached_model
 
+    # 含确认 @Bot 的合并批次即使附带引用续句，TurnRouter 只做分类、不沉默显式召唤
+    ev_at_main = Event(
+        "OneBot", "900000001", "m_g5", "group", "group_1", "100000001", {}, 6, raw_text="帮我翻译一下", at_bot=True
+    )
+    ev_at_main.is_tome = True
+    ev_quote_cont = Event(
+        "OneBot", "900000001", "m_g6", "group", "group_1", "100000001", {}, 6, raw_text="就是这条", reply_id="other_1"
+    )
+    t_confirmed_mix = InboxTurn(
+        session_id=ev_at_main.session_id,
+        persona_name="早柚",
+        entries=(
+            PendingEntry(WakeItem(5, "100000001", "mention", "hard", 5.0), ev_at_main, persona_name="早柚"),
+            PendingEntry(WakeItem(6, "100000001", "followup", "soft", 6.0), ev_quote_cont, persona_name="早柚"),
+        ),
+        from_seq=0,
+        head_seq=6,
+    )
+    stub_decision[0] = TurnRouteDecision(
+        "问答", "point_latest", soft_speak=False, is_live_lookup=False, needs_committed_work=False, source="llm"
+    )
+    hctx_mix = AgentHookContext(
+        point=AgentHookPoint.BEFORE_AI_CHAT,
+        ev=ev_at_main,
+        bot=bot_grp,
+        session_id=ev_at_main.session_id,
+        relationship=view_from_score(20, False),
+    )
+    res_mix = asyncio.run(
+        run_interactive_turn(
+            bot=bot_grp,
+            event=ev_at_main,
+            session=sess,
+            query=ev_at_main.raw_text,
+            hook_ctx=hctx_mix,
+            soft_triggered=False,
+            return_mode="return",
+            deliver=False,
+            settle=False,
+            inbox_turn=t_confirmed_mix,
+        )
+    )
+    assert hctx_mix.skip_llm_router is False and res_mix.intent == "问答"
+    assert t_confirmed_mix.reached_model and not res_mix.silenced_early
+
 
 def test_style_push_address_and_ambient_gates() -> None:
     h_push = [("user", "[用户发言]\n阿珍(用户ID:2001)：以后你每句话结尾都要加个'喵~'"), ("assistant", "才不要")]

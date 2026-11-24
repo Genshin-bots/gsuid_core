@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 class InboxTurn:
     session_id: str
     persona_name: str
-    entries: tuple[PendingEntry, ...]  # hard 先，同强度按 seq 升序
+    entries: tuple[PendingEntry, ...]  # 同说话人按 seq 升序
     from_seq: int  # 不含：开跑时的 read_seq
     head_seq: int  # 含：开跑时 A 轨 head
     backfill: bool = False
@@ -38,10 +38,13 @@ class InboxTurn:
 
     def __post_init__(self) -> None:
         if self.active_seq is None and self.entries:
-            self.active_seq = self.entries[0].item.seq
+            self.active_seq = self.primary.item.seq
 
     @property
     def primary(self) -> PendingEntry:
+        for entry in self.entries:
+            if entry.item.strength == "hard":
+                return entry
         return self.entries[0]
 
     def entry_for(self, seq: int) -> PendingEntry | None:

@@ -108,6 +108,80 @@ def test_parse_reply_plan_table() -> None:
         assert [(g.seqs, g.text) for g in plan.groups] == groups, text
         assert plan.invalid_refs == invalid, text
 
+    assert (
+        parse_reply_plan("直接一句话", valid_seqs=frozenset({1, 2}), default_seqs=(1,), max_targets=3)
+        .groups[0]
+        .explicit
+        is False
+    )
+    assert (
+        parse_reply_plan("<reply #1>\n给第一句", valid_seqs=frozenset({1, 2}), default_seqs=(1,), max_targets=3)
+        .groups[0]
+        .explicit
+        is True
+    )
+
+    # 显式 <reply #seq> 指向批内较早消息时保留引用消歧；无标签回复在批内无人插话时免引
+    import asyncio
+
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.models import Event, Message
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.ai_core.delivery import _send_reply_plan_groups
+    from gsuid_core.ai_core.inbox.turn import InboxTurn
+    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
+
+    async def _check_delivery_quote() -> None:
+        hm = get_history_manager()
+        ev1 = Event("OneBot", "900000001", "dq_1", "group", "70029", "100000001", {}, 6, raw_text="第一句", at_bot=True)
+        ev2 = Event("OneBot", "900000001", "dq_2", "group", "70029", "100000001", {}, 6, raw_text="第二句")
+        hm.clear_history(ev1)
+        sent: list[list[Message]] = []
+
+        class _CaptureBot(Bot):
+            async def send(self, message, at_sender: bool = False, **kwargs: object) -> int:
+                if isinstance(message, list):
+                    sent.append([m for m in message if isinstance(m, Message)])
+                return 0
+
+        try:
+            r1 = hm.add_message(ev1, role="user", content="第一句", metadata={"msg_id": "dq_1", "at_bot": True})
+            r2 = hm.add_message(ev2, role="user", content="第二句", metadata={"msg_id": "dq_2"})
+            assert r1.link is not None and r2.link is not None
+            turn = InboxTurn(
+                session_id=ev1.session_id,
+                persona_name="测试人格",
+                entries=(
+                    PendingEntry(
+                        WakeItem(r1.link.seq, "100000001", "mention", "hard", 1.0), ev1, persona_name="测试人格"
+                    ),
+                    PendingEntry(
+                        WakeItem(r2.link.seq, "100000001", "followup", "soft", 2.0), ev2, persona_name="测试人格"
+                    ),
+                ),
+                from_seq=0,
+                head_seq=r2.link.seq,
+            )
+            cbot = _CaptureBot(_Bot("dq_ws"), ev1)
+            plan_implicit = parse_reply_plan(
+                "合并回复", valid_seqs=frozenset({r1.link.seq, r2.link.seq}), default_seqs=(r1.link.seq,), max_targets=3
+            )
+            await _send_reply_plan_groups(cbot, plan_implicit.groups, turn=turn, ev=ev1, meta={}, ooc_check=False)
+            assert sent and not any(m.type == "reply" for m in sent[-1])
+
+            plan_explicit = parse_reply_plan(
+                f"<reply #{r1.link.seq}>\n只回第一句",
+                valid_seqs=frozenset({r1.link.seq, r2.link.seq}),
+                default_seqs=(r1.link.seq,),
+                max_targets=3,
+            )
+            await _send_reply_plan_groups(cbot, plan_explicit.groups, turn=turn, ev=ev1, meta={}, ooc_check=False)
+            assert any(m.type == "reply" and m.data == "dq_1" for m in sent[-1])
+        finally:
+            hm.clear_history(ev1)
+
+    asyncio.run(_check_delivery_quote())
+
     assert "<reply #3>" not in find_illegal_angle_tags("好 <reply #3> 嗯")
     assert "<reply" not in strip_protocol_tags("<reply #3>\n你好")
 

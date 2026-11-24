@@ -310,28 +310,36 @@ def test_inbox_scheduler_settle_and_one_time_settlement() -> None:
         assert ws.queue.empty()
         assert not sched._inboxes and not sched._ws
 
-        # 6) 固定静默窗：私聊 hard 0.8s / 群聊 hard 1.5s / 软唤醒 5.0s
+        # 6) 固定静默窗：私聊/群聊 hard 4.0s / 软唤醒 8.0s / 上限 12.0s
         from gsuid_core.ai_core.inbox.scheduler import (
             _SOFT_SETTLE_S,
+            _INBOX_SETTLE_MAX_S,
             _GROUP_HARD_SETTLE_S,
             _PRIVATE_HARD_SETTLE_S,
+            _INCOMPLETE_OPENER_SETTLE_S,
         )
 
-        assert (_PRIVATE_HARD_SETTLE_S, _GROUP_HARD_SETTLE_S, _SOFT_SETTLE_S) == (0.8, 1.5, 5.0)
+        assert (
+            _PRIVATE_HARD_SETTLE_S,
+            _GROUP_HARD_SETTLE_S,
+            _INCOMPLETE_OPENER_SETTLE_S,
+            _SOFT_SETTLE_S,
+            _INBOX_SETTLE_MAX_S,
+        ) == (4.0, 4.0, 8.0, 8.0, 12.0)
         dm_ev = Event("OneBot", "900000001", "dm1", "direct", None, "100000004", {}, 6)
         soft_ev = Event("OneBot", "900000001", "sf1", "group", "70003", "100000005", {}, 6)
         assert (
             sched._initial_settle_s(
                 PendingEntry(WakeItem(1, "100000004", "private", "hard", now[0]), dm_ev, persona_name="测试人格")
             )
-            == 0.8
+            == 4.0
         )
-        assert sched._initial_settle_s(entry(1)) == 1.5
+        assert sched._initial_settle_s(entry(1)) == 4.0
         assert (
             sched._initial_settle_s(
                 PendingEntry(WakeItem(1, "100000005", "followup", "soft", now[0]), soft_ev, persona_name="测试人格")
             )
-            == 5.0
+            == 8.0
         )
 
         # 7) 跨 _drop 保留 last_read_seq：中间静默消息不漏读，清史回绕后回到 seq-1
@@ -437,7 +445,7 @@ def test_inbox_scheduler_settle_and_one_time_settlement() -> None:
     )
 
 
-def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
+def test_quoted_image_attribution_and_group_multi_speaker_coalesce(monkeypatch: pytest.MonkeyPatch) -> None:
     """引用图不冒充发言人新发图、无关斗图不强制挂起读图，且群聊多人连发点名自动顺延聚批。"""
     from gsuid_core.bot import _Bot
     from gsuid_core.models import Message, MessageReceive
@@ -957,7 +965,7 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
             await ws.queue.get_nowait().coro
             assert [e.item.seq for e in batches[-1].entries] == [58]
 
-            # 未说完起手式（纯 @Bot / 极短呼名）首窗拉长至 4.0s；完整问句保持 1.5s
+            # 未说完起手式（纯 @Bot / 极短呼名）首窗拉长至 8.0s；完整问句保持 4.0s
             ev_bare_at = Event("OneBot", "900000001", "bare1", "group", "70009", "100000001", {}, 6, raw_text="")
             ev_bare_at.at_bot = True
             ev_short_name = Event(
@@ -972,7 +980,7 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
                         WakeItem(60, "100000001", "mention", "hard", now[0]), ev_bare_at, persona_name="测试人格"
                     )
                 )
-                == 4.0
+                == 8.0
             )
             assert (
                 sched_sel._initial_settle_s(
@@ -980,7 +988,7 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
                         WakeItem(61, "100000001", "name", "hard", now[0]), ev_short_name, persona_name="测试人格"
                     )
                 )
-                == 4.0
+                == 8.0
             )
             assert (
                 sched_sel._initial_settle_s(
@@ -988,7 +996,7 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
                         WakeItem(62, "100000001", "mention", "hard", now[0]), ev_full_q, persona_name="测试人格"
                     )
                 )
-                == 1.5
+                == 4.0
             )
             ev_short_greet = Event("OneBot", "900000001", "sg1", "group", "70009", "100000001", {}, 6, raw_text="你好")
             ev_short_greet.at_bot = True
@@ -1001,7 +1009,7 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
                         WakeItem(64, "100000001", "mention", "hard", now[0]), ev_short_greet, persona_name="测试人格"
                     )
                 )
-                == 1.5
+                == 4.0
             )
             assert (
                 sched_sel._initial_settle_s(
@@ -1009,9 +1017,9 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
                         WakeItem(65, "100000001", "name", "hard", now[0]), ev_name_greet, persona_name="测试人格"
                     )
                 )
-                == 1.5
+                == 4.0
             )
-            # 别名起手式（如小名/关键词）剥除后也触发 4.0s 首窗
+            # 别名起手式（如小名/关键词）剥除后也触发 8.0s 首窗
             from gsuid_core.ai_core.memory import group_profile as _gp
 
             _orig_surfaces = _gp.collect_persona_surfaces
@@ -1026,10 +1034,297 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce() -> None:
                             WakeItem(63, "100000001", "name", "hard", now[0]), ev_alias_name, persona_name="测试人格"
                         )
                     )
-                    == 4.0
+                    == 8.0
                 )
             finally:
                 _gp.collect_persona_surfaces = _orig_surfaces
+
+            # 6) 同说话人 settling 期无 @ 续发：is_awaiting_speaker 区分待跑/在途/回执，
+            #    续发顺延滑动 4s（12s 封顶）且按 seq 保序并入 turn.entries，primary 锚定 hard 项
+            from gsuid_core.ai_core.inbox.state import ReceiptContext
+
+            cont_now = [3000.0]
+            cont_batches: list[InboxTurn] = []
+            cont_in_flight = asyncio.Event()
+            cont_release = asyncio.Event()
+            cont_gate = [False]
+
+            async def cont_sleep(sec: float) -> None:
+                cont_now[0] += sec
+
+            async def cont_runner(turn: InboxTurn, _ws: _Bot) -> TurnOutcome:
+                cont_batches.append(turn)
+                if cont_gate[0]:
+                    cont_in_flight.set()
+                    await cont_release.wait()
+                return TurnOutcome(
+                    reached_model=True, error=False, answered=frozenset(e.item.seq for e in turn.entries)
+                )
+
+            sched_cont = InboxScheduler(clock=lambda: cont_now[0], sleep=cont_sleep, runner=cont_runner)
+            ev_c1 = Event(
+                "OneBot", "900000001", "c_at1", "group", "70009", "100000001", {}, 6, raw_text="帮我看看", at_bot=True
+            )
+            ev_c2 = Event("OneBot", "900000001", "c_f2", "group", "70009", "100000001", {}, 6, raw_text="刚才报错了")
+            ev_c3 = Event(
+                "OneBot", "900000001", "c_at3", "group", "70009", "100000001", {}, 6, raw_text="急用", at_bot=True
+            )
+            sid_c = ev_c1.session_id
+            assert sched_cont.is_awaiting_speaker(sid_c, "测试人格", "100000001") is False
+            sched_cont.submit(
+                ws,
+                PendingEntry(WakeItem(71, "100000001", "mention", "hard", cont_now[0]), ev_c1, persona_name="测试人格"),
+            )
+            assert sched_cont.is_awaiting_speaker(sid_c, "测试人格", "100000001") is True
+            assert sched_cont.is_awaiting_speaker(sid_c, "测试人格", "100000002") is False
+            # 2.5s 后同人发无 @ 续句：deadline 从 3004.0 滑动至 3006.5（完整 4s 防抖）
+            cont_now[0] = 3002.5
+            sched_cont.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(72, "100000001", "followup", "soft", cont_now[0]), ev_c2, persona_name="测试人格"
+                ),
+            )
+            assert sched_cont._inboxes[(sid_c, "测试人格")].settle_deadline == 3006.5
+            # 10.0s 时再续发：受 12.0s 上限封顶，且 hard-soft-hard 仍按 seq 升序保序
+            cont_now[0] = 3010.0
+            sched_cont.submit(
+                ws,
+                PendingEntry(WakeItem(73, "100000001", "mention", "hard", cont_now[0]), ev_c3, persona_name="测试人格"),
+            )
+            assert sched_cont._inboxes[(sid_c, "测试人格")].settle_deadline == 3012.0
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert [e.item.seq for e in cont_batches[0].entries] == [71, 72, 73]
+            assert cont_batches[0].primary.item.seq == 71
+
+            # soft 在前 + hard 在后：entries 保 seq 升序，primary 仍锚定 hard 项
+            ev_s1 = Event("OneBot", "900000001", "s1", "group", "70009", "100000001", {}, 6, raw_text="等等")
+            ev_h2 = Event(
+                "OneBot", "900000001", "h2", "group", "70009", "100000001", {}, 6, raw_text="查一下", at_bot=True
+            )
+            sched_cont.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(74, "100000001", "followup", "soft", cont_now[0]), ev_s1, persona_name="测试人格"
+                ),
+            )
+            sched_cont.submit(
+                ws,
+                PendingEntry(WakeItem(75, "100000001", "mention", "hard", cont_now[0]), ev_h2, persona_name="测试人格"),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert [e.item.seq for e in cont_batches[1].entries] == [74, 75]
+            assert cont_batches[1].primary.item.seq == 75
+
+            # 在途轮次不误判为 awaiting；但排队等下一轮的新说话人可续发合并；纯命令回执不吸附无 @ 闲聊
+            cont_gate[0] = True
+            ev_run = Event(
+                "OneBot", "900000001", "r_u1", "group", "70009", "100000001", {}, 6, raw_text="第一轮", at_bot=True
+            )
+            sched_cont.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(76, "100000001", "mention", "hard", cont_now[0]), ev_run, persona_name="测试人格"
+                ),
+            )
+            for _ in range(12):
+                await asyncio.sleep(0)
+            t_in_flight = asyncio.create_task(ws.queue.get_nowait().coro)
+            await cont_in_flight.wait()
+            assert sched_cont.is_awaiting_speaker(sid_c, "测试人格", "100000001") is False
+            ev_q_u2a = Event(
+                "OneBot", "900000001", "q_u2a", "group", "70009", "100000002", {}, 6, raw_text="排队句1", at_bot=True
+            )
+            ev_q_u2b = Event("OneBot", "900000001", "q_u2b", "group", "70009", "100000002", {}, 6, raw_text="排队句2")
+            sched_cont.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(77, "100000002", "mention", "hard", cont_now[0]), ev_q_u2a, persona_name="测试人格"
+                ),
+            )
+            assert sched_cont.is_awaiting_speaker(sid_c, "测试人格", "100000002") is True
+            sched_cont.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(78, "100000002", "followup", "soft", cont_now[0]), ev_q_u2b, persona_name="测试人格"
+                ),
+            )
+            cont_gate[0] = False
+            cont_release.set()
+            await t_in_flight
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+            assert [e.item.seq for e in cont_batches[-1].entries] == [77, 78]
+
+            ev_rcpt = Event("OneBot", "900000001", "rc1", "group", "70009", "100000003", {}, 6, raw_text="/签到")
+            sched_cont.submit(
+                ws,
+                PendingEntry(
+                    WakeItem(79, "100000003", "receipt", "soft", cont_now[0]),
+                    ev_rcpt,
+                    receipt=ReceiptContext(
+                        plugin_root=None, plugin_label="测试插件", entry_rel="test", receipt_text="签到成功"
+                    ),
+                    persona_name="测试人格",
+                ),
+            )
+            assert sched_cont.is_awaiting_speaker(sid_c, "测试人格", "100000003") is False
+            for _ in range(12):
+                await asyncio.sleep(0)
+            await ws.queue.get_nowait().coro
+
+            # 7) handle_event 真实入口验证：follow_up_window=0 下先 @Bot 再发无 @ 句仍顺延并合并，
+            #    同人 @他人 与其他群友无 @ 消息均不混入本轮 turn.entries
+            from dataclasses import dataclass
+
+            import gsuid_core.handler as handler_mod
+            import gsuid_core.ai_core.hooks as hooks_mod
+            import gsuid_core.ai_core.startup as startup_mod
+            import gsuid_core.ai_core.persona.config as persona_cfg_mod
+            import gsuid_core.ai_core.inbox.scheduler as inbox_sched_mod
+            import gsuid_core.buildin_plugins.core_command.core_ai_control.state as ai_ctrl_mod
+
+            @dataclass(frozen=True)
+            class _CfgVal:
+                data: object
+
+            class _StubCfg:
+                def __init__(self, values: dict[str, object]) -> None:
+                    self.config = values
+
+                def get_config(self, key: str) -> _CfgVal:
+                    return _CfgVal(self.config[key])
+
+            class _StubPersonaMgr:
+                def __init__(self) -> None:
+                    self._cfg = _StubCfg({"ai_mode": ["提及应答"], "keywords": []})
+
+                def get_persona_for_session(self, _sid: str) -> str:
+                    return "测试人格"
+
+                def get_config(self, _name: str) -> _StubCfg:
+                    return self._cfg
+
+            e2e_t0 = time.time()
+            e2e_now = [e2e_t0]
+            e2e_gate = asyncio.Event()
+            e2e_batches: list[InboxTurn] = []
+
+            async def e2e_sleep(sec: float) -> None:
+                await e2e_gate.wait()
+                e2e_now[0] += sec
+
+            async def e2e_runner(turn: InboxTurn, _ws: _Bot) -> TurnOutcome:
+                e2e_batches.append(turn)
+                return TurnOutcome(
+                    reached_model=True, error=False, answered=frozenset(e.item.seq for e in turn.entries)
+                )
+
+            sched_e2e = InboxScheduler(clock=lambda: e2e_now[0], sleep=e2e_sleep, runner=e2e_runner)
+            stub_ai_cfg = _StubCfg(
+                {
+                    "enable": True,
+                    "black_list": [],
+                    "white_list": [],
+                    "follow_up_window": 0,
+                    "follow_up_max_total": 300,
+                    "follow_up_max_replies": 2,
+                }
+            )
+            monkeypatch.setattr(handler_mod, "ai_config", stub_ai_cfg)
+            monkeypatch.setattr(handler_mod, "_schedule_user_group_write", lambda *_args: None)
+            monkeypatch.setattr(hooks_mod, "should_fire", lambda _point: False)
+            monkeypatch.setattr(ai_ctrl_mod, "is_scope_banned", lambda _sid: False)
+            monkeypatch.setattr(startup_mod, "is_ai_core_ready", lambda: True)
+            monkeypatch.setattr(persona_cfg_mod, "persona_config_manager", _StubPersonaMgr())
+            monkeypatch.setattr(inbox_sched_mod, "_scheduler", sched_e2e)
+
+            ws_e2e = _Bot("e2e_ws")
+            e2e_gid = "70019"
+            e2e_base = Event("OneBot", "900000001", "e2e_0", "group", e2e_gid, "100000001", {}, 6)
+            e2e_base.WS_BOT_ID = "e2e_ws"
+            hm.clear_history(e2e_base)
+            try:
+                await handler_mod.handle_event(
+                    ws_e2e,
+                    MessageReceive(
+                        bot_id="OneBot",
+                        bot_self_id="900000001",
+                        msg_id="e2e_1",
+                        user_type="group",
+                        group_id=e2e_gid,
+                        user_id="100000001",
+                        sender={"nickname": "测试用户A"},
+                        user_pm=6,
+                        content=[Message(type="at", data="900000001"), Message(type="text", data="帮我看看")],
+                    ),
+                )
+                e2e_key = (e2e_base.session_id, "测试人格")
+                assert sched_e2e._inboxes[e2e_key].settle_deadline == e2e_t0 + 4.0
+
+                e2e_now[0] = e2e_t0 + 2.0
+                await handler_mod.handle_event(
+                    ws_e2e,
+                    MessageReceive(
+                        bot_id="OneBot",
+                        bot_self_id="900000001",
+                        msg_id="e2e_2",
+                        user_type="group",
+                        group_id=e2e_gid,
+                        user_id="100000001",
+                        sender={"nickname": "测试用户A"},
+                        user_pm=6,
+                        content=[Message(type="text", data="刚才报了个错")],
+                    ),
+                )
+                assert sched_e2e._inboxes[e2e_key].settle_deadline == e2e_t0 + 6.0
+
+                e2e_now[0] = e2e_t0 + 2.5
+                await handler_mod.handle_event(
+                    ws_e2e,
+                    MessageReceive(
+                        bot_id="OneBot",
+                        bot_self_id="900000001",
+                        msg_id="e2e_3",
+                        user_type="group",
+                        group_id=e2e_gid,
+                        user_id="100000001",
+                        sender={"nickname": "测试用户A"},
+                        user_pm=6,
+                        content=[Message(type="at", data="100000009"), Message(type="text", data="你先吃")],
+                    ),
+                )
+                await handler_mod.handle_event(
+                    ws_e2e,
+                    MessageReceive(
+                        bot_id="OneBot",
+                        bot_self_id="900000001",
+                        msg_id="e2e_4",
+                        user_type="group",
+                        group_id=e2e_gid,
+                        user_id="100000002",
+                        sender={"nickname": "测试用户B"},
+                        user_pm=6,
+                        content=[Message(type="text", data="路过打个招呼")],
+                    ),
+                )
+                assert sched_e2e._inboxes[e2e_key].settle_deadline == e2e_t0 + 6.0
+
+                e2e_gate.set()
+                for _ in range(12):
+                    await asyncio.sleep(0)
+                await ws_e2e.queue.get_nowait().coro
+                assert len(e2e_batches) == 1
+                assert [e.event.msg_id for e in e2e_batches[0].entries] == ["e2e_1", "e2e_2"]
+                assert e2e_batches[0].primary.event.msg_id == "e2e_1"
+                assert ws_e2e.queue.empty()
+            finally:
+                hm.clear_history(e2e_base)
 
             # 活跃大群速率门控 + parse_reply_plan 禁止引用非本轮 pending seq
             from gsuid_core.message_history import MessageRecord
