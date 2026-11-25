@@ -1439,14 +1439,14 @@ async def install_plugin_from_upload_api(
     try:
         data = await file.read()
         if not data:
-            return {"status": 1, "msg": "❌ 上传的文件为空"}
+            return {"status": 1, "msg": "❌ 上传的文件为空", "data": None}
         result = await install_plugin_from_zip(data)
         if result.lstrip().startswith("❌"):
-            return {"status": 1, "msg": result}
-        return {"status": 0, "msg": result}
+            return {"status": 1, "msg": result, "data": None}
+        return {"status": 0, "msg": "ok", "data": {"msg": result}}
     except Exception as e:
         logger.exception(t("log.webconsole.plugin_install_upload_fail", error=e))
-        return {"status": 1, "msg": f"安装失败: {str(e)}"}
+        return {"status": 1, "msg": f"安装失败: {str(e)}", "data": None}
 
 
 @app.post("/api/plugin-store/update/{plugin_id}", summary="更新已安装插件", tags=PLUGINS)
