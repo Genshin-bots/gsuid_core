@@ -46,6 +46,7 @@ _DEFAULT_TPS = 40.0
 _SAMPLE_TEXTS = 8
 _TPS_CACHE_TTL_S = 600.0
 _COG_BUNDLE_NAME = "cognition.json"
+_SELF_MODELS_NAME = "self_models.json"
 
 _bg_tasks: set[asyncio.Task[None]] = set()
 # 按当前嵌入模型缓存实测吞吐，避免每次打开还原弹窗重复调用远程嵌入 API。
@@ -120,13 +121,23 @@ async def _item_stats(persona: str, items: Sequence[ResetItemKey]) -> dict[Reset
         size = 0
         if item == "self_memory":
             scopes = await targets.self_scopes(persona)
-            count = bulk_ops.counts_total(await bulk_ops.count_by_scope_keys(scopes.keys))
+            sm_scopes = await targets.self_model_scopes(persona)
+            count = bulk_ops.counts_total(await bulk_ops.count_by_scope_keys(scopes.keys)) + len(sm_scopes.keys)
             seconds, size = targets.estimate_rows(count)
         elif item == "global_group":
-            count = bulk_ops.counts_total(await bulk_ops.count_by_prefixes(targets.GROUP_PREFIXES))
+            sm_keys = await targets.shared_self_model_scopes("global_group")
+            count = bulk_ops.counts_total(
+                await bulk_ops.count_by_prefixes(targets.GROUP_PREFIXES, include_preferences=False)
+            ) + len(sm_keys)
             seconds, size = targets.estimate_rows(count)
         elif item == "global_user":
-            count = bulk_ops.counts_total(await bulk_ops.count_by_prefixes(targets.USER_PREFIXES))
+            sm_keys = await targets.shared_self_model_scopes("global_user")
+            count = bulk_ops.counts_total(
+                await bulk_ops.count_by_prefixes(targets.USER_PREFIXES, include_preferences=False)
+            ) + len(sm_keys)
+            seconds, size = targets.estimate_rows(count)
+        elif item == "user_preferences":
+            count = await bulk_ops.count_shared_preferences()
             seconds, size = targets.estimate_rows(count)
         elif item == "journal":
             files, file_bytes = await to_thread(targets.scan_files_sync)(targets.journal_paths(persona))
@@ -168,11 +179,12 @@ async def preview_reset(persona: str) -> ResetPreview:
             }
         )
     scopes = await targets.self_scopes(persona)
+    sm_scopes = await targets.self_model_scopes(persona)
     return {
         "persona": persona,
         "items": items,
         "other_personas": _other_personas(persona),
-        "legacy_self_key": bool(scopes.legacy_keys),
+        "legacy_self_key": bool(scopes.legacy_keys or sm_scopes.legacy_keys),
         "active_job": await active_job_view(persona),
     }
 
@@ -191,7 +203,7 @@ async def start_reset(
     if not items:
         return {"job_id": "", "error": "请至少选择一项"}
     if any(i in GLOBAL_ITEMS for i in items) and not confirm_global:
-        return {"job_id": "", "error": "清空全局图谱需要二次确认"}
+        return {"job_id": "", "error": "清空全局共享数据需要二次确认"}
     stats = await _item_stats(persona, items)
     backup_items: list[ResetItemKey] = [i for i in items if i not in UNBACKUPABLE_ITEMS] if backup else []
     mem_rows = sum(stats[i]["count"] for i in items if i in MEMORY_ITEMS)
@@ -200,6 +212,8 @@ async def start_reset(
         plan.append(("backup", sum(stats[i]["seconds"] for i in backup_items) + 0.5))
     if mem_rows or any(i in MEMORY_ITEMS for i in items):
         plan.append(("memory", mem_rows / 2000.0 + 1.0))
+    if "user_preferences" in items:
+        plan.append(("user_preferences", stats["user_preferences"]["count"] / 2000.0 + 0.5))
     persona_steps: tuple[StepKey, ...] = ("journal", "relationship", "persona_state", "scheduled_tasks")
     for key in persona_steps:
         if key in items:
@@ -226,6 +240,22 @@ async def _scope_map(persona: str, items: Sequence[ResetItemKey]) -> tuple[dict[
     return result, legacy
 
 
+async def _self_model_map(
+    persona: str, items: Sequence[ResetItemKey]
+) -> tuple[dict[ResetItemKey, list[str]], list[str]]:
+    """（item → self_model scope 键，需要显式冻结的旧 self 键）。"""
+    result: dict[ResetItemKey, list[str]] = {}
+    legacy: list[str] = []
+    if "self_memory" in items:
+        scopes = await targets.self_model_scopes(persona)
+        result["self_memory"] = scopes.keys
+        legacy = scopes.legacy_keys
+    for item in ("global_group", "global_user"):
+        if item in items:
+            result[item] = await targets.shared_self_model_scopes(item)
+    return result, legacy
+
+
 async def _run_reset(job: jobs.Job, items: list[ResetItemKey], backup_items: list[ResetItemKey]) -> None:
     from gsuid_core.ai_core.scheduled_task.models import AIScheduledTask
 
@@ -239,19 +269,22 @@ async def _run_reset(job: jobs.Job, items: list[ResetItemKey], backup_items: lis
     try:
         job.start("prepare")
         await to_thread(archive.sweep_stale_sync)()
-        scope_map, legacy = await _scope_map(persona, items)
+        scope_map, legacy_mem = await _scope_map(persona, items)
+        sm_map, legacy_sm = await _self_model_map(persona, items)
+        legacy = sorted(set(legacy_mem) | set(legacy_sm))
         guard.freeze([persona], shared=shared, scope_keys=legacy)
         frozen = True
         await clear.quiesce_writers()
         # 列清单到冻结之间新建的 scope 也要纳入删除范围。
         scope_map, _ = await _scope_map(persona, items)
+        sm_map, _ = await _self_model_map(persona, items)
         live_tasks = await AIScheduledTask.list_live_by_persona(persona) if "scheduled_tasks" in items else []
         job.end("prepare")
 
         if job.has_step("backup"):
             writer = archive.BackupWriter(persona)
             writer.tasks = [{"task_id": task.task_id, "status": task.status} for task in live_tasks]
-            await _write_backup(job, writer, backup_items, scope_map)
+            await _write_backup(job, writer, backup_items, scope_map, sm_map)
             path = await writer.finalize()
             writer = None
             job.backup_file = path.name
@@ -266,13 +299,38 @@ async def _run_reset(job: jobs.Job, items: list[ResetItemKey], backup_items: lis
             mem_items: list[ResetItemKey] = [i for i in items if i in MEMORY_ITEMS]
             total = 0
             for item in mem_items:
-                total += bulk_ops.counts_total(await bulk_ops.count_by_scope_keys(scope_map[item]))
+                include_prefs = item == "self_memory"
+                total += bulk_ops.counts_total(
+                    await bulk_ops.count_by_scope_keys(scope_map[item], include_preferences=include_prefs)
+                )
+                total += len(sm_map[item])
             job.start("memory", total)
             for item in mem_items:
-                job.add_count(item, await clear.clear_memory(scope_map[item], lambda n: job.advance("memory", n)))
+                include_prefs = item == "self_memory"
+                job.add_count(
+                    item,
+                    await clear.clear_memory(
+                        scope_map[item],
+                        lambda n: job.advance("memory", n),
+                        include_preferences=include_prefs,
+                    ),
+                )
+                sm_removed = await clear.clear_self_models(sm_map[item])
+                if sm_removed:
+                    job.add_count(item, sm_removed)
+                    job.advance("memory", sm_removed)
             if "global_group" in items:
                 job.add_count("global_group", await clear.clear_group_profiles())
             job.end("memory")
+
+        if "user_preferences" in items:
+            total_prefs = await bulk_ops.count_shared_preferences()
+            job.start("user_preferences", total_prefs)
+            job.add_count(
+                "user_preferences",
+                await clear.clear_user_preferences(lambda n: job.advance("user_preferences", n)),
+            )
+            job.end("user_preferences")
 
         if "journal" in items:
             job.start("journal")
@@ -306,6 +364,7 @@ async def _write_backup(
     writer: archive.BackupWriter,
     items: list[ResetItemKey],
     scope_map: dict[ResetItemKey, list[str]],
+    sm_map: dict[ResetItemKey, list[str]],
 ) -> None:
     from gsuid_core.ai_core.state_store import state_get_value, state_list_keys
     from gsuid_core.ai_core.cognition.nodes import AICogNode
@@ -322,7 +381,8 @@ async def _write_backup(
             keys = scope_map[item]
             writer.scope_keys[item] = keys
             episode_ids: list[str] = []
-            for model in bulk_ops.MEMORY_MODELS:
+            models = bulk_ops.MEMORY_MODELS if item == "self_memory" else bulk_ops.GRAPH_MODELS
+            for model in models:
                 table = model.__name__.lower()
                 async for rows in bulk_ops.iter_rows(model, keys, _EXPORT_BATCH):
                     if model.__name__ == "AIMemEpisode":
@@ -340,11 +400,24 @@ async def _write_backup(
                 )
                 writer.counts[f"{item}/aicognode"] = len(cog_nodes)
                 job.advance("backup", len(cog_nodes))
+            sm_values: dict[str, JsonValue] = {}
+            for sm_scope in sm_map[item]:
+                val = await state_get_value(sm_scope, targets.SELF_MODEL_KEY)
+                if val is not None:
+                    sm_values[sm_scope] = val
+            if sm_values:
+                await writer.write_json(f"items/{item}/{_SELF_MODELS_NAME}", sm_values)
+                writer.counts[f"{item}/self_models"] = len(sm_values)
+                job.advance("backup", len(sm_values))
             if item == "global_group":
                 profiles: dict[str, JsonValue] = {}
                 for key in await state_list_keys(targets.GROUP_PROFILE_SCOPE):
                     profiles[key] = await state_get_value(targets.GROUP_PROFILE_SCOPE, key)
                 await writer.write_json("items/global_group/group_profiles.json", profiles)
+        elif item == "user_preferences":
+            async for rows in bulk_ops.iter_shared_preferences(_EXPORT_BATCH):
+                await writer.append_rows("user_preferences", "aimempreference", rows)
+                job.advance("backup", len(rows))
         elif item == "journal":
             tree, notes, legacy = targets.journal_paths(persona)
             files = await writer.copy_tree(tree, "items/journal/tree")
@@ -478,12 +551,19 @@ async def preview_restore(persona: str, file_name: str) -> RestorePreview | str:
         return "备份不属于该人格"
     items: list[ResetItemKey] = [i for i in parse_items(manifest["items"]) if i not in UNBACKUPABLE_ITEMS]
     stats = await _item_stats(persona, items)
+    overwrite_counts: dict[str, int] = {i: (0 if i == "scheduled_tasks" else stats[i]["count"]) for i in items}
+    if "user_preferences" not in items:
+        members = await to_thread(archive.list_members_sync)(path)
+        for item, prefixes in (("global_group", targets.GROUP_PREFIXES), ("global_user", targets.USER_PREFIXES)):
+            if item in items and f"items/{item}/aimempreference.jsonl.gz" in members:
+                pref_counts = await bulk_ops.count_by_prefixes(prefixes, include_preferences=True)
+                overwrite_counts[item] += pref_counts["preferences"]
     texts = _vector_texts(manifest, items)
     tps = await _measure_tps(path) if texts else 0.0
     preview: RestorePreview = {
         "file": path.name,
         "items": items,
-        "overwrite_counts": {i: (0 if i == "scheduled_tasks" else stats[i]["count"]) for i in items},
+        "overwrite_counts": overwrite_counts,
         "import_counts": _item_import_counts(manifest, items),
         "vector_texts": texts,
         "vector_eta_seconds": int(texts / tps) + 1 if tps > 0 and texts else 0,
@@ -560,7 +640,7 @@ def _sql_import_total(manifest: archive.Manifest, items: Sequence[ResetItemKey])
         item, _, table = key.partition("/")
         if item not in items:
             continue
-        if table not in ("files", "keys", "tasks"):
+        if table not in ("files", "keys", "tasks", "self_models"):
             total += value
     return total
 
@@ -589,6 +669,24 @@ def _merge_manifest_scopes(
             scope_map[item] = sorted(set(existing) | set(manifest["scope_keys"][item]))
 
 
+def _allowed_self_model_scope(item: ResetItemKey, persona: str, scope: str) -> bool:
+    """校验备份中的 self_model scope 归属，防止篡改包越权清写其他人格或系统键。"""
+    if item == "self_memory":
+        if not scope.startswith("self:"):
+            return False
+        parts = scope.split(":", 2)
+        if len(parts) == 3:
+            return parts[2] == persona
+        from gsuid_core.ai_core.migrations.persona_scope_v1 import get_legacy_owner_persona
+
+        return len(parts) == 2 and persona == get_legacy_owner_persona()
+    if item == "global_group":
+        return scope.startswith(targets.GROUP_PREFIXES)
+    if item == "global_user":
+        return scope.startswith(targets.USER_PREFIXES)
+    return False
+
+
 async def _run_restore(job: jobs.Job, path: Path, manifest: archive.Manifest, items: list[ResetItemKey]) -> None:
     persona = job.persona
     shared = any(i in GLOBAL_ITEMS for i in items)
@@ -600,17 +698,27 @@ async def _run_restore(job: jobs.Job, path: Path, manifest: archive.Manifest, it
     try:
         job.start("prepare")
         await to_thread(archive.sweep_stale_sync)()
-        current_map, legacy = await _scope_map(persona, items)
+        current_map, legacy_mem = await _scope_map(persona, items)
+        current_sm, legacy_sm = await _self_model_map(persona, items)
         _merge_manifest_scopes(current_map, manifest, items)
         backup_self = manifest["scope_keys"]["self_memory"] if "self_memory" in manifest["scope_keys"] else []
-        legacy_all = sorted(set(legacy) | {k for k in backup_self if len(k.split(":", 2)) == 2})
+        legacy_all = sorted(set(legacy_mem) | set(legacy_sm) | {k for k in backup_self if len(k.split(":", 2)) == 2})
         guard.freeze([persona], shared=shared, scope_keys=legacy_all)
         frozen = True
         src = await to_thread(archive.extract_sync)(path)
         await clear.quiesce_writers()
         # 列清单到冻结之间新建的 scope 也要纳入先清后导的范围。
         current_map, _ = await _scope_map(persona, items)
+        current_sm, _ = await _self_model_map(persona, items)
         _merge_manifest_scopes(current_map, manifest, items)
+        for item in items:
+            if item in MEMORY_ITEMS:
+                sm_path = src / "items" / item / _SELF_MODELS_NAME
+                if sm_path.is_file():
+                    sm_backup = await to_thread(archive.read_json_object_sync)(sm_path)
+                    allowed_keys = [k for k in sm_backup if _allowed_self_model_scope(item, persona, k)]
+                    existing_sm = current_sm[item] if item in current_sm else []
+                    current_sm[item] = sorted(set(existing_sm) | set(allowed_keys))
         job.end("prepare")
 
         if any(i in MEMORY_ITEMS for i in items):
@@ -618,9 +726,26 @@ async def _run_restore(job: jobs.Job, path: Path, manifest: archive.Manifest, it
         job.start("clear", len(items))
         for item in items:
             if item in MEMORY_ITEMS:
-                await clear.clear_memory(current_map[item], lambda _n: None)
+                legacy_pref = (
+                    item != "self_memory"
+                    and "user_preferences" not in items
+                    and (src / "items" / item / "aimempreference.jsonl.gz").is_file()
+                )
+                clear_scopes = current_map[item]
+                if legacy_pref:
+                    prefixes = targets.GROUP_PREFIXES if item == "global_group" else targets.USER_PREFIXES
+                    extra = await bulk_ops.list_scope_keys(prefixes, include_preferences=True)
+                    clear_scopes = sorted(set(clear_scopes) | set(extra))
+                await clear.clear_memory(
+                    clear_scopes,
+                    lambda _n: None,
+                    include_preferences=(item == "self_memory" or legacy_pref),
+                )
+                await clear.clear_self_models(current_sm[item])
                 if item == "global_group":
                     await clear.clear_group_profiles()
+            elif item == "user_preferences":
+                await clear.clear_user_preferences(lambda _n: None)
             elif item == "journal":
                 await clear.clear_journal(persona)
             elif item == "relationship":
@@ -634,13 +759,21 @@ async def _run_restore(job: jobs.Job, path: Path, manifest: archive.Manifest, it
         for item in items:
             n = 0
             if item in MEMORY_ITEMS:
-                for model in bulk_ops.MEMORY_MODELS:
+                legacy_pref = (
+                    item != "self_memory"
+                    and "user_preferences" not in items
+                    and (src / "items" / item / "aimempreference.jsonl.gz").is_file()
+                )
+                models = bulk_ops.MEMORY_MODELS if (item == "self_memory" or legacy_pref) else bulk_ops.GRAPH_MODELS
+                for model in models:
                     n += await _import_table(job, src, item, model.__name__.lower())
                 await _import_table(job, src, item, bulk_ops.MENTIONS_TABLE)
                 cog_n = await _restore_cognition_bundle(src, item)
                 if cog_n:
                     n += cog_n
                     job.advance("import", cog_n)
+            elif item == "user_preferences":
+                n += await _import_table(job, src, item, "aimempreference")
             elif item == "relationship":
                 n += await _import_table(job, src, item, "userfavorability")
             elif item == "journal":
@@ -716,6 +849,18 @@ async def _restore_files(job: jobs.Job, src: Path, manifest: archive.Manifest, i
         profiles = await to_thread(archive.read_json_object_sync)(base / "global_group" / "group_profiles.json")
         for key, value in profiles.items():
             await state_set_value(targets.GROUP_PROFILE_SCOPE, key, value)
+    for item in items:
+        if item in MEMORY_ITEMS:
+            sm_path = base / item / _SELF_MODELS_NAME
+            if sm_path.is_file():
+                sm_values = await to_thread(archive.read_json_object_sync)(sm_path)
+                restored_sm = 0
+                for sm_scope, value in sm_values.items():
+                    if _allowed_self_model_scope(item, persona, sm_scope):
+                        await state_set_value(sm_scope, targets.SELF_MODEL_KEY, value)
+                        restored_sm += 1
+                if restored_sm:
+                    job.add_count(item, restored_sm)
     if "scheduled_tasks" in items:
         restored = 0
         overdue_idx = 0

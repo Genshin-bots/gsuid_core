@@ -13,6 +13,7 @@ ResetItemKey = Literal[
     "scheduled_tasks",
     "global_group",
     "global_user",
+    "user_preferences",
 ]
 ItemGroup = Literal["persona", "global"]
 ItemUnit = Literal["rows", "files", "sessions", "tasks", "keys"]
@@ -23,6 +24,7 @@ StepKey = Literal[
     "prepare",
     "backup",
     "memory",
+    "user_preferences",
     "journal",
     "relationship",
     "persona_state",
@@ -43,9 +45,12 @@ ALL_ITEMS: tuple[ResetItemKey, ...] = (
     "scheduled_tasks",
     "global_group",
     "global_user",
+    "user_preferences",
 )
-GLOBAL_ITEMS: frozenset[ResetItemKey] = frozenset({"global_group", "global_user"})
-DEFAULT_OFF_ITEMS: frozenset[ResetItemKey] = frozenset({"scheduled_tasks", "global_group", "global_user"})
+GLOBAL_ITEMS: frozenset[ResetItemKey] = frozenset({"global_group", "global_user", "user_preferences"})
+DEFAULT_OFF_ITEMS: frozenset[ResetItemKey] = frozenset(
+    {"scheduled_tasks", "global_group", "global_user", "user_preferences"}
+)
 # 会话历史只在内存里（12h 滚动），不进备份也不能还原。
 UNBACKUPABLE_ITEMS: frozenset[ResetItemKey] = frozenset({"session_history"})
 MEMORY_ITEMS: frozenset[ResetItemKey] = frozenset({"self_memory", "global_group", "global_user"})
@@ -59,6 +64,7 @@ ITEM_UNITS: dict[ResetItemKey, ItemUnit] = {
     "scheduled_tasks": "tasks",
     "global_group": "rows",
     "global_user": "rows",
+    "user_preferences": "rows",
 }
 
 

@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 from gsuid_core.pool import to_thread
 from gsuid_core.ai_core.memory.database import bulk_ops
 from gsuid_core.ai_core.persona_reset.targets import (
+    SELF_MODEL_KEY,
     GROUP_PROFILE_SCOPE,
     journal_paths,
     scan_files_sync,
@@ -82,11 +83,32 @@ async def clear_journal(persona_name: str) -> int:
     return files
 
 
-async def clear_memory(scope_keys: Sequence[str], on_progress: Callable[[int], None]) -> int:
+async def clear_memory(
+    scope_keys: Sequence[str],
+    on_progress: Callable[[int], None],
+    *,
+    include_preferences: bool = True,
+) -> int:
     # 先清向量再清 SQL：若向量删除失败，SQL 仍留着 scope_keys，重试可完整重跑不留孤儿向量。
     await bulk_ops.delete_vectors_by_scope_keys(scope_keys)
-    counts = await bulk_ops.delete_by_scope_keys(scope_keys, on_progress)
+    counts = await bulk_ops.delete_by_scope_keys(scope_keys, on_progress, include_preferences=include_preferences)
     return bulk_ops.counts_total(counts)
+
+
+async def clear_user_preferences(on_progress: Callable[[int], None]) -> int:
+    """清空所有非 ``self:*`` 的全局共享用户偏好规则（SQL-only）。"""
+    return await bulk_ops.delete_shared_preferences(on_progress)
+
+
+async def clear_self_models(scopes: Sequence[str]) -> int:
+    """清空指定 scope 下的 ``AIPersistentState(state_key="self_model")`` 行。"""
+    from gsuid_core.ai_core.state_store import state_delete_value
+
+    removed = 0
+    for scope in scopes:
+        if await state_delete_value(scope, SELF_MODEL_KEY):
+            removed += 1
+    return removed
 
 
 async def clear_relationship(persona_name: str) -> int:

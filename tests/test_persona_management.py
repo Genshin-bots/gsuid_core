@@ -2413,7 +2413,13 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
             pref_u = AIMemPreference(
                 id="pref-u1", scope_key="user_global:100000001", user_id="100000001", preference_rule="回答简洁"
             )
-            s.add_all([ent_a, ent_b, ent_g1, ent_g2, ent_u1, th_g, ep_a, ep_b, ep_g, edge_g, pref_u])
+            pref_a = AIMemPreference(
+                id="pref-a1", scope_key="self:10001:alpha", user_id="100000001", preference_rule="alpha自偏好"
+            )
+            pref_b = AIMemPreference(
+                id="pref-b1", scope_key="self:10001:beta", user_id="100000001", preference_rule="beta自偏好"
+            )
+            s.add_all([ent_a, ent_b, ent_g1, ent_g2, ent_u1, th_g, ep_a, ep_b, ep_g, edge_g, pref_u, pref_a, pref_b])
             await s.flush()
             await s.execute(mem_episode_entity_mentions.insert().values(episode_id="ep-g1", entity_id="ent-g1"))
             await fts_mod.index_episodes(s, [ep_a, ep_b, ep_g])
@@ -2474,6 +2480,17 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
         await state_set_value(persona_scope("alpha"), "homeostasis", {"energy": 0.5})
         await state_set_value(persona_scope("beta"), "homeostasis", {"energy": 0.9})
         await state_set_value("__gscore_group_profile__", "group:group_1", {"tags": ["测试"]})
+        await state_set_value(
+            "self:10001:alpha",
+            "self_model",
+            {"preferences_learned": ["用户(100000001)：叫我测试称呼"], "commitments": ["记住测试约定"]},
+        )
+        await state_set_value(
+            "self:10001:beta",
+            "self_model",
+            {"preferences_learned": ["用户(100000001)：beta专属称呼"]},
+        )
+        await state_set_value("group:group_1", "self_model", {"commitments": ["群里一起测试"]})
         await mood_mod.update_mood("alpha", "group_1", "praise")
 
         ev_g1 = _make_event(group_id="group_1")
@@ -2483,14 +2500,51 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
             prev = await service.preview_reset("alpha")
             assert prev["other_personas"] == ["beta"]
             by_key = {item["key"]: item for item in prev["items"]}
-            assert by_key["self_memory"]["default_checked"] is True and by_key["self_memory"]["count"] == 3
-            assert by_key["global_group"]["default_checked"] is False and by_key["global_group"]["count"] == 6
-            assert by_key["global_user"]["default_checked"] is False and by_key["global_user"]["count"] == 2
+            assert by_key["self_memory"]["default_checked"] is True and by_key["self_memory"]["count"] == 5
+            assert by_key["global_group"]["default_checked"] is False and by_key["global_group"]["count"] == 7
+            assert by_key["global_user"]["default_checked"] is False and by_key["global_user"]["count"] == 1
+            assert by_key["user_preferences"]["default_checked"] is False and by_key["user_preferences"]["count"] == 1
             assert by_key["scheduled_tasks"]["default_checked"] is False and by_key["scheduled_tasks"]["count"] == 1
             assert by_key["session_history"]["backup_supported"] is False and by_key["session_history"]["count"] >= 1
 
             assert (await service.start_reset("alpha", ["journal"], "wrong", False, False))["error"]
             assert (await service.start_reset("alpha", ["global_group"], "alpha", False, False))["error"]
+            assert (await service.start_reset("alpha", ["user_preferences"], "alpha", False, False))["error"]
+
+            # 单独清空与还原用户偏好：不动全局用户图谱、人格自偏好和 self_model，也不触发向量重建
+            pref_only = await service.start_reset("alpha", ["user_preferences"], "alpha", True, True)
+            assert not pref_only["error"] and pref_only["job_id"]
+            pref_done = await _wait_job(pref_only["job_id"])
+            assert pref_done["status"] == "done" and pref_done["backup_file"].endswith(".zip")
+            async with maker() as s:
+                assert sorted(p.id for p in (await s.execute(select(AIMemPreference))).scalars().all()) == [
+                    "pref-a1",
+                    "pref-b1",
+                ]
+                assert "ent-u1" in [e.id for e in (await s.execute(select(AIMemEntity))).scalars().all()]
+            assert await state_get_value("self:10001:alpha", "self_model") is not None
+            pref_rprev = await service.preview_restore("alpha", pref_done["backup_file"])
+            assert not isinstance(pref_rprev, str) and pref_rprev["vector_texts"] == 0
+            pref_rstart = await service.start_restore("alpha", pref_done["backup_file"], ["user_preferences"], "alpha")
+            assert not pref_rstart["error"] and pref_rstart["job_id"]
+            pref_rdone = await _wait_job(pref_rstart["job_id"])
+            assert pref_rdone["status"] == "done" and all(st["key"] != "vectors" for st in pref_rdone["steps"])
+            async with maker() as s:
+                assert sorted(p.id for p in (await s.execute(select(AIMemPreference))).scalars().all()) == [
+                    "pref-a1",
+                    "pref-b1",
+                    "pref-u1",
+                ]
+            assert await service.delete_backup("alpha", pref_done["backup_file"]) is True
+
+            # 冻结期禁止写入 self_model
+            from gsuid_core.ai_core.self_cognition import add_self_note
+
+            guard.freeze(["alpha"], shared=False)
+            try:
+                assert await add_self_note("10001", "alpha", "冻结期不该写入", "preferences_learned") is False
+            finally:
+                guard.unfreeze(["alpha"], shared=False)
 
             # 摄入 flush 超时 → 任务失败、手账未删、人格解冻
             class _StuckWorker:
@@ -2544,10 +2598,16 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
             assert await state_get_value(persona_scope("alpha"), "homeostasis") is None
             assert await state_get_value(persona_scope("beta"), "homeostasis") == {"energy": 0.9}
             assert await state_get_value("__gscore_group_profile__", "group:group_1") is None
+            assert await state_get_value("self:10001:alpha", "self_model") is None
+            assert await state_get_value("group:group_1", "self_model") is None
+            assert await state_get_value("self:10001:beta", "self_model") == {
+                "preferences_learned": ["用户(100000001)：beta专属称呼"]
+            }
             assert mood_mod.count_mood_states("alpha") == 0 and fake_qdrant.deleted_collections
 
             async with maker() as s:
                 assert [e.id for e in (await s.execute(select(AIMemEpisode))).scalars().all()] == ["ep-b1"]
+                assert [p.id for p in (await s.execute(select(AIMemPreference))).scalars().all()] == ["pref-b1"]
                 assert [
                     (f.persona_name, f.favorability)
                     for f in (await s.execute(select(UserFavorability))).scalars().all()
@@ -2579,6 +2639,11 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
             assert jstorage.read_journal_state_sync("alpha") is not None
             assert await state_get_value(persona_scope("alpha"), "homeostasis") == {"energy": 0.5}
             assert await state_get_value("__gscore_group_profile__", "group:group_1") == {"tags": ["测试"]}
+            assert await state_get_value("self:10001:alpha", "self_model") == {
+                "preferences_learned": ["用户(100000001)：叫我测试称呼"],
+                "commitments": ["记住测试约定"],
+            }
+            assert await state_get_value("group:group_1", "self_model") == {"commitments": ["群里一起测试"]}
             assert "task-alpha-1" in registered_jobs
 
             async with maker() as s:
@@ -2586,6 +2651,11 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
                     "ep-a1",
                     "ep-b1",
                     "ep-g1",
+                ]
+                assert sorted(p.id for p in (await s.execute(select(AIMemPreference))).scalars().all()) == [
+                    "pref-a1",
+                    "pref-b1",
+                    "pref-u1",
                 ]
                 assert sorted(
                     (f.persona_name, f.user_id, f.favorability)
@@ -2672,6 +2742,124 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
             fresh_start = await service.start_reset("alpha", ["self_memory"], "alpha", False, False)
             assert not fresh_start["error"] and fresh_start["job_id"]
             assert (await _wait_job(fresh_start["job_id"]))["status"] == "done" and not stale_cursor.exists()
+
+            # clear_ops 按前缀清理也覆盖仅有偏好行的 scope
+            from gsuid_core.ai_core.memory.database.clear_ops import clear_memories_for_scope_async
+
+            async with maker() as s:
+                s.add(
+                    AIMemPreference(
+                        id="pref-only-1",
+                        scope_key="user_global:prefonly_1",
+                        user_id="prefonly_1",
+                        preference_rule="仅偏好规则",
+                    )
+                )
+                await s.commit()
+            cleared_pref_only = await clear_memories_for_scope_async(scope_pattern="user_global:prefonly_")
+            assert cleared_pref_only["status"] == 0 and cleared_pref_only["data"]["deleted_preferences"] == 1
+
+            # 旧格式备份兼容：偏好嵌在 global_user（无 user_preferences 项），覆盖预估与清删还原均准确
+            import gzip
+
+            async with maker() as s:
+                s.add(
+                    AIMemPreference(
+                        id="pref-extra-1",
+                        scope_key="user_global:100000099",
+                        user_id="100000099",
+                        preference_rule="仅偏好待清",
+                    )
+                )
+                await s.commit()
+
+            legacy_name = "20260101_000000_legacy.zip"
+            legacy_zip = archive.persona_backup_dir("alpha") / legacy_name
+            legacy_zip.parent.mkdir(parents=True, exist_ok=True)
+            legacy_pref_row = {
+                "id": "pref-legacy-1",
+                "scope_key": "user_global:100000001",
+                "user_id": "100000001",
+                "target_context": "general",
+                "preference_rule": "旧备份偏好规则",
+                "polarity": "do",
+                "is_correction": False,
+                "is_active": True,
+                "source_episode_id": None,
+                "mention_count": 1,
+                "created_at": now_dt.isoformat(),
+                "updated_at": now_dt.isoformat(),
+                "last_applied_at": None,
+            }
+            legacy_manifest = {
+                "version": archive.MANIFEST_VERSION,
+                "persona": "alpha",
+                "created_at": int(time.time()),
+                "items": ["global_user"],
+                "counts": {"global_user/aimempreference": 1},
+                "scope_keys": {"global_user": ["user_global:100000001"]},
+                "tasks": [],
+                "embedding_model": "",
+            }
+            with zipfile.ZipFile(legacy_zip, "w") as zf:
+                zf.writestr("manifest.json", json.dumps(legacy_manifest, ensure_ascii=False))
+                zf.writestr(
+                    "items/global_user/aimempreference.jsonl.gz",
+                    gzip.compress((json.dumps(legacy_pref_row, ensure_ascii=False) + "\n").encode("utf-8")),
+                )
+            try:
+                lprev = await service.preview_restore("alpha", legacy_name)
+                assert not isinstance(lprev, str)
+                # 当前 user_global:* 有 1 个实体（ent-u1）+ 2 条偏好（pref-u1, pref-extra-1）= 3
+                assert lprev["overwrite_counts"]["global_user"] == 3
+                lstart = await service.start_restore("alpha", legacy_name, ["global_user"], "alpha")
+                assert not lstart["error"] and lstart["job_id"]
+                assert (await _wait_job(lstart["job_id"]))["status"] == "done"
+                async with maker() as s:
+                    assert sorted(p.id for p in (await s.execute(select(AIMemPreference))).scalars().all()) == [
+                        "pref-b1",
+                        "pref-legacy-1",
+                    ]
+            finally:
+                legacy_zip.unlink(missing_ok=True)
+
+            # 负向防线：篡改备份的 self_models.json 越权 scope（其他人格 / 系统键 / 跨组）一律拒绝
+            tampered_name = "20260101_000001_tampered.zip"
+            tampered_zip = archive.persona_backup_dir("alpha") / tampered_name
+            tampered_manifest = {
+                "version": archive.MANIFEST_VERSION,
+                "persona": "alpha",
+                "created_at": int(time.time()),
+                "items": ["self_memory"],
+                "counts": {"self_memory/self_models": 4},
+                "scope_keys": {"self_memory": ["self:10001:alpha"]},
+                "tasks": [],
+                "embedding_model": "",
+            }
+            tampered_models = {
+                "self:10001:alpha": {"preferences_learned": ["合法恢复"]},
+                "self:10001:beta": {"preferences_learned": ["越权篡改beta"]},
+                "system:migrations": {"hacked": True},
+                "group:group_1": {"commitments": ["越权篡改群"]},
+            }
+            with zipfile.ZipFile(tampered_zip, "w") as zf:
+                zf.writestr("manifest.json", json.dumps(tampered_manifest, ensure_ascii=False))
+                zf.writestr(
+                    "items/self_memory/self_models.json",
+                    json.dumps(tampered_models, ensure_ascii=False),
+                )
+            try:
+                tstart = await service.start_restore("alpha", tampered_name, ["self_memory"], "alpha")
+                assert not tstart["error"] and tstart["job_id"]
+                assert (await _wait_job(tstart["job_id"]))["status"] == "done"
+                assert await state_get_value("self:10001:alpha", "self_model") == {"preferences_learned": ["合法恢复"]}
+                assert await state_get_value("self:10001:beta", "self_model") == {
+                    "preferences_learned": ["用户(100000001)：beta专属称呼"]
+                }
+                assert await state_get_value("system:migrations", "self_model") is None
+                assert await state_get_value("group:group_1", "self_model") == {"commitments": ["群里一起测试"]}
+            finally:
+                tampered_zip.unlink(missing_ok=True)
 
             async with maker() as s:
                 await s.execute(sql_delete(AIMemEdge))

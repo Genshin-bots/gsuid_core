@@ -33,6 +33,7 @@ VectorKind = Literal["episode", "entity", "edge"]
 _M = TypeVar("_M", bound=SQLModel)
 
 # 导入顺序即外键顺序：Entity 先于 Edge，Episode 先于 mentions。
+GRAPH_MODELS: tuple[MemModel, ...] = (AIMemEntity, AIMemThread, AIMemEpisode, AIMemEdge)
 MEMORY_MODELS: tuple[MemModel, ...] = (AIMemEntity, AIMemThread, AIMemEpisode, AIMemEdge, AIMemPreference)
 TABLE_NAMES: dict[str, MemModel] = {m.__name__.lower(): m for m in MEMORY_MODELS}
 MENTIONS_TABLE = "mem_episode_entity_mentions"
@@ -82,11 +83,12 @@ def _chunks(items: Sequence[str], size: int) -> list[Sequence[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-async def list_scope_keys(prefixes: Sequence[str]) -> list[str]:
-    """五张记忆表与认知节点表里以任一前缀开头的 scope_key（去重、排序）。"""
+async def list_scope_keys(prefixes: Sequence[str], *, include_preferences: bool = True) -> list[str]:
+    """记忆表与认知节点表里以任一前缀开头的 scope_key（去重、排序）。"""
+    models = MEMORY_MODELS if include_preferences else GRAPH_MODELS
     found: set[str] = set()
     async with base_models.async_maker() as session:
-        for model in MEMORY_MODELS:
+        for model in models:
             for prefix in prefixes:
                 stmt = (
                     select(col(model.scope_key))
@@ -100,18 +102,19 @@ async def list_scope_keys(prefixes: Sequence[str]) -> list[str]:
     return sorted(found)
 
 
-async def count_by_prefixes(prefixes: Sequence[str]) -> MemCounts:
-    keys = await list_scope_keys(prefixes)
-    return await count_by_scope_keys(keys)
+async def count_by_prefixes(prefixes: Sequence[str], *, include_preferences: bool = True) -> MemCounts:
+    keys = await list_scope_keys(prefixes, include_preferences=include_preferences)
+    return await count_by_scope_keys(keys, include_preferences=include_preferences)
 
 
-async def count_by_scope_keys(scope_keys: Sequence[str]) -> MemCounts:
+async def count_by_scope_keys(scope_keys: Sequence[str], *, include_preferences: bool = True) -> MemCounts:
     counts = empty_counts()
     if not scope_keys:
         return counts
+    models = MEMORY_MODELS if include_preferences else GRAPH_MODELS
     async with base_models.async_maker() as session:
         for chunk in _chunks(scope_keys, _SCOPE_CHUNK):
-            for model in MEMORY_MODELS:
+            for model in models:
                 stmt = select(func.count()).select_from(model).where(col(model.scope_key).in_(chunk))
                 value = (await session.execute(stmt)).scalar()
                 counts[_count_key(model)] += value if isinstance(value, int) else 0
@@ -143,11 +146,17 @@ async def _delete_id_chunk(model: MemModel, ids: list[str]) -> None:
 async def delete_by_scope_keys(
     scope_keys: Sequence[str],
     on_progress: Callable[[int], None],
+    *,
+    include_preferences: bool = True,
 ) -> MemCounts:
     """删 SQL 行、mentions、FTS 与认知节点；向量另走 ``delete_vectors_by_scope_keys``。"""
     counts = empty_counts()
     # Edge 依赖 Entity 外键，必须先删 Edge 再删 Entity。
-    order: tuple[MemModel, ...] = (AIMemThread, AIMemEdge, AIMemEpisode, AIMemEntity, AIMemPreference)
+    order: tuple[MemModel, ...] = (
+        (AIMemThread, AIMemEdge, AIMemEpisode, AIMemEntity, AIMemPreference)
+        if include_preferences
+        else (AIMemThread, AIMemEdge, AIMemEpisode, AIMemEntity)
+    )
     for chunk in _chunks(scope_keys, _SCOPE_CHUNK):
         for model in order:
             while True:
@@ -162,6 +171,53 @@ async def delete_by_scope_keys(
         if purged:
             on_progress(purged)
     return counts
+
+
+async def count_shared_preferences() -> int:
+    """统计所有非 ``self:*`` 的共享用户偏好规则行数。"""
+    async with base_models.async_maker() as session:
+        stmt = (
+            select(func.count()).select_from(AIMemPreference).where(~col(AIMemPreference.scope_key).startswith("self:"))
+        )
+        value = (await session.execute(stmt)).scalar()
+        return value if isinstance(value, int) else 0
+
+
+async def delete_shared_preferences(on_progress: Callable[[int], None]) -> int:
+    """分块删除所有非 ``self:*`` 的共享用户偏好规则行。"""
+    removed = 0
+    while True:
+        async with base_models.async_maker() as session:
+            stmt = (
+                select(col(AIMemPreference.id))
+                .where(~col(AIMemPreference.scope_key).startswith("self:"))
+                .limit(_ID_CHUNK)
+            )
+            ids = [v for v in (await session.execute(stmt)).scalars().all() if isinstance(v, str)]
+        if not ids:
+            break
+        await _delete_id_chunk(AIMemPreference, ids)
+        removed += len(ids)
+        on_progress(len(ids))
+    return removed
+
+
+async def iter_shared_preferences(batch: int = 1000) -> AsyncIterator[list[JsonRow]]:
+    """按主键游标分页导出所有非 ``self:*`` 的共享用户偏好规则行。"""
+    last_id = ""
+    while True:
+        async with base_models.async_maker() as session:
+            stmt = (
+                select(AIMemPreference)
+                .where(~col(AIMemPreference.scope_key).startswith("self:"), col(AIMemPreference.id) > last_id)
+                .order_by(col(AIMemPreference.id))
+                .limit(batch)
+            )
+            rows = list((await session.execute(stmt)).scalars().all())
+        if not rows:
+            break
+        last_id = rows[-1].id
+        yield [row.model_dump(mode="json") for row in rows]
 
 
 async def delete_vectors_by_scope_keys(scope_keys: Sequence[str]) -> None:

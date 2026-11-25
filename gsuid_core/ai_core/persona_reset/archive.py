@@ -4,6 +4,8 @@
 
     manifest.json
     items/<item>/<table>.jsonl.gz        # SQL 行（JSONL + gzip，可多段 member）
+    items/<mem_item>/self_models.json    # state_store 中对应 scope 的 self_model
+    items/user_preferences/aimempreference.jsonl.gz
     items/journal/tree/...               # 手账目录原样
     items/journal/notes/...              # 自主探索笔记原样
     items/journal/legacy.md              # 迁移前旧单文件（若有）
@@ -265,6 +267,15 @@ def read_manifest_sync(path: Path) -> Manifest | None:
         "tasks": tasks,
         "embedding_model": model if isinstance(model, str) else "",
     }
+
+
+def list_members_sync(path: Path) -> frozenset[str]:
+    """读取用户备份 zip 的成员清单，用于判断旧格式兼容性。"""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return frozenset(zf.namelist())
+    except (zipfile.BadZipFile, OSError):
+        return frozenset()
 
 
 def extract_sync(path: Path) -> Path:

@@ -42,7 +42,7 @@ async def _collect_scope_keys_by_prefix(
 ) -> list[str]:
     pattern = f"{scope_pattern}%"
     scope_keys: list[str] = []
-    for model in (AIMemEpisode, AIMemEntity, AIMemEdge, AIMemThread):
+    for model in (AIMemEpisode, AIMemEntity, AIMemEdge, AIMemThread, AIMemPreference):
         result = await session.execute(select(model.scope_key).where(col(model.scope_key).like(pattern)).distinct())
         for row in result.fetchall():
             sk = row[0]
@@ -57,7 +57,7 @@ async def _collect_scope_keys_by_suffix(
 ) -> list[str]:
     pattern = f"%{suffix}"
     scope_keys: list[str] = []
-    for model in (AIMemEpisode, AIMemEntity, AIMemEdge, AIMemThread):
+    for model in (AIMemEpisode, AIMemEntity, AIMemEdge, AIMemThread, AIMemPreference):
         result = await session.execute(select(model.scope_key).where(col(model.scope_key).like(pattern)).distinct())
         for row in result.fetchall():
             sk = row[0]

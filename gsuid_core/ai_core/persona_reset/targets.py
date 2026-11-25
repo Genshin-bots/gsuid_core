@@ -12,6 +12,7 @@ from gsuid_core.ai_core.persona_reset.types import ResetItemKey
 GROUP_PREFIXES: tuple[str, ...] = ("group:", "user_in_group:")
 USER_PREFIXES: tuple[str, ...] = ("user_global:",)
 GROUP_PROFILE_SCOPE = "__gscore_group_profile__"
+SELF_MODEL_KEY = "self_model"
 
 # 备份预估：流式导出含 gzip，取约 1.5 万行/s 的一半作安全系数。
 _ROWS_PER_SEC = 7500.0
@@ -45,10 +46,43 @@ async def self_scopes(persona_name: str) -> SelfScopes:
 
 async def shared_scopes(item: ResetItemKey) -> list[str]:
     if item == "global_group":
-        return await bulk_ops.list_scope_keys(GROUP_PREFIXES)
+        return await bulk_ops.list_scope_keys(GROUP_PREFIXES, include_preferences=False)
     if item == "global_user":
-        return await bulk_ops.list_scope_keys(USER_PREFIXES)
+        return await bulk_ops.list_scope_keys(USER_PREFIXES, include_preferences=False)
     return []
+
+
+async def self_model_scopes(persona_name: str) -> SelfScopes:
+    """``AIPersistentState`` 中归属该人格的 ``self_model`` scope（含迁移前旧键归属）。"""
+    from gsuid_core.ai_core.state_store.store import state_list_scopes_with_key
+    from gsuid_core.ai_core.migrations.persona_scope_v1 import get_legacy_owner_persona
+
+    all_self = await state_list_scopes_with_key(SELF_MODEL_KEY, scope_prefix="self:")
+    own: list[str] = []
+    legacy: list[str] = []
+    is_owner = persona_name == get_legacy_owner_persona()
+    for key in sorted(set(all_self)):
+        parts = key.split(":", 2)
+        if len(parts) == 3 and parts[2] == persona_name:
+            own.append(key)
+        elif len(parts) == 2 and is_owner:
+            legacy.append(key)
+    return SelfScopes(keys=own + legacy, legacy_keys=legacy)
+
+
+async def shared_self_model_scopes(item: ResetItemKey) -> list[str]:
+    """``AIPersistentState`` 中属于全局群聊或全局用户的 ``self_model`` scope。"""
+    from gsuid_core.ai_core.state_store.store import state_list_scopes_with_key
+
+    prefixes: tuple[str, ...] = ()
+    if item == "global_group":
+        prefixes = GROUP_PREFIXES
+    elif item == "global_user":
+        prefixes = USER_PREFIXES
+    found: set[str] = set()
+    for prefix in prefixes:
+        found.update(await state_list_scopes_with_key(SELF_MODEL_KEY, scope_prefix=prefix))
+    return sorted(found)
 
 
 def _session_persona(session_id: str) -> str | None:

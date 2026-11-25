@@ -688,14 +688,18 @@ async def extract_cluster(
     written_prefs = 0
     for pref in output["preferences"]:
         from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+        from gsuid_core.ai_core.persona_reset.guard import is_scope_frozen
 
         if not addresses_bot or pref["target_context"] in ("possession", "location"):
             continue
         pref_uid = _resolve_preference_user_id(pref["user_id"], records, scope_key)
         if not pref_uid:
             continue
+        pref_scope = make_scope_key(ScopeType.USER_GLOBAL, pref_uid)
+        if is_scope_frozen(pref_scope):
+            continue
         await AIMemPreference.upsert(
-            scope_key=make_scope_key(ScopeType.USER_GLOBAL, pref_uid),
+            scope_key=pref_scope,
             user_id=pref_uid,
             target_context=pref["target_context"],
             preference_rule=pref["preference_rule"],
