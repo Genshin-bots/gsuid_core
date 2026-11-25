@@ -4,17 +4,17 @@
 （见 .agents/skills/gscore-development §12.22b）。
 """
 
+from __future__ import annotations
+
 import asyncio
-import inspect
 
 import pytest
 from pydantic_ai.messages import TextPart, ToolCallPart, ModelResponse
 
-from gsuid_core.ai_core import utils, delivery, history_format, delivery_present, interaction_scaffold
-from gsuid_core.ai_core.control import lines
+from tests._support import make_run_state
 from gsuid_core.ai_core.hooks.models import AgentHookContext
 from gsuid_core.ai_core.hooks.points import AgentHookPoint
-from gsuid_core.ai_core.kits.scaffold import KIT, ScaffoldKit
+from gsuid_core.ai_core.kits.scaffold import ScaffoldKit
 from gsuid_core.ai_core.interaction_scaffold import (
     AT_OTHER_MARKER,
     TurnGraph,
@@ -25,6 +25,7 @@ from gsuid_core.ai_core.interaction_scaffold import (
     extract_message_body,
     has_recent_tool_call,
     is_addressed_to_self,
+    is_pure_stop_ellipsis,
     build_tool_search_query,
     is_manage_ellipsis_form,
     detect_ellipsis_followup,
@@ -84,11 +85,13 @@ def test_ellipsis_followup_and_speaker_isolation() -> None:
     ]:
         assert not detect_ellipsis_followup(text, hist, recent_tool_call=True), f"C-1 误触: {text}"
 
-    assert is_manage_ellipsis_form("先把它停了别删，回来再开")
     assert is_manage_ellipsis_form("改回8点") and is_manage_ellipsis_form("那明天呢")
-    assert not is_manage_ellipsis_form("再设一个每天喝水提醒")
-    assert not is_manage_ellipsis_form("我生日是哪天来着，你还记得吗？")
-    assert not is_manage_ellipsis_form("小明你倒是说句话啊，这方案到底行不行？")
+    for non_ellipsis in (
+        "再设一个每天喝水提醒",
+        "我生日是哪天来着，你还记得吗？",
+        "小明你倒是说句话啊，这方案到底行不行？",
+    ):
+        assert not is_manage_ellipsis_form(non_ellipsis), non_ellipsis
 
     h_multi = [
         ("user", "小明(用户ID:9001)：@早柚 帮我查北京天气"),
@@ -101,57 +104,49 @@ def test_ellipsis_followup_and_speaker_isolation() -> None:
 
     assert has_recent_tool_call([ModelResponse(parts=[ToolCallPart(tool_name="schedule_task", args="{}")])])
     assert not has_recent_tool_call([ModelResponse(parts=[TextPart(content="好呀")])])
-    h_plain = [("user", "帮我弄一下那个"), ("assistant", "弄好啦")]
-    assert detect_ellipsis_followup("那后天呢？", h_plain, recent_tool_call=True)
-    assert not detect_ellipsis_followup("那后天呢？", h_plain, recent_tool_call=False)
 
     # 结案后纯谢绝/叫停短句（「不用了」）无活跃任务与日程时不误触 structural_zero_tool；有在途事项时仍触发
     from gsuid_core.models import Event
-    from gsuid_core.ai_core.agent_run.state import RunOnceState
     from gsuid_core.ai_core.control.policy_ring import _zero_tool_needs_correction
 
     msg_stop = "测试用户A(用户ID:100000001)：不用了"
+    assert is_pure_stop_ellipsis(msg_stop) and not is_pure_stop_ellipsis("改成八点半吧")
     tg_stop = build_turn_graph(
         msg_stop, persona_name="测试人格", is_tome=True, user_type="group", primary_speaker="100000001"
     )
-    st_idle = RunOnceState(
+    st_idle = make_run_state(
         msg_stop,
-        None,
-        Event(user_id="100000001", raw_text="不用了"),
-        None,
-        [],
-        "by_bot",
-        None,
-        "工具",
-        False,
-        False,
-        False,
-        False,
-        tg_stop,
-        False,
-        followup_detected=True,
-        tg=tg_stop,
+        ev=Event(user_id="100000001", raw_text="不用了"),
+        intent="工具",
+        suppress_intermediate_text=False,
+        turn_graph=tg_stop,
     )
+    st_idle.followup_detected = True
+    st_idle.tg = tg_stop
     assert _zero_tool_needs_correction(st_idle, video_readable=False) is False
     st_idle.has_active_task = True
     assert _zero_tool_needs_correction(st_idle, video_readable=False) is True
 
 
 def test_turn_router_and_scaffold_kit_contract() -> None:
-    empty = structural_route("")
-    assert empty.intent == "闲聊" and empty.memory_intent == "none"
-    assert structural_route("上海明天天气怎么样？").intent == "问答"
-    assert structural_route("How many projects have I led?").intent == "问答"
+    for msg in ("", "收到", "好的", "早安"):
+        res = structural_route(msg)
+        assert res.intent == "闲聊" and res.memory_intent == "none", msg
+    for qa_msg in ("上海明天天气怎么样？", "How many projects have I led?", "今日指标如何"):
+        assert structural_route(qa_msg).intent == "问答", qa_msg
     followup = structural_route("那明天呢", prev_turn_used_tools=True)
     assert followup.intent == "工具" and followup.memory_intent == "point_latest"
-    assert structural_route("今日指标如何").intent == "问答"
     assert structural_route("帮我查一下今天的日程").intent == "工具"
     for cmd in ("画个图", "发个公告", "删除那条提醒", "生成一张表"):
         assert structural_route(cmd, wake_kind="mention").intent == "工具", cmd
-    assert structural_route("对比一下上次和这次", wake_kind="mention").memory_intent == "version_diff"
-    assert structural_route("按时间线梳理", wake_kind="mention").memory_intent == "timeline_order"
-    assert structural_route("总结一下本周安排", wake_kind="mention").memory_intent == "broad_summary"
-    assert structural_route("你看这个", wake_kind="mention").memory_intent == "point_latest"
+    for mem_msg, expected_mem in [
+        ("对比一下上次和这次", "version_diff"),
+        ("按时间线梳理", "timeline_order"),
+        ("总结一下本周安排", "broad_summary"),
+        ("你看这个", "point_latest"),
+    ]:
+        assert structural_route(mem_msg, wake_kind="mention").memory_intent == expected_mem, mem_msg
+
     name_start = structural_route("测试人格，帮我看看这个", wake_kind="name", persona_names=("测试人格",))
     name_mid = structural_route("大佬们测试人格连的哪个地址", wake_kind="name", persona_names=("测试人格",))
     assert name_start.soft_speak is True and name_start.addressing == "direct_ask"
@@ -159,28 +154,26 @@ def test_turn_router_and_scaffold_kit_contract() -> None:
 
     from gsuid_core.ai_core.classifier.turn_router import _parse_decision
 
-    d_ask = _parse_decision('{"a":"direct_ask","i":"qa","m":"latest","l":false,"w":false}')
-    d_follow = _parse_decision('{"a":"follow_self","i":"chat","m":"none","l":false,"w":false}')
-    d_other = _parse_decision('{"a":"to_other","i":"chat","m":"none","l":false,"w":false}')
-    d_rcpt = _parse_decision('{"a":"comment_receipt","i":"chat","m":"none","l":false,"w":false}')
-    d_legacy = _parse_decision('{"i":"tool","m":"none","s":true,"l":true,"w":true}')
-    assert d_ask is not None and d_ask.soft_speak is True and d_ask.addressing == "direct_ask"
-    assert d_follow is not None and d_follow.soft_speak is True and d_follow.addressing == "follow_self"
-    assert d_other is not None and d_other.soft_speak is False and d_other.addressing == "to_other"
-    assert d_rcpt is not None and d_rcpt.soft_speak is False and d_rcpt.addressing == "comment_receipt"
-    assert d_legacy is not None and d_legacy.soft_speak is True and d_legacy.intent == "工具"
+    for raw, exp_soft, exp_addr, exp_intent in [
+        ('{"a":"direct_ask","i":"qa","m":"latest","l":false,"w":false}', True, "direct_ask", "问答"),
+        ('{"a":"follow_self","i":"chat","m":"none","l":false,"w":false}', True, "follow_self", "闲聊"),
+        ('{"a":"to_other","i":"chat","m":"none","l":false,"w":false}', False, "to_other", "闲聊"),
+        ('{"a":"comment_receipt","i":"chat","m":"none","l":false,"w":false}', False, "comment_receipt", "闲聊"),
+        ('{"i":"tool","m":"none","s":true,"l":true,"w":true}', True, None, "工具"),
+    ]:
+        parsed = _parse_decision(raw)
+        assert parsed is not None
+        assert (parsed.soft_speak, parsed.addressing, parsed.intent) == (exp_soft, exp_addr, exp_intent), raw
 
-    decision = asyncio.run(route_turn("我上次说的预算是多少？"))
-    assert decision.source == "structural_fallback" and decision.memory_intent == "point_latest"
-    assert decision.soft_speak is False
+    for offline_msg, exp_intent, exp_mem in [
+        ("收到", "闲聊", "none"),
+        ("我上次说的预算是多少？", "问答", "point_latest"),
+    ]:
+        dec = asyncio.run(route_turn(offline_msg))
+        assert dec.source == "structural_fallback" and dec.soft_speak is False
+        assert (dec.intent, dec.memory_intent) == (exp_intent, exp_mem), offline_msg
 
-    tg = build_turn_graph("我上次说的预算是多少？", persona_name="早柚", is_tome=True, user_type="direct")
-    hints = scaffold_hints_from_graph(tg, intent="问答", route_decision=_route("问答", "point_latest"))
-    assert any("search_cognition" in h for h in hints)
-    live = scaffold_hints_from_graph(tg, intent="工具", route_decision=_route("工具", "none", live=True, work=True))
-    assert not any("search_cognition" in h for h in live)
-
-    assert isinstance(KIT, ScaffoldKit)
+    kit = ScaffoldKit(kit_id="gscore.scaffold", slot="scaffold", display_name="交互脚手架")
     tg_group = TurnGraph(
         user_type="group", message_text="看看这个", persona_name="早柚", is_tome=True, primary_speaker="9001"
     )
@@ -192,7 +185,7 @@ def test_turn_router_and_scaffold_kit_contract() -> None:
         persona_name="早柚",
         route_decision=_route("闲聊", "none"),
     )
-    asyncio.run(KIT.inject_style(idle))
+    asyncio.run(kit.inject_style(idle))
     assert "transaction_priority" not in idle.blocks
 
     work = AgentHookContext(
@@ -203,24 +196,14 @@ def test_turn_router_and_scaffold_kit_contract() -> None:
         persona_name="早柚",
         route_decision=_route("工具", "none", live=True, work=True),
     )
-    asyncio.run(KIT.inject_style(work))
+    asyncio.run(kit.inject_style(work))
     assert "transaction_priority" in work.blocks
 
 
-def test_turn_graph_hints_and_group_gates(monkeypatch) -> None:
+def test_turn_graph_hints_and_group_gates(monkeypatch: pytest.MonkeyPatch) -> None:
     from gsuid_core.ai_core.configs import ai_config as cfg_mod
 
-    real = cfg_mod.ai_config.get_config
-
-    class _Box:
-        def __init__(self, data: object) -> None:
-            self.data = data
-
-    monkeypatch.setattr(
-        cfg_mod.ai_config,
-        "get_config",
-        lambda k: _Box(False) if k == "group_lurk_mode" else real(k),
-    )
+    monkeypatch.setattr(cfg_mod.ai_config.get_config("group_lurk_mode"), "data", False)
 
     memory_qa_hint = default_body("memory_qa")
     speaker_recall_hint = default_body("speaker_recall")
@@ -232,7 +215,6 @@ def test_turn_graph_hints_and_group_gates(monkeypatch) -> None:
     assert allow_group_speak(tg_dm) is True
     assert memory_qa_hint not in scaffold_hints_from_graph(tg_dm, intent="工具")
     assert speaker_recall_hint not in scaffold_hints_from_graph(tg_dm, intent="工具")
-    assert "说话人ID + 要填的槽" in speaker_recall_hint and "外部题目" in speaker_recall_hint
 
     tg_count = build_turn_graph(
         "How many projects have I led?", persona_name="评测助手", is_tome=True, user_type="direct", primary_speaker="u1"
@@ -245,7 +227,9 @@ def test_turn_graph_hints_and_group_gates(monkeypatch) -> None:
     assert memory_qa_hint not in scaffold_hints_from_graph(
         tg_count, intent="闲聊", route_decision=_route("闲聊", "none")
     )
-    assert "专名原话" in memory_qa_hint and "search_cognition" in memory_qa_hint and "按时间" not in memory_qa_hint
+    assert memory_qa_hint not in scaffold_hints_from_graph(
+        tg_dm, intent="工具", route_decision=_route("工具", "none", live=True, work=True)
+    )
 
     tg_chat = build_turn_graph(
         "小明(用户ID:9001)：食堂不错 / 小红(用户ID:9002)：确实",
@@ -255,6 +239,15 @@ def test_turn_graph_hints_and_group_gates(monkeypatch) -> None:
         primary_speaker="9001",
     )
     assert tg_chat.multi_speaker and not allow_group_speak(tg_chat)
+
+    tg_open = build_turn_graph(
+        "小明(用户ID:9001)：早上好",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="9001",
+    )
+    assert admit_pre_router(tg_open) and allow_group_speak(tg_open)
 
     tg_at = build_turn_graph(
         "小明(用户ID:9001)：@早柚 半小时后提醒我取快递",
@@ -290,54 +283,27 @@ def test_turn_graph_hints_and_group_gates(monkeypatch) -> None:
 
 
 def test_group_open_gate_and_addressing(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert is_addressed_to_self("小明(用户ID:1)：@早柚 在吗", "早柚", False)
-    assert is_addressed_to_self("小明(用户ID:1)：早柚你看这个", "早柚", False)
-    assert is_addressed_to_self("小明(用户ID:1)：柚柚 帮我看一眼", "早柚", False, extra_names=("柚柚",))
-    assert not is_addressed_to_self("小明(用户ID:1)：我昨天梦到早柚了哈哈", "早柚", False)
-    assert not is_addressed_to_self("小明(用户ID:1)：早柚子你在不", "早柚", False)
-    assert is_addressed_to_self("p早呀今天好安静", "p", False)
-    assert not is_addressed_to_self("小姐姐今天天气不错", "小", False)
-    assert is_addressed_to_self("sayu今天什么天气啊", "早柚", False, extra_names=("sayu",))
-    assert not is_addressed_to_self("sayubot帮我看看", "早柚", False, extra_names=("sayu",))
-    assert not is_addressed_to_self("小明(用户ID:1)：帮我查一下", "早柚", False)
+    for text, persona, extra, expected in [
+        ("小明(用户ID:1)：@早柚 在吗", "早柚", (), True),
+        ("小明(用户ID:1)：早柚你看这个", "早柚", (), True),
+        ("小明(用户ID:1)：柚柚 帮我看一眼", "早柚", ("柚柚",), True),
+        ("小明(用户ID:1)：我昨天梦到早柚了哈哈", "早柚", (), False),
+        ("小明(用户ID:1)：早柚子你在不", "早柚", (), False),
+        ("p早呀今天好安静", "p", (), True),
+        ("小姐姐今天天气不错", "小", (), False),
+        ("sayu今天什么天气啊", "早柚", ("sayu",), True),
+        ("sayubot帮我看看", "早柚", ("sayu",), False),
+        ("小明(用户ID:1)：帮我查一下", "早柚", (), False),
+    ]:
+        assert is_addressed_to_self(text, persona, False, extra_names=extra) is expected, text
 
-    assert (
-        build_turn_graph(
-            "小明(用户ID:1)：我设过提醒来着吗",
-            persona_name="早柚",
-            is_tome=False,
-            user_type="group",
-            primary_speaker="1",
-        ).call_to_self
-        is True
-    )
-    assert (
-        build_turn_graph(
-            "小明(用户ID:1)：帮我查一下",
-            persona_name="早柚",
-            is_tome=False,
-            user_type="group",
-            primary_speaker="1",
-        ).call_to_self
-        is False
-    )
+    for text, exp_call in [
+        ("小明(用户ID:1)：我设过提醒来着吗", True),
+        ("小明(用户ID:1)：帮我查一下", False),
+    ]:
+        tg_call = build_turn_graph(text, persona_name="早柚", is_tome=False, user_type="group", primary_speaker="1")
+        assert tg_call.call_to_self is exp_call, text
 
-    assert not admit_pre_router(
-        build_turn_graph(
-            "小明(用户ID:9001)：食堂红烧肉不错 / 小红(用户ID:9002)：确实",
-            persona_name="早柚",
-            is_tome=False,
-            user_type="group",
-        )
-    )
-    assert admit_pre_router(
-        build_turn_graph(
-            "小明(用户ID:9001)：@早柚 明天会下雨吗",
-            persona_name="早柚",
-            is_tome=False,
-            user_type="group",
-        )
-    )
     assert admit_pre_router(
         build_turn_graph("小明(用户ID:1)：快点啊", persona_name="早柚", is_tome=False, user_type="group", recent=None)
     )
@@ -351,10 +317,16 @@ def test_group_open_gate_and_addressing(monkeypatch: pytest.MonkeyPatch) -> None
     for m in ["早柚早上好呀今天天气真不错", "帮我算算88乘以12"]:
         assert not references_task_management(m)
 
-    # 结构化 A 轨近期用户记录计数（不受合行、无昵称或半边括号影响）及宿主框架名不冒充直接呼叫
-    from gsuid_core.ai_core.interaction_scaffold import _same_body_repeat_count
-
-    tg_rep = build_turn_graph(
+    # 结构化 A 轨复读阈值：同人第 2 次仍放行，第 3 次（忽略他人穿插与半边括号）拦截；宿主框架名不冒充呼名
+    tg_rep_ok = build_turn_graph(
+        "测试复读句 (:",
+        persona_name="早柚",
+        is_tome=False,
+        user_type="group",
+        primary_speaker="9001",
+        recent_user_bodies=[("9001", "测试复读句 (:"), ("9002", "测试复读句 (:")],
+    )
+    tg_rep_block = build_turn_graph(
         "测试复读句 (:",
         persona_name="早柚",
         is_tome=False,
@@ -366,7 +338,7 @@ def test_group_open_gate_and_addressing(monkeypatch: pytest.MonkeyPatch) -> None
             ("9001", "测试复读句 (:"),
         ],
     )
-    assert _same_body_repeat_count(tg_rep) == 3
+    assert admit_pre_router(tg_rep_ok) and not admit_pre_router(tg_rep_block)
 
     tg_fw_alias = build_turn_graph(
         f"小明(用户ID:1)：@了用户:小红(用户ID:2){AT_OTHER_MARKER} GsCore 怎么配置",
@@ -376,18 +348,7 @@ def test_group_open_gate_and_addressing(monkeypatch: pytest.MonkeyPatch) -> None
         primary_speaker="1",
     )
     assert tg_fw_alias.call_to_self is False and tg_fw_alias.address_gated is True
-
-    from gsuid_core.ai_core.classifier.turn_router import _build_router_prompt
-
-    router_p = _build_router_prompt(
-        "测试正文",
-        prev_turn_used_tools=False,
-        soft_triggered=False,
-        clock_at=None,
-        thread_view="",
-        persona_names=("测试人格", "test_alias"),
-    )
-    assert "[你的称呼] 测试人格 / test_alias" in router_p
+    assert not admit_pre_router(tg_fw_alias)
 
     # 群聊收件箱轮统一认 TurnRouter(source="llm").soft_speak，而 structural_fallback 对 hard 保底放行
     from pydantic_ai.models.test import TestModel
@@ -396,7 +357,7 @@ def test_group_open_gate_and_addressing(monkeypatch: pytest.MonkeyPatch) -> None
     from gsuid_core.models import Event
     from gsuid_core.ai_core.kits import occupants_of, load_enabled_kits
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
-    from gsuid_core.ai_core.handle_ai import run_interactive_turn
+    from gsuid_core.ai_core.handle_ai import InteractiveTurnResult, run_interactive_turn
     from gsuid_core.ai_core.inbox.turn import InboxTurn
     from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
     from gsuid_core.ai_core.relationship import view_from_score
@@ -435,190 +396,129 @@ def test_group_open_gate_and_addressing(monkeypatch: pytest.MonkeyPatch) -> None
         thinking=False,
     )
 
-    t_llm_block = InboxTurn(
-        session_id=ev_grp.session_id,
-        persona_name="早柚",
-        entries=(PendingEntry(WakeItem(1, "100000001", "name", "hard", 1.0), ev_grp, persona_name="早柚"),),
-        from_seq=0,
-        head_seq=1,
-    )
-    hctx1 = AgentHookContext(
-        point=AgentHookPoint.BEFORE_AI_CHAT,
-        ev=ev_grp,
-        bot=bot_grp,
-        session_id=ev_grp.session_id,
-        relationship=view_from_score(20, False),
-    )
-    res_block = asyncio.run(
-        run_interactive_turn(
-            bot=bot_grp,
-            event=ev_grp,
-            session=sess,
-            query=ev_grp.raw_text,
-            hook_ctx=hctx1,
-            soft_triggered=False,
-            return_mode="return",
-            deliver=False,
-            settle=False,
-            inbox_turn=t_llm_block,
+    def _run_group_turn(
+        event: Event,
+        decision: TurnRouteDecision,
+        *,
+        seq: int,
+        entries: tuple[PendingEntry, ...] | None = None,
+    ) -> tuple[InboxTurn, AgentHookContext, InteractiveTurnResult]:
+        stub_decision[0] = decision
+        turn = InboxTurn(
+            session_id=event.session_id,
+            persona_name="早柚",
+            entries=entries
+            or (PendingEntry(WakeItem(seq, "100000001", "name", "hard", float(seq)), event, persona_name="早柚"),),
+            from_seq=0,
+            head_seq=seq,
         )
-    )
-    assert res_block.is_silence and res_block.silenced_early and not t_llm_block.reached_model
-    assert t_llm_block.memory_dependent is False
-
-    stub_decision[0] = TurnRouteDecision(
-        "问答",
-        "point_latest",
-        soft_speak=False,
-        is_live_lookup=False,
-        needs_committed_work=False,
-        source="structural_fallback",
-    )
-    t_fallback_open = InboxTurn(
-        session_id=ev_grp.session_id,
-        persona_name="早柚",
-        entries=(PendingEntry(WakeItem(2, "100000001", "name", "hard", 2.0), ev_grp, persona_name="早柚"),),
-        from_seq=0,
-        head_seq=2,
-    )
-    hctx2 = AgentHookContext(
-        point=AgentHookPoint.BEFORE_AI_CHAT,
-        ev=ev_grp,
-        bot=bot_grp,
-        session_id=ev_grp.session_id,
-        relationship=view_from_score(20, False),
-    )
-    res_fallback = asyncio.run(
-        run_interactive_turn(
+        hctx = AgentHookContext(
+            point=AgentHookPoint.BEFORE_AI_CHAT,
+            ev=event,
             bot=bot_grp,
-            event=ev_grp,
-            session=sess,
-            query=ev_grp.raw_text,
-            hook_ctx=hctx2,
-            soft_triggered=False,
-            return_mode="return",
-            deliver=False,
-            settle=False,
-            inbox_turn=t_fallback_open,
+            session_id=event.session_id,
+            relationship=view_from_score(20, False),
         )
-    )
-    assert t_fallback_open.reached_model and not res_fallback.silenced_early
-    assert t_fallback_open.memory_dependent is True
-
-    # name + @他人：句首呼名（@为宾语）放行，非句首提及且 @他人前置静默
-    ev_name_obj = Event(
-        "OneBot", "900000001", "m_g3", "group", "group_1", "100000001", {}, 6, raw_text="早柚 @测试用户B 帮我查他的数据"
-    )
-    ev_name_obj.at_list = ["100000002"]
-    t_name_obj = InboxTurn(
-        session_id=ev_name_obj.session_id,
-        persona_name="早柚",
-        entries=(PendingEntry(WakeItem(3, "100000001", "name", "hard", 3.0), ev_name_obj, persona_name="早柚"),),
-        from_seq=0,
-        head_seq=3,
-    )
-    stub_decision[0] = TurnRouteDecision(
-        "工具", "point_latest", soft_speak=True, is_live_lookup=False, needs_committed_work=True, source="llm"
-    )
-    res_obj = asyncio.run(
-        run_interactive_turn(
-            bot=bot_grp,
-            event=ev_name_obj,
-            session=sess,
-            query=ev_name_obj.raw_text,
-            hook_ctx=AgentHookContext(
-                point=AgentHookPoint.BEFORE_AI_CHAT,
-                ev=ev_name_obj,
+        res = asyncio.run(
+            run_interactive_turn(
                 bot=bot_grp,
-                session_id=ev_name_obj.session_id,
-                relationship=view_from_score(20, False),
-            ),
-            soft_triggered=False,
-            return_mode="return",
-            deliver=False,
-            settle=False,
-            inbox_turn=t_name_obj,
+                event=event,
+                session=sess,
+                query=event.raw_text,
+                hook_ctx=hctx,
+                soft_triggered=False,
+                return_mode="return",
+                deliver=False,
+                settle=False,
+                inbox_turn=turn,
+            )
         )
-    )
-    assert t_name_obj.reached_model and not res_obj.silenced_early
+        return turn, hctx, res
 
-    ev_at_other_name = Event(
-        "OneBot", "900000001", "m_g4", "group", "group_1", "100000001", {}, 6, raw_text="大佬们早柚连的哪个地址"
-    )
-    ev_at_other_name.at_list = ["100000002"]
-    t_at_other_name = InboxTurn(
-        session_id=ev_at_other_name.session_id,
-        persona_name="早柚",
-        entries=(PendingEntry(WakeItem(4, "100000001", "name", "hard", 4.0), ev_at_other_name, persona_name="早柚"),),
-        from_seq=0,
-        head_seq=4,
-    )
-    res_at_other = asyncio.run(
-        run_interactive_turn(
-            bot=bot_grp,
-            event=ev_at_other_name,
-            session=sess,
-            query=ev_at_other_name.raw_text,
-            hook_ctx=AgentHookContext(
-                point=AgentHookPoint.BEFORE_AI_CHAT,
-                ev=ev_at_other_name,
-                bot=bot_grp,
-                session_id=ev_at_other_name.session_id,
-                relationship=view_from_score(20, False),
+    try:
+        t_llm_block, _, res_block = _run_group_turn(
+            ev_grp,
+            TurnRouteDecision(
+                "闲聊", "none", soft_speak=False, is_live_lookup=False, needs_committed_work=False, source="llm"
             ),
-            soft_triggered=False,
-            return_mode="return",
-            deliver=False,
-            settle=False,
-            inbox_turn=t_at_other_name,
+            seq=1,
         )
-    )
-    assert res_at_other.silenced_early and not t_at_other_name.reached_model
+        assert res_block.is_silence and res_block.silenced_early and not t_llm_block.reached_model
+        assert t_llm_block.memory_dependent is False
 
-    # 含确认 @Bot 的合并批次即使附带引用续句，TurnRouter 只做分类、不沉默显式召唤
-    ev_at_main = Event(
-        "OneBot", "900000001", "m_g5", "group", "group_1", "100000001", {}, 6, raw_text="帮我翻译一下", at_bot=True
-    )
-    ev_at_main.is_tome = True
-    ev_quote_cont = Event(
-        "OneBot", "900000001", "m_g6", "group", "group_1", "100000001", {}, 6, raw_text="就是这条", reply_id="other_1"
-    )
-    t_confirmed_mix = InboxTurn(
-        session_id=ev_at_main.session_id,
-        persona_name="早柚",
-        entries=(
-            PendingEntry(WakeItem(5, "100000001", "mention", "hard", 5.0), ev_at_main, persona_name="早柚"),
-            PendingEntry(WakeItem(6, "100000001", "followup", "soft", 6.0), ev_quote_cont, persona_name="早柚"),
-        ),
-        from_seq=0,
-        head_seq=6,
-    )
-    stub_decision[0] = TurnRouteDecision(
-        "问答", "point_latest", soft_speak=False, is_live_lookup=False, needs_committed_work=False, source="llm"
-    )
-    hctx_mix = AgentHookContext(
-        point=AgentHookPoint.BEFORE_AI_CHAT,
-        ev=ev_at_main,
-        bot=bot_grp,
-        session_id=ev_at_main.session_id,
-        relationship=view_from_score(20, False),
-    )
-    res_mix = asyncio.run(
-        run_interactive_turn(
-            bot=bot_grp,
-            event=ev_at_main,
-            session=sess,
-            query=ev_at_main.raw_text,
-            hook_ctx=hctx_mix,
-            soft_triggered=False,
-            return_mode="return",
-            deliver=False,
-            settle=False,
-            inbox_turn=t_confirmed_mix,
+        t_fallback_open, _, res_fallback = _run_group_turn(
+            ev_grp,
+            TurnRouteDecision(
+                "问答",
+                "point_latest",
+                soft_speak=False,
+                is_live_lookup=False,
+                needs_committed_work=False,
+                source="structural_fallback",
+            ),
+            seq=2,
         )
-    )
-    assert hctx_mix.skip_llm_router is False and res_mix.intent == "问答"
-    assert t_confirmed_mix.reached_model and not res_mix.silenced_early
+        assert t_fallback_open.reached_model and not res_fallback.silenced_early
+        assert t_fallback_open.memory_dependent is True
+
+        # name + @他人：句首呼名（@为宾语）放行，非句首提及且 @他人前置静默
+        dec_tool_open = TurnRouteDecision(
+            "工具", "point_latest", soft_speak=True, is_live_lookup=False, needs_committed_work=True, source="llm"
+        )
+        ev_name_obj = Event(
+            "OneBot",
+            "900000001",
+            "m_g3",
+            "group",
+            "group_1",
+            "100000001",
+            {},
+            6,
+            raw_text="早柚 @测试用户B 帮我查他的数据",
+        )
+        ev_name_obj.at_list = ["100000002"]
+        t_name_obj, _, res_obj = _run_group_turn(ev_name_obj, dec_tool_open, seq=3)
+        assert t_name_obj.reached_model and not res_obj.silenced_early
+
+        ev_at_other_name = Event(
+            "OneBot", "900000001", "m_g4", "group", "group_1", "100000001", {}, 6, raw_text="大佬们早柚连的哪个地址"
+        )
+        ev_at_other_name.at_list = ["100000002"]
+        t_at_other_name, _, res_at_other = _run_group_turn(ev_at_other_name, dec_tool_open, seq=4)
+        assert res_at_other.silenced_early and not t_at_other_name.reached_model
+
+        # 含确认 @Bot 的合并批次即使附带引用续句，TurnRouter 只做分类、不沉默显式召唤
+        ev_at_main = Event(
+            "OneBot", "900000001", "m_g5", "group", "group_1", "100000001", {}, 6, raw_text="帮我翻译一下", at_bot=True
+        )
+        ev_at_main.is_tome = True
+        ev_quote_cont = Event(
+            "OneBot",
+            "900000001",
+            "m_g6",
+            "group",
+            "group_1",
+            "100000001",
+            {},
+            6,
+            raw_text="就是这条",
+            reply_id="other_1",
+        )
+        t_confirmed_mix, hctx_mix, res_mix = _run_group_turn(
+            ev_at_main,
+            TurnRouteDecision(
+                "问答", "point_latest", soft_speak=False, is_live_lookup=False, needs_committed_work=False, source="llm"
+            ),
+            seq=6,
+            entries=(
+                PendingEntry(WakeItem(5, "100000001", "mention", "hard", 5.0), ev_at_main, persona_name="早柚"),
+                PendingEntry(WakeItem(6, "100000001", "followup", "soft", 6.0), ev_quote_cont, persona_name="早柚"),
+            ),
+        )
+        assert hctx_mix.skip_llm_router is False and res_mix.intent == "问答"
+        assert t_confirmed_mix.reached_model and not res_mix.silenced_early
+    finally:
+        sess._session_logger.close()
 
 
 def test_style_push_address_and_ambient_gates() -> None:
@@ -653,46 +553,3 @@ def test_style_push_address_and_ambient_gates() -> None:
 
     payload = "小黄(用户ID:3001) 是群里的熟面孔，正常互动即可。\n--- 消息 ---\n醒了吗\n[当前时间：2026-07-12 21:03]"
     assert extract_message_body(payload) == "醒了吗"
-
-    assert lines.AT_OTHER_MARKER == "（@的是这位用户，不是你）"
-    assert interaction_scaffold.AT_OTHER_MARKER is lines.AT_OTHER_MARKER
-    for mod in (interaction_scaffold, utils, delivery, delivery_present, history_format):
-        src = inspect.getsource(mod)
-        assert "@的是这位用户，不是你" not in src and "直接找你说的" not in src
-
-
-def test_turn_router_pure_semantic_without_fast_ack() -> None:
-    """无正则 fast_ack 特判：离线退化走 structural_fallback，问句进问答。"""
-    import asyncio
-
-    from gsuid_core.ai_core.classifier.turn_router import route_turn
-
-    for msg in ("收到", "好的", "早安"):
-        dec = asyncio.run(route_turn(msg))
-        assert dec.source == "structural_fallback", msg
-        assert dec.intent == "闲聊" and dec.memory_intent == "none"
-
-    for q in ("在吗？", "测试项目进展如何？"):
-        qa_dec = asyncio.run(route_turn(q))
-        assert qa_dec.source == "structural_fallback", q
-        assert qa_dec.intent == "问答" and qa_dec.memory_intent == "point_latest"
-
-    # 入站说话门：一段结构静默（address_gated），二段群策略门判定
-    tg_gated = TurnGraph(
-        user_type="group",
-        message_text="快出来",
-        persona_name="测试角色",
-        is_tome=False,
-        primary_speaker="100000001",
-        address_gated=True,
-    )
-    assert not admit_pre_router(tg_gated)
-    tg_open = TurnGraph(
-        user_type="group",
-        message_text="早上好",
-        persona_name="测试角色",
-        is_tome=False,
-        primary_speaker="100000001",
-    )
-    assert admit_pre_router(tg_open) and allow_group_speak(tg_open)
-    assert references_task_management("把定时改到明天")

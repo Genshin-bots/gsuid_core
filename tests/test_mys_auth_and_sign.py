@@ -6,14 +6,12 @@ import json
 import asyncio
 from pathlib import Path
 from dataclasses import dataclass
+from collections.abc import Callable
 
 import pytest
-from sqlmodel import SQLModel
-from sqlalchemy.pool import NullPool
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-import gsuid_core.utils.database.base_models as base_models
 from gsuid_core.bot import Bot, _Bot
+from tests._support import isolated_sqlite_db
 from gsuid_core.models import Event
 from gsuid_core.utils.sign.sign import sign_in, sign_error
 from gsuid_core.utils.api.mys.api import EXCHANGE_TOKEN
@@ -53,24 +51,16 @@ def _str_headers(header: dict[str, object] | None) -> dict[str, str]:
     return out
 
 
-async def _init_temp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncEngine:
-    db_file = tmp_path / "mys_test.db"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{db_file.as_posix()}", poolclass=NullPool)
-    async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
-    monkeypatch.setattr(base_models, "engine", engine)
-    monkeypatch.setattr(
-        base_models,
-        "async_maker",
-        async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession),
-    )
-    return engine
+_RequestResponder = Callable[[_CapturedRequest], dict[str, object] | int]
 
 
-def test_cn_stoken_exchange_and_v2_cookie_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
+def _mock_mys_request(
+    monkeypatch: pytest.MonkeyPatch,
+    responder: _RequestResponder,
+) -> list[_CapturedRequest]:
     captured: list[_CapturedRequest] = []
 
-    async def fake_request(
+    async def _fake_request(
         url: str,
         method: str = "GET",
         header: dict[str, object] | None = None,
@@ -81,22 +71,39 @@ def test_cn_stoken_exchange_and_v2_cookie_persistence(monkeypatch: pytest.Monkey
         game_name: str | None = None,
         time_out: int | None = 300,
     ) -> dict[str, object] | int:
-        captured.append(_CapturedRequest(url, method, _str_headers(header), params, data, base_url))
-        assert url == EXCHANGE_TOKEN.get()
-        assert method == "POST"
-        assert data is not None and "dst_token_type" in data
-        dst = data["dst_token_type"]
-        tok = "v2_test_cookie_token=.CAE=" if dst == 4 else "v2_test_ltoken=.CAE="
-        return {
-            "retcode": 0,
-            "message": "OK",
-            "data": {
-                "token": {"token_type": dst, "token": tok},
-                "user_info": {"aid": "20000001", "mid": "test_mid_mhy"},
-            },
-        }
+        req = _CapturedRequest(url, method, _str_headers(header), params, data, base_url)
+        captured.append(req)
+        return responder(req)
 
-    monkeypatch.setattr(mys_api, "_mys_request", fake_request)
+    monkeypatch.setattr(mys_api, "_mys_request", _fake_request)
+    return captured
+
+
+def _exchange_token_response(
+    data: dict[str, object] | None,
+    cookie_token: str,
+    ltoken: str,
+) -> dict[str, object]:
+    assert data is not None and "dst_token_type" in data
+    dst = data["dst_token_type"]
+    tok = cookie_token if dst == 4 else ltoken
+    return {
+        "retcode": 0,
+        "message": "OK",
+        "data": {
+            "token": {"token_type": dst, "token": tok},
+            "user_info": {"aid": "20000001", "mid": "test_mid_mhy"},
+        },
+    }
+
+
+def test_cn_stoken_exchange_and_v2_cookie_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _respond(req: _CapturedRequest) -> dict[str, object]:
+        assert req.url == EXCHANGE_TOKEN.get()
+        assert req.method == "POST"
+        return _exchange_token_response(req.data, "v2_test_cookie_token=.CAE=", "v2_test_ltoken=.CAE=")
+
+    captured = _mock_mys_request(monkeypatch, _respond)
 
     async def scenario() -> None:
         sk = "stuid=20000001;stoken=v2_test_stoken=.CAE=;mid=test_mid_mhy"
@@ -139,31 +146,15 @@ def test_device_login_uses_stoken_and_updates_exact_row(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: list[_CapturedRequest] = []
     fail_mode = False
-
-    async def fake_request(
-        url: str,
-        method: str = "GET",
-        header: dict[str, object] | None = None,
-        params: dict[str, object] | None = None,
-        data: dict[str, object] | None = None,
-        use_proxy: bool | None = False,
-        base_url: str | None = None,
-        game_name: str | None = None,
-        time_out: int | None = 300,
-    ) -> dict[str, object] | int:
-        captured.append(_CapturedRequest(url, method, _str_headers(header), params, data, base_url))
-        if fail_mode:
-            return -100
-        return {"retcode": 0, "message": "OK", "data": {}}
-
-    monkeypatch.setattr(mys_api, "_mys_request", fake_request)
+    captured = _mock_mys_request(
+        monkeypatch,
+        lambda _req: -100 if fail_mode else {"retcode": 0, "message": "OK", "data": {}},
+    )
 
     async def scenario() -> None:
         nonlocal fail_mode
-        engine = await _init_temp_db(tmp_path, monkeypatch)
-        try:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="mys_test.db"):
             # 两个仅绑星铁（uid=None）的独立账号，校验更新不误伤他人
             await GsUser.insert_data(
                 user_id="100000001",
@@ -245,18 +236,22 @@ def test_device_login_uses_stoken_and_updates_exact_row(
             assert "失败" in bot_fail.sent[0] and "-100" in bot_fail.sent[0]
 
             # 3 段短 device_info 不应触发 IndexError；Android 12 映射到 API 31
-            brand, model, sys_ver, build_id = mys_api._parse_device_info("TestBrand/TestModel/TestDev")
-            assert (brand, model, sys_ver, build_id) == ("TestBrand", "TestModel", "14", "SKQ1.221119.001")
             fail_mode = False
-            await mys_api.device_login_and_save(
-                "11111111-2222-3333-4444-555555555555",
-                "test_fp_00001",
-                "TestBrand/TestModel/TestDev:12/TEST.001",
-                "stuid=20000001;stoken=v2_owner_stoken=.CAE=;mid=owner_mid",
-            )
-            assert captured[-2].data is not None and captured[-2].data["os_version"] == "31"
-        finally:
-            await engine.dispose()
+            for dev_info, expected_sys, expected_api in (
+                ("TestBrand/TestModel/TestDev", "14", "34"),
+                ("TestBrand/TestModel/TestDev:12/TEST.001", "12", "31"),
+            ):
+                await mys_api.device_login_and_save(
+                    "11111111-2222-3333-4444-555555555555",
+                    "test_fp_00001",
+                    dev_info,
+                    "stuid=20000001;stoken=v2_owner_stoken=.CAE=;mid=owner_mid",
+                )
+                login_req = captured[-2]
+                assert login_req.header["x-rpc-device_name"] == "TestBrand TestModel"
+                assert login_req.header["x-rpc-device_model"] == "TestModel"
+                assert login_req.header["x-rpc-sys_version"] == expected_sys
+                assert login_req.data is not None and login_req.data["os_version"] == expected_api
 
     asyncio.run(scenario())
 
@@ -265,26 +260,12 @@ def test_sign_uses_hk4e_paths_headers_and_auto_refreshes_expired_cookie(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: list[_CapturedRequest] = []
     sign_attempts = 0
     info_calls = 0
 
-    async def fake_request(
-        url: str,
-        method: str = "GET",
-        header: dict[str, object] | None = None,
-        params: dict[str, object] | None = None,
-        data: dict[str, object] | None = None,
-        use_proxy: bool | None = False,
-        base_url: str | None = None,
-        game_name: str | None = None,
-        time_out: int | None = 300,
-    ) -> dict[str, object] | int:
+    def _respond(req: _CapturedRequest) -> dict[str, object] | int:
         nonlocal sign_attempts, info_calls
-        hdr = _str_headers(header)
-        captured.append(_CapturedRequest(url, method, hdr, params, data, base_url))
-
-        if url == "/event/luna/hk4e/info":
+        if req.url == "/event/luna/hk4e/info":
             info_calls += 1
             return {
                 "retcode": 0,
@@ -299,40 +280,29 @@ def test_sign_uses_hk4e_paths_headers_and_auto_refreshes_expired_cookie(
                     "short_sign_day": 0,
                 },
             }
-        if url == "/event/luna/hk4e/sign":
+        if req.url == "/event/luna/hk4e/sign":
             sign_attempts += 1
-            if "cookie_token_v2=v2_fresh_ck=.CAE=" not in hdr["Cookie"]:
+            if "cookie_token_v2=v2_fresh_ck=.CAE=" not in req.header["Cookie"]:
                 return -100
-            assert hdr["X-Requested-With"] == "com.mihoyo.hyperion"
-            assert hdr["Origin"] == "https://act.mihoyo.com"
-            assert hdr["Referer"] == "https://act.mihoyo.com/"
-            assert hdr["x-rpc-signgame"] == "hk4e"
-            assert hdr["x-rpc-platform"] == "2"
-            assert "account_mid_v2=test_mid_mhy" in hdr["Cookie"]
-            assert "ltoken_v2=v2_fresh_lt=.CAE=" in hdr["Cookie"]
+            assert req.header["X-Requested-With"] == "com.mihoyo.hyperion"
+            assert req.header["Origin"] == "https://act.mihoyo.com"
+            assert req.header["Referer"] == "https://act.mihoyo.com/"
+            assert req.header["x-rpc-signgame"] == "hk4e"
+            assert req.header["x-rpc-platform"] == "2"
+            assert "account_mid_v2=test_mid_mhy" in req.header["Cookie"]
+            assert "ltoken_v2=v2_fresh_lt=.CAE=" in req.header["Cookie"]
             return {"retcode": 0, "message": "OK", "data": {"code": "", "risk_code": 0, "gt": "", "challenge": ""}}
-        if url == EXCHANGE_TOKEN.get():
-            assert data is not None and "dst_token_type" in data
-            dst = data["dst_token_type"]
-            tok = "v2_fresh_ck=.CAE=" if dst == 4 else "v2_fresh_lt=.CAE="
-            return {
-                "retcode": 0,
-                "message": "OK",
-                "data": {
-                    "token": {"token_type": dst, "token": tok},
-                    "user_info": {"aid": "20000001", "mid": "test_mid_mhy"},
-                },
-            }
-        if url == "/event/luna/hk4e/home":
+        if req.url == EXCHANGE_TOKEN.get():
+            return _exchange_token_response(req.data, "v2_fresh_ck=.CAE=", "v2_fresh_lt=.CAE=")
+        if req.url == "/event/luna/hk4e/home":
             awards = [{"icon": "", "name": f"测试奖励{i}", "cnt": 20} for i in range(1, 31)]
             return {"retcode": 0, "message": "OK", "data": {"month": 11, "awards": awards}}
-        raise AssertionError(f"unexpected url: {url}")
+        raise AssertionError(f"unexpected url: {req.url}")
 
-    monkeypatch.setattr(mys_api, "_mys_request", fake_request)
+    _mock_mys_request(monkeypatch, _respond)
 
     async def scenario() -> None:
-        engine = await _init_temp_db(tmp_path, monkeypatch)
-        try:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="mys_sign.db"):
             await GsUser.insert_data(
                 user_id="100000001",
                 bot_id="test_bot",
@@ -359,7 +329,5 @@ def test_sign_uses_hk4e_paths_headers_and_auto_refreshes_expired_cookie(
             await sign_error("100000003", -100, "gs")
             marked = await GsUser.select_data_by_uid("100000001")
             assert marked is not None and marked.status == "error"
-        finally:
-            await engine.dispose()
 
     asyncio.run(scenario())

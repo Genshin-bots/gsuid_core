@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Callable, Sequence, Awaitable
+from typing import Callable, Sequence, Awaitable
 from dataclasses import dataclass
 
 from pydantic_ai.messages import (
@@ -78,8 +78,6 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     inflight_after_create_subagent_return as _inflight_after_create_subagent_return,
 )
 
-DeliveryStage = Literal["free", "silence_only", "render_delegated", "framework_deliver", "fused"]
-
 _MAX_TOOL_CALLS_PER_RESPONSE = 30
 # 能力代理交付/落盘通道永不被单工具失败熔断封杀，避免收集完数据却无法 artifact_put。
 _CAPABILITY_DELIVERY_TOOLS: frozenset[str] = frozenset(
@@ -109,19 +107,6 @@ class ToolReturnSummary:
 
 class DeliveryGuard:
     """投递与话术策略小状态机：集中管理出站静默、委派接管、闸门重写与配额拦截。"""
-
-    @staticmethod
-    def stage_of(st: RunOnceState) -> DeliveryStage:
-        """导出当前投递生命周期状态，便于观测与调试。"""
-        if st.ab_abort or (st.context is not None and output_gate.is_fused(st.context.extra)):
-            return "fused"
-        if st.delegated_render and not st.image_sent_this_run:
-            return "render_delegated"
-        if st.speech_policy == "silence_only":
-            return "silence_only"
-        if st.speech_policy == "framework_deliver":
-            return "framework_deliver"
-        return "free"
 
     @staticmethod
     def track_post_final_request(st: RunOnceState) -> None:

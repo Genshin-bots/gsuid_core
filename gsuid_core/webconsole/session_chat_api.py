@@ -22,6 +22,7 @@ from collections import Counter
 from fastapi import Body, File, Form, Depends, WebSocket, UploadFile, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gsuid_core.bot import RecallCapabilityState, _Bot
 from gsuid_core.models import Event
 from gsuid_core.message_history import segments_preview, get_history_manager
 from gsuid_core.webconsole.app_app import app
@@ -70,7 +71,7 @@ def _ok(data: Any) -> Dict[str, Any]:
 _SEND_ERROR_PREFIX = "__send_error__:"
 
 
-def _send_error(receipts: Optional[List[str]], bot: Any) -> str:
+def _send_error(receipts: Optional[List[str]], bot: _Bot) -> str:
     """从 ``wait_recall`` 回执里读发送结果，空串表示成功。"""
     if receipts is None:
         return ""
@@ -80,7 +81,7 @@ def _send_error(receipts: Optional[List[str]], bot: Any) -> str:
             return text[len(_SEND_ERROR_PREFIX) :] or "发送失败"
     if receipts:
         return ""
-    if getattr(bot, "_supports_recall", None) is False:
+    if bot.recall_capability_state is RecallCapabilityState.UNSUPPORTED:
         return ""
     return "适配器没有返回回执，消息可能没有发出去"
 

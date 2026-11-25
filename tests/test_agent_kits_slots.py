@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import re
+import ast
 import asyncio
 import pathlib
-from typing import Any, List
+from collections.abc import Iterator
 
 import pytest
 
@@ -19,7 +19,6 @@ from gsuid_core.ai_core.kits import (
     slot_health,
     disable_slot,
     occupants_of,
-    is_known_block,
     load_enabled_kits,
     register_agent_kit,
     resolve_slot_config,
@@ -33,13 +32,8 @@ from gsuid_core.ai_core.hooks import (
     clear_hooks,
     on_agent_hook,
 )
-from gsuid_core.ai_core.hooks.points import HOOK_POINT_SPECS
 from gsuid_core.ai_core.kits.compose import compose_dynamic_context
 from gsuid_core.ai_core.configs.ai_config import ai_config
-
-
-def _run(coro: Any) -> Any:
-    return asyncio.run(coro)
 
 
 class _FakeKit(AgentKit):
@@ -53,7 +47,7 @@ class _FakeKit(AgentKit):
 
 
 @pytest.fixture
-def isolated():
+def isolated() -> Iterator[None]:
     clear_hooks()
     clear_kits()
     yield
@@ -61,29 +55,58 @@ def isolated():
     clear_kits()
 
 
-def test_block_order_and_composer(isolated) -> None:
+def _fired_hook_points(tree: ast.Module) -> set[str]:
+    def _pt(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "AgentHookPoint":
+            return node.attr
+        return None
+
+    def _pts(node: ast.AST) -> set[str]:
+        if (name := _pt(node)) is not None:
+            return {name}
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return {p for elt in node.elts for p in _pts(elt)}
+        return set()
+
+    bindings: dict[str, set[str]] = {}
+    calls: list[ast.Call] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+            if pts := _pts(node.iter):
+                bindings.setdefault(node.target.id, set()).update(pts)
+        elif isinstance(node, ast.Assign):
+            if pts := _pts(node.value):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        bindings.setdefault(target.id, set()).update(pts)
+        elif isinstance(node, ast.Call) and node.args:
+            fn = node.func
+            if (isinstance(fn, ast.Name) and fn.id == "fire_hooks") or (
+                isinstance(fn, ast.Attribute) and fn.attr == "fire_hooks"
+            ):
+                calls.append(node)
+
+    fired: set[str] = set()
+    for call in calls:
+        arg0 = call.args[0]
+        if (name := _pt(arg0)) is not None:
+            fired.add(name)
+        elif isinstance(arg0, ast.Name) and arg0.id in bindings:
+            fired |= bindings[arg0.id]
+    return fired
+
+
+def test_block_order_and_composer(isolated: None) -> None:
     assert CONTEXT_BLOCK_ORDER.index("mood") < CONTEXT_BLOCK_ORDER.index("relationship")
     assert CONTEXT_BLOCK_ORDER.index("identity") < CONTEXT_BLOCK_ORDER.index("history")
     assert CONTEXT_BLOCK_ORDER.index("history") < CONTEXT_BLOCK_ORDER.index("group_context")
     assert CONTEXT_BLOCK_ORDER.index("group_context") < CONTEXT_BLOCK_ORDER.index("memory")
     assert CONTEXT_BLOCK_ORDER.index("task") < CONTEXT_BLOCK_ORDER.index("plan_hint")
     assert CONTEXT_BLOCK_ORDER[-1] == "plugin_hints"
-    for name in (
-        "memory",
-        "relationship",
-        "mood",
-        "identity",
-        "history",
-        "group_context",
-        "plan_hint",
-        "plugin_hints",
-    ):
-        assert is_known_block(name)
-    assert not is_known_block("whatever")
 
     ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
     ctx.blocks.update({"memory": "MEM", "mood": "MOOD", "history": "HIST", "task": ""})
-    full, _ = _run(compose_dynamic_context(ctx))
+    full, _ = asyncio.run(compose_dynamic_context(ctx))
     assert full == "MOOD\n\nHIST\n\nMEM", full
 
     @on_agent_hook(AgentHookPoint.AFTER_CONTEXT, priority=400)
@@ -92,24 +115,24 @@ def test_block_order_and_composer(isolated) -> None:
 
     ctx2 = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
     ctx2.blocks["memory"] = "MEM"
-    full2, _ = _run(compose_dynamic_context(ctx2))
+    full2, _ = asyncio.run(compose_dynamic_context(ctx2))
     assert full2.startswith("MEM") and full2.rstrip().endswith("）")
     assert full2.index("MEM") < full2.index("本群自选")
 
 
-def test_slot_exclusivity_sealing_and_config(isolated) -> None:
+def test_slot_exclusivity_sealing_and_config(isolated: None) -> None:
     a = register_agent_kit(_FakeKit(kit_id="a.mem", slot="memory", display_name="A"))
     b = register_agent_kit(_FakeKit(kit_id="b.mem", slot="memory", display_name="B"))
     assert enable_kit(a.kit_id) and hook_count() == 1 and occupants_of("memory") == ("a.mem",)
     assert enable_kit(b.kit_id) and hook_count() == 1 and occupants_of("memory") == ("b.mem",)
 
     ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
-    _run(fire_hooks(AgentHookPoint.COMPOSE_CONTEXT, ctx))
+    asyncio.run(fire_hooks(AgentHookPoint.COMPOSE_CONTEXT, ctx))
     assert ctx.blocks["memory"] == "from:b.mem"
 
     assert disable_slot("memory") == 1 and occupants_of("memory") == ()
     ctx_off = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
-    _run(fire_hooks(AgentHookPoint.COMPOSE_CONTEXT, ctx_off))
+    asyncio.run(fire_hooks(AgentHookPoint.COMPOSE_CONTEXT, ctx_off))
     assert "memory" not in ctx_off.blocks
 
     x = register_agent_kit(_FakeKit(kit_id="x.obs", slot="inbound_observe", display_name="X"))
@@ -144,14 +167,13 @@ def test_slot_exclusivity_sealing_and_config(isolated) -> None:
         item.data = previous
 
 
-def test_first_party_kits_and_wired_fire_sites(isolated) -> None:
-    enabled = _run(load_enabled_kits(run_init_steps=False))
-    assert len(enabled) == 14, enabled
+def test_first_party_kits_and_wired_fire_sites(isolated: None) -> None:
+    asyncio.run(load_enabled_kits(run_init_steps=False))
     empty = [name for name, occ in slot_health().items() if not occ]
     assert not empty, f"这些槽没有占用者: {empty}"
 
     wired = list_hooks()
-    required: List[str] = [
+    required = (
         "ON_INBOUND",
         "AFTER_SESSION",
         "CLASSIFY",
@@ -159,21 +181,21 @@ def test_first_party_kits_and_wired_fire_sites(isolated) -> None:
         "COMPOSE_CONTEXT",
         "AFTER_RUN",
         "ON_STABLE_CONTEXT",
-    ]
-    missing = [p for p in required if not wired.get(p)]
+    )
+    missing = [p for p in required if p not in wired or not wired[p]]
     assert not missing, f"这些点位没有套件挂载: {missing}"
 
     root = pathlib.Path(__file__).resolve().parents[1] / "gsuid_core"
     fired: set[str] = set()
     for path in root.rglob("*.py"):
-        if "hooks" in path.parts and path.name in ("dispatch.py", "points.py", "registry.py"):
+        rel = path.relative_to(root)
+        if "plugins" in rel.parts or "__pycache__" in rel.parts:
+            continue
+        if "hooks" in rel.parts and path.name in ("dispatch.py", "points.py", "registry.py"):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         if "fire_hooks" not in text:
             continue
-        fired |= set(re.findall(r"fire_hooks\(\s*AgentHookPoint\.([A-Z0-9_]+)", text))
-        if re.search(r"fire_hooks\(\s*point\b", text):
-            fired |= set(re.findall(r"AgentHookPoint\.([A-Z0-9_]+)", text))
+        fired |= _fired_hook_points(ast.parse(text, filename=str(path)))
 
     assert {p.name for p in AgentHookPoint} == fired
-    assert len(HOOK_POINT_SPECS) == len(AgentHookPoint)

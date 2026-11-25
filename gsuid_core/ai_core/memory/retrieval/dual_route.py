@@ -33,7 +33,6 @@ from .prompt_render import (
     _fact_mentions_speaker as _fact_mentions_speaker,
     compute_edge_confidence,
     _get_sensitive_extra_terms as _get_sensitive_extra_terms,
-    _filter_point_lookup_episodes as _filter_point_lookup_episodes,
 )
 from .route_helpers import (
     _merge_edges as _merge_edges,

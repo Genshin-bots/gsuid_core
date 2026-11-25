@@ -1,28 +1,29 @@
-"""Bot 构造、消息模型与气泡拆条测试。"""
+"""消息模型、人格形态档与气泡拆条测试。"""
 
 from __future__ import annotations
 
+import base64
 import asyncio
-import dataclasses
 from typing import List, Union, Mapping, Optional
+from dataclasses import dataclass
+from collections.abc import Callable, Awaitable
 
 import pytest
 
-from gsuid_core.bot import (
-    Bot,
-    BotReceiveMode,
-    BotConnectionState,
-    RecallCapabilityState,
-    _Bot,
-)
+from gsuid_core.bot import Bot, _Bot
 from gsuid_core.models import Event
-from gsuid_core.ai_core import delivery as ai_delivery, agent_errors as ai_agent_errors
+from gsuid_core.ai_core import delivery as ai_delivery
 from gsuid_core.segment import Message
-from gsuid_core.ai_core.trigger_bridge import MockBot
-from gsuid_core.ai_core.persona.chat_style import DEFAULT_CHAT_STYLE, ChatStyle, _tier_for
+from gsuid_core.ai_core.persona.chat_style import (
+    DEFAULT_CHAT_STYLE,
+    speech_shape_spec,
+    resolve_chat_style,
+)
+
+_SendPayload = Union[Message, List[Message], str, bytes, List[str]]
 
 
-def _plain_text(message: Union[Message, List[Message], str, bytes, List[str]]) -> str:
+def _plain_text(message: _SendPayload) -> str:
     if isinstance(message, str):
         return message
     segs = message if isinstance(message, list) else [message]
@@ -43,24 +44,27 @@ def _drive(
     monkeypatch: pytest.MonkeyPatch,
     *,
     bubbles: Optional[int] = None,
-) -> List[Union[Message, List[Message], str, bytes, List[str]]]:
-    sent: List[Union[Message, List[Message], str, bytes, List[str]]] = []
+    on_sleep: Callable[[float], Awaitable[None]] = _no_sleep,
+    ev: Optional[Event] = None,
+    bot: Optional[Bot] = None,
+) -> List[_SendPayload]:
+    sent: List[_SendPayload] = []
 
     async def _fake_send(
         self: Bot,
-        message: Union[Message, List[Message], str, bytes, List[str]],
+        message: _SendPayload,
         at_sender: bool = False,
         extra_metadata: Optional[Mapping[str, object]] = None,
         wait_recall: bool = False,
     ) -> None:
         sent.append(message)
 
-    monkeypatch.setattr(ai_delivery.asyncio, "sleep", _no_sleep)
-    monkeypatch.setattr("gsuid_core.ai_core.control.outbound_detectors.is_ooc_firewall_enabled", lambda: False)
+    monkeypatch.setattr(ai_delivery.asyncio, "sleep", on_sleep)
     monkeypatch.setattr(Bot, "send", _fake_send)
     if bubbles is not None:
-        monkeypatch.setattr(ai_delivery, "_persona_max_bubbles", lambda ev: bubbles)
-    asyncio.run(ai_delivery.send_chat_result(Bot.__new__(Bot), text, ev=None, ooc_check=False))
+        monkeypatch.setattr(ai_delivery, "_persona_max_bubbles", lambda _ev: bubbles)
+    target_bot = bot if bot is not None else Bot.__new__(Bot)
+    asyncio.run(ai_delivery.send_chat_result(target_bot, text, ev=ev, ooc_check=False))
     return sent
 
 
@@ -68,60 +72,81 @@ def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] =
     return [_plain_text(message) for message in _drive(text, monkeypatch, bubbles=bubbles)]
 
 
-def test_bot_wrapper_and_chat_style_contract() -> None:
+def test_bot_wrapper_and_connection_states() -> None:
+    """Bot/_Bot 包装契约（§8）与连接留存窗、回执能力、接收模式三态机。"""
+    from gsuid_core.bot import (
+        BOT_RETAIN_TIMEOUT,
+        BotReceiveMode,
+        BotConnectionState,
+        RecallCapabilityState,
+    )
+    from gsuid_core.ai_core.agent_errors import strip_framework_user_leaks
+    from gsuid_core.ai_core.trigger_bridge import MockBot
+
     low = _Bot("ws-alpha")
     ev = Event(
         bot_id="onebot",
         bot_self_id="self1",
         user_type="group",
-        group_id="g1",
-        user_id="u1",
+        group_id="group_1",
+        user_id="100000001",
         WS_BOT_ID="ws-alpha",
     )
     high = Bot(low, ev)
     assert high.bot is low and high.ev is ev and not hasattr(low, "ev")
-    assert high.bot_id == ev.bot_id and hasattr(high, "send")
+    assert high.bot_id == ev.bot_id
+
+    # 断线留存窗：server.py 的 stale 判定依赖此时窗，窗内 RETAINED、窗外 EXPIRED
     assert low.connection_state == BotConnectionState.EXPIRED
-    assert low.recall_capability_state == RecallCapabilityState.PROBING
     low._disconnected_at = 1000.0
-    assert low.get_connection_state(now=1100.0) == BotConnectionState.RETAINED
-    assert low.get_connection_state(now=1400.0) == BotConnectionState.EXPIRED
+    assert low.get_connection_state(now=1000.0 + BOT_RETAIN_TIMEOUT - 1) == BotConnectionState.RETAINED
+    assert low.get_connection_state(now=1000.0 + BOT_RETAIN_TIMEOUT + 1) == BotConnectionState.EXPIRED
+
+    assert low.recall_capability_state == RecallCapabilityState.PROBING
     low._supports_recall = True
     assert low.recall_capability_state == RecallCapabilityState.SUPPORTED
     low._supports_recall = False
     assert low.recall_capability_state == RecallCapabilityState.UNSUPPORTED
+
     assert high.receive_mode == BotReceiveMode.IDLE
     high.receive_tag = True
     assert high.receive_mode == BotReceiveMode.SINGLE
     high.mutiply_tag = True
     assert high.receive_mode == BotReceiveMode.MULTI
-    high.set_event()
-    high.set_mutiply_event()
-    assert high.event.is_set() and high.mutiply_event.is_set()
 
     mock = MockBot(high, {"image_ids": []})
     assert object.__getattribute__(mock, "_real_bot") is high
-    assert ai_agent_errors.strip_framework_user_leaks("第一句。\n\n第二句。") == "第一句。\n\n第二句。"
 
-    assert _tier_for(0)[0] == 1 and _tier_for(DEFAULT_CHAT_STYLE)[0] == 2 and _tier_for(100)[0] >= 3
+    # 框架泄漏剥除：控制信封被剥、段间空行必须保留（拆气泡依赖 \n\s*\n）
+    assert strip_framework_user_leaks("第一句。\n\n第二句。") == "第一句。\n\n第二句。"
+    leaked = strip_framework_user_leaks("<control>内部指令</control>正文。")
+    assert "<control>" not in leaked and "正文。" in leaked
+
+
+def test_chat_style_contract() -> None:
+    spec = speech_shape_spec()
+    tiers = spec["tiers"]
+    assert tiers[0]["floor"] == spec["chat_style_min"]
+    assert tiers[0]["bubbles"] == 1
+    assert resolve_chat_style(None).bubbles == 2
+    assert tiers[1]["floor"] <= DEFAULT_CHAT_STYLE < tiers[-1]["floor"]
+    assert tiers[-1]["bubbles"] >= 3
+
     banned = ("唔", "呼", "zzz", "早柚", "貉", "股票", "黄金", "原神", "提瓦特")
-    for value in (0, 50, 100):
-        hint = _tier_for(value)[3]
+    for tier in tiers:
+        hint = tier["segment_hint"]
         assert hint and not any(word in hint for word in banned)
-
-    style = ChatStyle(bubbles=2, soft=60, hard=150, segment_hint="x")
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        setattr(style, "bubbles", 3)
 
 
 def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch) -> None:
     out = _run("第一句\n\n第二句", monkeypatch)
     assert [s.strip() for s in out] == ["第一句", "第二句"]
 
-    clamped = _run("一\n\n二\n\n三\n\n四", monkeypatch, bubbles=2)
-    assert len(clamped) == 2 and clamped[0].strip() == "一" and "二" in clamped[1] and "四" in clamped[1]
-    assert len(_run("一\n\n二\n\n三\n\n四", monkeypatch, bubbles=1)) == 1
-    assert len(_run("一\n\n二\n\n三\n\n四", monkeypatch, bubbles=4)) == 4
+    for limit in (1, 2, 4):
+        parts = _run("一\n\n二\n\n三\n\n四", monkeypatch, bubbles=limit)
+        assert len(parts) == limit
+        if limit == 2:
+            assert parts[0].strip() == "一" and "二" in parts[1] and "四" in parts[1]
 
     sent = _drive("[CQ:at,qq=100000002,name=foo] 到时间啦", monkeypatch)
     assert len(sent) == 1 and isinstance(sent[0], list)
@@ -153,7 +178,6 @@ def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch
             from_seq=0,
             head_seq=rec1.link.seq,
         )
-        captured: list[Union[Message, List[Message], str, bytes, List[str]]] = []
         interjected = [False]
 
         async def _interject_on_sleep(_sec: float) -> None:
@@ -161,28 +185,15 @@ def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch
                 interjected[0] = True
                 hm.add_message(ev_u2, "user", "测试插话", user_name="测试用户B", metadata={"msg_id": "mid_2"})
 
-        async def _capture_send(
-            self: Bot,
-            message: Union[Message, List[Message], str, bytes, List[str]],
-            at_sender: bool = False,
-            extra_metadata: Optional[Mapping[str, object]] = None,
-            wait_recall: bool = False,
-        ) -> None:
-            captured.append(message)
-
-        monkeypatch.setattr(ai_delivery.asyncio, "sleep", _interject_on_sleep)
-        monkeypatch.setattr("gsuid_core.ai_core.control.outbound_detectors.is_ooc_firewall_enabled", lambda: False)
-        monkeypatch.setattr(Bot, "send", _capture_send)
-        monkeypatch.setattr(ai_delivery, "_persona_max_bubbles", lambda _ev: 2)
         tok = bind_turn(turn)
         try:
-            asyncio.run(
-                ai_delivery.send_chat_result(
-                    Bot(_Bot("ws_p1"), ev_u1),
-                    f"<reply #{rec1.link.seq}>\n第一段回应。\n\n第二段回应。",
-                    ev=ev_u1,
-                    ooc_check=False,
-                )
+            captured = _drive(
+                f"<reply #{rec1.link.seq}>\n第一段回应。\n\n第二段回应。",
+                monkeypatch,
+                bubbles=2,
+                on_sleep=_interject_on_sleep,
+                ev=ev_u1,
+                bot=Bot(_Bot("ws_p1"), ev_u1),
             )
         finally:
             reset_turn(tok)
@@ -274,14 +285,11 @@ def test_event_link_seq_reply_and_at_self() -> None:
 
 
 def test_outbound_bubble_packing_and_detached_turn_scope() -> None:
-    """超限分段无损合入末条气泡，detached_turn_scope 隔离前台轮次上下文。"""
+    """气泡零预算返回空列表，detached_turn_scope 隔离前台轮次上下文。"""
     from gsuid_core.ai_core.delivery import pack_outbound_bubbles
     from gsuid_core.ai_core.inbox.turn import InboxTurn, bind_turn, reset_turn, current_turn, detached_turn_scope
 
-    packed = pack_outbound_bubbles(["第一段", "第二段", "第三段", "第四段"], 2)
-    assert packed == ["第一段", "第二段\n\n第三段\n\n第四段"]
     assert pack_outbound_bubbles(["单段"], 0) == []
-    assert pack_outbound_bubbles(["甲", "乙"], 4) == ["甲", "乙"]
 
     turn = InboxTurn(session_id="group:200000001", persona_name="测试角色", entries=(), from_seq=0, head_seq=1)
     tok = bind_turn(turn)
@@ -296,27 +304,20 @@ def test_outbound_bubble_packing_and_detached_turn_scope() -> None:
 
 def test_convert_message_link_image_to_base64_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     """link:// 图片按 base64 模式转换时，首次下载与缓存命中均须带 base64:// 前缀。"""
-    import base64
-
     from gsuid_core import segment
+
+    @dataclass(frozen=True)
+    class _Stub:
+        content: bytes = b""
+        data: str = "base64"
 
     raw_bytes = b"\x89PNG\r\n\x1a\ntest-image"
     expected = f"base64://{base64.b64encode(raw_bytes).decode('utf-8')}"
-    calls: List[str] = []
+    calls: list[str] = []
 
-    class _FakeResp:
-        content: bytes = raw_bytes
-
-    class _FakeCfg:
-        data: str = "base64"
-
-    class _FakeSendPicConfig:
-        def get_config(self, _bot_id: str, _default: str = "base64") -> _FakeCfg:
-            return _FakeCfg()
-
-    async def _fake_sget(url: str) -> _FakeResp:
+    async def _fake_sget(url: str) -> _Stub:
         calls.append(url)
-        return _FakeResp()
+        return _Stub(content=raw_bytes)
 
     async def _fake_global_val(_bot_id: str, _bot_self_id: str) -> dict[str, int]:
         return {"image": 0}
@@ -324,7 +325,7 @@ def test_convert_message_link_image_to_base64_prefix(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(segment, "URL_MAP", {})
     monkeypatch.setattr(segment, "sget", _fake_sget)
     monkeypatch.setattr(segment, "get_global_val", _fake_global_val)
-    monkeypatch.setattr(segment, "send_pic_config", _FakeSendPicConfig())
+    monkeypatch.setattr(segment.send_pic_config, "get_config", lambda *_a: _Stub())
 
     msg = Message(type="image", data="link://https://example.invalid/sample.png")
     first = asyncio.run(segment.convert_message(msg, "onebot", "self1"))

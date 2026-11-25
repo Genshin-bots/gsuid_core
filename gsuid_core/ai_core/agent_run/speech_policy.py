@@ -154,46 +154,6 @@ def evaluate_speech_policy(ctx: SpeechContext, text: str) -> tuple[bool, str]:
     return evaluate_speech_ring(ctx, text)
 
 
-def should_block_user_visible_text(
-    policy: str,
-    text: str,
-    *,
-    pending_async: bool,
-    image_sent: bool,
-    has_status_tool: bool,
-    tool_calls_so_far: Sequence[str],
-    wait_comfort_sent: bool = False,
-    fact_pack_pending: bool = False,
-    has_active_task: bool = False,
-    render_inflight: bool = False,
-    speech_len_hard: int = 0,
-    user_asked_detail: bool = False,
-    forbid_title: str = "",
-    entity_routed: bool = False,
-    user_text: str = "",
-    allow_render: bool = True,
-) -> tuple[bool, str]:
-    """是否拦截本段对用户可见文本。返回 (block, reason)。"""
-    ctx = SpeechContext(
-        policy=normalize_speech_policy(policy),
-        pending_async=pending_async,
-        image_sent=image_sent,
-        has_status_tool=has_status_tool,
-        tool_calls_so_far=tool_calls_so_far,
-        wait_comfort_sent=wait_comfort_sent,
-        fact_pack_pending=fact_pack_pending,
-        has_active_task=has_active_task,
-        render_inflight=render_inflight,
-        speech_len_hard=speech_len_hard,
-        user_asked_detail=user_asked_detail,
-        forbid_title=forbid_title,
-        entity_routed=entity_routed,
-        user_text=user_text,
-        allow_render=allow_render,
-    )
-    return evaluate_speech_policy(ctx, text)
-
-
 def content_is_render_candidate(
     *,
     tool_name: str,

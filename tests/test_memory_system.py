@@ -1,25 +1,19 @@
-"""记忆系统核心契约：scope、session 切分、schema_v2 迁移、四态代数与检索模态。"""
+"""记忆系统核心契约：scope、session 切分、schema_v2 迁移、四态代数、隐私隔离与检索模态。"""
 
 from __future__ import annotations
 
-import ast
 import json
+import queue as sync_queue
 import asyncio
-from typing import TYPE_CHECKING, List, Iterator
+from typing import TYPE_CHECKING
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 import pytest
-
-if TYPE_CHECKING:
-    from gsuid_core.ai_core.memory.retrieval.types import Episode
-
-from sqlmodel import SQLModel, select
+from sqlmodel import col, select
 from sqlalchemy import inspect
-from sqlalchemy.pool import NullPool
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+from tests._support import isolated_sqlite_db
 from gsuid_core.ai_core.memory.database.session_split import (
     SessionCursor,
     naive_utc,
@@ -28,51 +22,146 @@ from gsuid_core.ai_core.memory.database.session_split import (
     plan_null_session_backfill,
 )
 
-_ROOT = Path(__file__).resolve().parent.parent
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.memory.observer import ObservationRecord
+    from gsuid_core.ai_core.memory.retrieval.types import Edge, Entity, Episode
 
 
-def _src(rel: str) -> str:
-    return (_ROOT / rel).read_text(encoding="utf-8")
+def _episode(
+    eid: str,
+    content: str,
+    scope: str = "user_global:u",
+    *,
+    valid_at: str = "2026-11-21T01:00:00+00:00",
+    session_id: str = "",
+    turn_index: int = -1,
+    speaker_ids: list[str] | None = None,
+) -> Episode:
+    ep: Episode = {
+        "id": eid,
+        "content": content,
+        "valid_at": valid_at,
+        "scope_key": scope,
+        "embedding": [],
+    }
+    if session_id:
+        ep["session_id"] = session_id
+    if turn_index >= 0:
+        ep["turn_index"] = turn_index
+    if speaker_ids is not None:
+        ep["speaker_ids"] = speaker_ids
+    return ep
 
 
-def _is_group_id_fallback(node: ast.AST) -> bool:
-    if not isinstance(node, ast.BoolOp) or not isinstance(node.op, ast.Or) or len(node.values) != 2:
-        return False
-    left, right = node.values
-    return (
-        isinstance(left, ast.Attribute)
-        and isinstance(right, ast.Attribute)
-        and left.attr == "group_id"
-        and right.attr == "user_id"
+def _mk_edge(
+    eid: str,
+    scope_key: str,
+    *,
+    source_id: str = "s",
+    target_id: str = "t",
+    source_name: str = "测试用户A",
+    target_name: str = "测试角色",
+    fact: str = "",
+    weight: float = 1.0,
+    score: float = 0.8,
+    valid_at_ts: float | None = 1.0,
+    invalid_at_ts: float | None = None,
+) -> Edge:
+    return {
+        "id": eid,
+        "source_id": source_id,
+        "target_id": target_id,
+        "source_name": source_name,
+        "target_name": target_name,
+        "fact": fact or f"事实{eid}",
+        "weight": weight,
+        "score": score,
+        "valid_at_ts": valid_at_ts,
+        "invalid_at_ts": invalid_at_ts,
+        "scope_key": scope_key,
+    }
+
+
+def _mk_entity(
+    eid: str,
+    name: str,
+    *,
+    summary: str = "",
+    entity_type: str = "topic",
+    layer: int = 0,
+    score: float = 0.9,
+    scope_key: str | None = None,
+    created_at_ts: float | None = None,
+) -> Entity:
+    ent: Entity = {
+        "id": eid,
+        "name": name,
+        "summary": summary,
+        "entity_type": entity_type,
+        "layer": layer,
+        "score": score,
+    }
+    if scope_key is not None:
+        ent["scope_key"] = scope_key
+    if created_at_ts is not None:
+        ent["created_at_ts"] = created_at_ts
+    return ent
+
+
+def _mk_obs(
+    raw_content: str,
+    *,
+    speaker_id: str = "100000001",
+    group_id: str | None = "200000001",
+    scope_key: str = "group:200000001",
+    timestamp: datetime | None = None,
+    message_type: str = "group_msg",
+    speaker_name: str = "",
+    personal_credential: bool = False,
+) -> ObservationRecord:
+    from gsuid_core.ai_core.memory.observer import ObservationRecord
+
+    return ObservationRecord(
+        raw_content=raw_content,
+        speaker_id=speaker_id,
+        group_id=group_id,
+        scope_key=scope_key,
+        timestamp=timestamp if timestamp is not None else datetime.now(timezone.utc),
+        message_type=message_type,
+        speaker_name=speaker_name,
+        personal_credential=personal_credential,
     )
 
 
-def _sqlite_engine(path: Path):
-    return create_async_engine(
-        f"sqlite+aiosqlite:///{path.as_posix()}",
-        poolclass=NullPool,
-        connect_args={"check_same_thread": False, "timeout": 5.0},
-    )
+def test_memory_scope_and_private_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ast
 
-
-def test_memory_scope_and_private_isolation() -> None:
     from gsuid_core.models import Event
     from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
     from gsuid_core.ai_core.cognition import CogScope
     from gsuid_core.ai_core.kits.memory import _in_observe_scope, cog_scope_from_ctx
-    from gsuid_core.ai_core.memory.observer import ObservationRecord
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
     from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.ai_core.memory.ingestion.algebra import _resolve_preference_user_id
 
     scope_key = make_scope_key(ScopeType.USER_GLOBAL, "100000006")
     assert scope_key == "user_global:100000006" and not scope_key.startswith("group:")
 
-    offenders: List[str] = []
+    # 架构锁：scope 推导禁止 group_id or user_id 回退（私聊记忆会错挂群 scope）
+    offenders: list[str] = []
     for rel in ("gsuid_core/handler.py", "gsuid_core/ai_core/handle_ai.py"):
-        tree = ast.parse(_src(rel))
+        tree = ast.parse((Path(__file__).resolve().parent.parent / rel).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.BoolOp) and _is_group_id_fallback(node):
-                offenders.append(f"{rel}:{node.lineno}  {ast.unparse(node)}")
+            if not (isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or) and len(node.values) == 2):
+                continue
+            left, right = node.values
+            if (
+                isinstance(left, ast.Attribute)
+                and isinstance(right, ast.Attribute)
+                and left.attr == "group_id"
+                and right.attr == "user_id"
+            ):
+                offenders.append(f"{rel}:{node.lineno}")
     assert not offenders
 
     ctx = AgentHookContext(point=AgentHookPoint.RETRIEVE_CONTEXT)
@@ -81,44 +170,23 @@ def test_memory_scope_and_private_isolation() -> None:
 
     now = datetime.now(timezone.utc)
     records = [
-        ObservationRecord(
-            raw_content="请简短回复",
-            speaker_id="100000001",
-            group_id="200000001",
-            scope_key="group:200000001",
-            timestamp=now,
-            message_type="group_msg",
-            speaker_name="测试用户A",
-        ),
-        ObservationRecord(
-            raw_content="好的",
-            speaker_id="__assistant_onebot__",
-            group_id="200000001",
-            scope_key="group:200000001",
-            timestamp=now,
-            message_type="group_msg",
-        ),
+        _mk_obs("请简短回复", timestamp=now, speaker_name="测试用户A"),
+        _mk_obs("好的", speaker_id="__assistant_onebot__", timestamp=now),
     ]
-    assert _resolve_preference_user_id("100000001", records, "group:200000001") == "100000001"
-    assert _resolve_preference_user_id("测试用户A", records, "group:200000001") == "100000001"
-    assert _resolve_preference_user_id("__assistant_onebot__", records, "group:200000001") == ""
-    assert _resolve_preference_user_id("200000001", records, "group:200000001") == ""
-    assert _resolve_preference_user_id("999999999", records, "group:200000001") == ""
+    for raw_uid, expected in (
+        ("100000001", "100000001"),
+        ("测试用户A", "100000001"),
+        ("__assistant_onebot__", ""),
+        ("200000001", ""),
+        ("999999999", ""),
+    ):
+        assert _resolve_preference_user_id(raw_uid, records, "group:200000001") == expected
 
-    orig_black = list(ai_config.get_config("black_list").data)
-    orig_white = list(ai_config.get_config("white_list").data)
-    try:
-        ai_config.get_config("black_list").data = ["200000009"]
-        ai_config.get_config("white_list").data = ["200000001"]
-        ev_blocked = Event(bot_id="onebot", user_id="100000001", group_id="200000009", user_type="group")
-        ev_unlisted = Event(bot_id="onebot", user_id="100000001", group_id="200000002", user_type="group")
-        ev_allowed = Event(bot_id="onebot", user_id="100000001", group_id="200000001", user_type="group")
-        assert not _in_observe_scope(ev_blocked.session_id, "全部群聊", ev_blocked)
-        assert not _in_observe_scope(ev_unlisted.session_id, "全部群聊", ev_unlisted)
-        assert _in_observe_scope(ev_allowed.session_id, "全部群聊", ev_allowed)
-    finally:
-        ai_config.get_config("black_list").data = orig_black
-        ai_config.get_config("white_list").data = orig_white
+    monkeypatch.setattr(ai_config.get_config("black_list"), "data", ["200000009"])
+    monkeypatch.setattr(ai_config.get_config("white_list"), "data", ["200000001"])
+    for gid, allowed in (("200000009", False), ("200000002", False), ("200000001", True)):
+        ev = Event(bot_id="onebot", user_id="100000001", group_id=gid, user_type="group")
+        assert _in_observe_scope(ev.session_id, "全部群聊", ev) is allowed
 
 
 def test_session_split_and_episode_clustering() -> None:
@@ -151,23 +219,20 @@ def test_session_split_and_episode_clustering() -> None:
     nxt = continue_session(cursor, t0 + timedelta(hours=2), 1800, "new-id")
     assert nxt.session_id == "new-id" and nxt.turn_index == 0 and nxt.is_new_session
 
-    def _ep(eid: str, at: str) -> Episode:
-        return {
-            "id": eid,
-            "content": f"User: note {eid}",
-            "valid_at": at,
-            "scope_key": "user_global:u",
-            "embedding": [],
-            "session_id": "",
-            "turn_index": 0,
-        }
-
-    assert len(cluster_episodes_by_time([_ep("a", "2024-03-01 10:00:00"), _ep("b", "2024-03-01 10:10:00")], 1800)) == 1
-    assert len(cluster_episodes_by_time([_ep("a", "2024-03-01 10:00:00"), _ep("b", "2024-03-01 10:40:00")], 1800)) == 2
-    assert naive_utc(datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)) == datetime(2024, 1, 1, 12, 0, 0)
+    ep_a = _episode("a", "User: note a", valid_at="2024-03-01 10:00:00")
+    assert (
+        len(cluster_episodes_by_time([ep_a, _episode("b", "User: note b", valid_at="2024-03-01 10:10:00")], 1800)) == 1
+    )
+    assert (
+        len(cluster_episodes_by_time([ep_a, _episode("b", "User: note b", valid_at="2024-03-01 10:40:00")], 1800)) == 2
+    )
+    tz_cn = timezone(timedelta(hours=8))
+    assert naive_utc(datetime(2024, 1, 1, 20, 0, 0, tzinfo=tz_cn)) == datetime(2024, 1, 1, 12, 0, 0)
 
 
-def test_schema_v2_migration_preserves_preference_and_rebuilds_fts(tmp_path: Path, monkeypatch) -> None:
+def test_schema_v2_migration_preserves_preference_and_rebuilds_fts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import gsuid_core.utils.database.base_models as base_models
     import gsuid_core.ai_core.memory.database.models as memory_models
     from gsuid_core.ai_core.database.models import UserFavorability
@@ -176,23 +241,18 @@ def test_schema_v2_migration_preserves_preference_and_rebuilds_fts(tmp_path: Pat
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
     from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
-    test_engine = _sqlite_engine(tmp_path / "memory_v2.db")
-    maker = async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)
-    monkeypatch.setattr(base_models, "async_maker", maker)
-    monkeypatch.setattr(base_models, "engine", test_engine)
-    monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
-    monkeypatch.setattr(memory_models, "async_maker", maker)
-    monkeypatch.setattr(migration_v2, "engine", test_engine)
-    monkeypatch.setattr(migration_v2, "async_maker", maker)
-    monkeypatch.setattr(migration_v2, "DB_PATH", tmp_path / "missing.db")
-    monkeypatch.setattr(migration_v2, "_MEMORY_ROOT", tmp_path / "memory")
-    monkeypatch.setattr(migration_v2, "_VERSION_FILE", tmp_path / "memory" / "schema_version.json")
-    monkeypatch.setattr(migration_v2, "_BACKUP_DIR", tmp_path / "memory" / "backup_v1")
-
     async def scenario() -> None:
-        try:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="memory_v2.db") as (test_engine, maker):
+            monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
+            monkeypatch.setattr(memory_models, "async_maker", maker)
+            monkeypatch.setattr(migration_v2, "engine", test_engine)
+            monkeypatch.setattr(migration_v2, "async_maker", maker)
+            monkeypatch.setattr(migration_v2, "DB_PATH", tmp_path / "missing.db")
+            monkeypatch.setattr(migration_v2, "_MEMORY_ROOT", tmp_path / "memory")
+            monkeypatch.setattr(migration_v2, "_VERSION_FILE", tmp_path / "memory" / "schema_version.json")
+            monkeypatch.setattr(migration_v2, "_BACKUP_DIR", tmp_path / "memory" / "backup_v1")
+
             async with test_engine.begin() as conn:
-                await conn.run_sync(SQLModel.metadata.create_all)
                 await conn.exec_driver_sql(
                     "CREATE TABLE IF NOT EXISTS aimemsession (id VARCHAR PRIMARY KEY, scope_key VARCHAR)"
                 )
@@ -254,13 +314,11 @@ def test_schema_v2_migration_preserves_preference_and_rebuilds_fts(tmp_path: Pat
 
             await migration_v2.ensure_memory_schema_v2()
             assert await AIMemEpisode.get_one(episode.id) is not None
-        finally:
-            await test_engine.dispose()
 
     asyncio.run(scenario())
 
 
-def test_four_state_algebra_and_memory_intents(tmp_path: Path, monkeypatch) -> None:
+def test_four_state_algebra_and_memory_intents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import gsuid_core.utils.database.base_models as base_models
     from gsuid_core.ai_core.memory.retrieval import dual_route
     from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemThread
@@ -270,28 +328,56 @@ def test_four_state_algebra_and_memory_intents(tmp_path: Path, monkeypatch) -> N
     assert states_a_value("I bought a bookshelf from IKEA.")
     assert not states_a_value("I went to the store yesterday.")
 
-    test_engine = _sqlite_engine(tmp_path / "algebra.db")
-    maker = async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)
-    monkeypatch.setattr(base_models, "async_maker", maker)
-    monkeypatch.setattr(base_models, "engine", test_engine)
-    monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
-
-    async def fake_system1(query: str, scope_keys: list[str], top_k: int = 10, **_kwargs: object) -> System1Result:
-        async with maker() as session:
-            rows = list((await session.execute(select(AIMemEdge))).scalars().all())
-        return System1Result(edges=[e for r in rows if (e := dual_route._edge_to_typed(r, {})) is not None])
-
-    async def fake_fts(query: str, scope_keys: list[str], limit: int) -> list:
-        return []
-
-    monkeypatch.setattr(dual_route, "system1_search", fake_system1)
-    monkeypatch.setattr(dual_route, "_fts_episodes", fake_fts)
-    monkeypatch.setattr("gsuid_core.ai_core.memory.retrieval.dual_route.get_reranker", lambda: None)
-
     async def scenario() -> None:
-        try:
-            async with test_engine.begin() as conn:
-                await conn.run_sync(SQLModel.metadata.create_all)
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="algebra.db") as (_engine, maker):
+            monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
+
+            async def fake_system1(
+                query: str, scope_keys: list[str], top_k: int = 10, **_kwargs: object
+            ) -> System1Result:
+                async with maker() as session:
+                    rows = list((await session.execute(select(AIMemEdge))).scalars().all())
+                return System1Result(edges=[e for r in rows if (e := dual_route._edge_to_typed(r, {})) is not None])
+
+            async def fake_fts(query: str, scope_keys: list[str], limit: int) -> list[Episode]:
+                return []
+
+            monkeypatch.setattr(dual_route, "system1_search", fake_system1)
+            monkeypatch.setattr(dual_route, "_fts_episodes", fake_fts)
+            monkeypatch.setattr("gsuid_core.ai_core.memory.retrieval.dual_route.get_reranker", lambda: None)
+
+            def _db_edge(
+                eid: str,
+                fact: str,
+                slot_key: str,
+                state: str,
+                valid_day: tuple[int, int, int],
+                *,
+                edge_kind: str = "fact",
+                superseded_by_id: str | None = None,
+                contradicts_edge_id: str | None = None,
+                thread_id: str | None = None,
+                invalid_day: tuple[int, int, int] | None = None,
+                event_day: tuple[int, int, int] | None = None,
+            ) -> AIMemEdge:
+                return AIMemEdge(
+                    id=eid,
+                    scope_key="group:g1",
+                    fact=fact,
+                    source_entity_id="a",
+                    target_entity_id="b",
+                    edge_kind=edge_kind,
+                    slot_key=slot_key,
+                    resolution_state=state,
+                    superseded_by_id=superseded_by_id,
+                    contradicts_edge_id=contradicts_edge_id,
+                    thread_id=thread_id,
+                    valid_at=datetime(*valid_day, tzinfo=timezone.utc),
+                    invalid_at=datetime(*invalid_day, tzinfo=timezone.utc) if invalid_day else None,
+                    event_at=datetime(*event_day, tzinfo=timezone.utc) if event_day else None,
+                    qdrant_id=eid,
+                )
+
             async with maker() as session:
                 session.add_all(
                     [
@@ -305,85 +391,39 @@ def test_four_state_algebra_and_memory_intents(tmp_path: Path, monkeypatch) -> N
                             first_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
                             last_at=datetime(2026, 3, 3, tzinfo=timezone.utc),
                         ),
-                        AIMemEdge(
-                            id="v1",
-                            scope_key="group:g1",
-                            fact="预算 100",
-                            source_entity_id="a",
-                            target_entity_id="b",
-                            slot_key="budget",
-                            resolution_state="superseded",
+                        _db_edge(
+                            "v1",
+                            "预算 100",
+                            "budget",
+                            "superseded",
+                            (2026, 1, 1),
                             superseded_by_id="v2",
-                            valid_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-                            invalid_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
-                            qdrant_id="v1",
+                            invalid_day=(2026, 2, 1),
                         ),
-                        AIMemEdge(
-                            id="v2",
-                            scope_key="group:g1",
-                            fact="预算 200",
-                            source_entity_id="a",
-                            target_entity_id="b",
-                            slot_key="budget",
-                            resolution_state="active",
-                            valid_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
-                            qdrant_id="v2",
+                        _db_edge("v2", "预算 200", "budget", "active", (2026, 2, 1)),
+                        _db_edge("staging1", "预算 500 传闻", "budget", "staging", (2026, 3, 1)),
+                        _db_edge(
+                            "c1", "测试用户A爱吃花生", "diet", "contradicted", (2026, 3, 1), contradicts_edge_id="c2"
                         ),
-                        AIMemEdge(
-                            id="staging1",
-                            scope_key="group:g1",
-                            fact="预算 500 传闻",
-                            source_entity_id="a",
-                            target_entity_id="b",
-                            slot_key="budget",
-                            resolution_state="staging",
-                            valid_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
-                            qdrant_id="staging1",
+                        _db_edge(
+                            "c2", "测试用户A花生过敏", "diet", "contradicted", (2026, 3, 2), contradicts_edge_id="c1"
                         ),
-                        AIMemEdge(
-                            id="c1",
-                            scope_key="group:g1",
-                            fact="测试用户A爱吃花生",
-                            source_entity_id="a",
-                            target_entity_id="b",
-                            slot_key="diet",
-                            resolution_state="contradicted",
-                            contradicts_edge_id="c2",
-                            valid_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
-                            qdrant_id="c1",
-                        ),
-                        AIMemEdge(
-                            id="c2",
-                            scope_key="group:g1",
-                            fact="测试用户A花生过敏",
-                            source_entity_id="a",
-                            target_entity_id="b",
-                            slot_key="diet",
-                            resolution_state="contradicted",
-                            contradicts_edge_id="c1",
-                            valid_at=datetime(2026, 3, 2, tzinfo=timezone.utc),
-                            qdrant_id="c2",
-                        ),
-                        AIMemEdge(
-                            id="m1",
-                            scope_key="group:g1",
-                            fact="提车",
-                            source_entity_id="a",
-                            target_entity_id="b",
+                        _db_edge(
+                            "m1",
+                            "提车",
+                            "car_delivery",
+                            "active",
+                            (2026, 3, 3),
                             edge_kind="milestone",
-                            slot_key="car_delivery",
-                            resolution_state="active",
                             thread_id="t1",
-                            event_at=datetime(2026, 3, 3, tzinfo=timezone.utc),
-                            valid_at=datetime(2026, 3, 3, tzinfo=timezone.utc),
-                            qdrant_id="m1",
+                            event_day=(2026, 3, 3),
                         ),
                     ]
                 )
                 await session.commit()
 
-            def _retrieve(intent):
-                return dual_route.dual_route_retrieve(
+            async def _retrieve(intent: str) -> dual_route.MemoryContext:
+                return await dual_route.dual_route_retrieve(
                     "查询",
                     "u1",
                     enable_system2=False,
@@ -429,87 +469,53 @@ def test_four_state_algebra_and_memory_intents(tmp_path: Path, monkeypatch) -> N
                 await session.commit()
                 ent = (
                     await session.execute(
-                        select(AIMemEntity).where(AIMemEntity.name == "测试用户B", AIMemEntity.scope_key == "group:g1")
+                        select(AIMemEntity).where(
+                            col(AIMemEntity.name) == "测试用户B",
+                            col(AIMemEntity.scope_key) == "group:g1",
+                        )
                     )
                 ).scalar_one()
                 assert ent.is_speaker is True and ent.entity_kind == "speaker" and "speaker" in ent.tag
-        finally:
-            await test_engine.dispose()
 
     asyncio.run(scenario())
 
 
-def test_settle_rules_and_window_buffer(tmp_path: Path, monkeypatch) -> None:
+def test_settle_rules_and_window_buffer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from gsuid_core.config import core_config
     from gsuid_core.models import Event
     from gsuid_core.utils.database import base_models
     from gsuid_core.ai_core.thread_view import render_window
     from gsuid_core.ai_core.database.models import UserFavorability  # noqa: F401
-    from gsuid_core.ai_core.memory.observer import ObservationRecord
     from gsuid_core.message_history.manager import HistoryManager
-    from gsuid_core.ai_core.proactive.policy import dm_allowed
-    from gsuid_core.ai_core.relationship.engine import _DAILY_LOSS_CAP, settle_semantic
-    from gsuid_core.ai_core.relationship.signals import NEG_WEIGHTS, NegSignal
+    from gsuid_core.ai_core.relationship.engine import settle_semantic
+    from gsuid_core.ai_core.relationship.signals import NegSignal
     from gsuid_core.ai_core.memory.ingestion.worker import _ScopeWindowBuffer
 
-    assert dm_allowed(target_is_master=True, has_prior_dm=False, explicit_request=False) is True
-    assert dm_allowed(target_is_master=False, has_prior_dm=True, explicit_request=False) is True
-    assert dm_allowed(target_is_master=False, has_prior_dm=False, explicit_request=True) is True
-    assert dm_allowed(target_is_master=False, has_prior_dm=False, explicit_request=False) is False
-    assert NEG_WEIGHTS[NegSignal.PROVOKE] == -3 and NEG_WEIGHTS[NegSignal.HOSTILE] == -6 and _DAILY_LOSS_CAP == 20
-
-    test_engine = _sqlite_engine(tmp_path / "rel.db")
-    maker = async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)
-    monkeypatch.setattr(base_models, "async_maker", maker)
-    monkeypatch.setattr(base_models, "engine", test_engine)
-    monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
-    orig_masters = list(core_config.get_config("masters"))
-
     async def scenario() -> None:
-        try:
-            async with test_engine.begin() as conn:
-                await conn.run_sync(SQLModel.metadata.create_all)
-            core_config.lazy_set_config("masters", ["master_123"])
-            assert (
-                await settle_semantic(
-                    user_id="master_123", bot_id="b", persona_name="p", signal=NegSignal.HOSTILE, evidence="test"
-                )
-            ).delta == 0
-            assert (
-                await settle_semantic(
-                    user_id="u_456", bot_id="b", persona_name="p", signal=NegSignal.PROVOKE, evidence="test"
-                )
-            ).delta == -3
-            assert (
-                await settle_semantic(
-                    user_id="u_456", bot_id="b", persona_name="p", signal=NegSignal.HOSTILE, evidence="test"
-                )
-            ).delta == -6
-        finally:
-            core_config.lazy_set_config("masters", orig_masters)
-            await test_engine.dispose()
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="rel.db"):
+            monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
+            monkeypatch.setitem(core_config.config, "masters", ["master_123"])
+            for uid, signal, expected_delta in (
+                ("master_123", NegSignal.HOSTILE, 0),
+                ("u_456", NegSignal.PROVOKE, -3),
+                ("u_456", NegSignal.HOSTILE, -6),
+            ):
+                res = await settle_semantic(user_id=uid, bot_id="b", persona_name="p", signal=signal, evidence="test")
+                assert res.delta == expected_delta
 
     asyncio.run(scenario())
 
     mgr = HistoryManager()
     ev = Event(bot_id="test_bot", user_id="123456", group_id="654321", user_type="group", msg_id="msg_test_001")
     rec = mgr.add_message(event=ev, role="user", content="全天候", metadata={"msg_id": "msg_test_001"})
-    assert mgr.mark_command_hit(ev, "msg_test_001") is True and rec.metadata.get("command_hit") is True
+    assert mgr.mark_command_hit(ev, "msg_test_001") is True
+    assert "command_hit" in rec.metadata and rec.metadata["command_hit"] is True
     rendered = render_window([rec])
     assert "[用户调用了 bot 功能]" in rendered and "全天候" not in rendered
 
     window = _ScopeWindowBuffer()
     for i in range(28):
-        window.push(
-            ObservationRecord(
-                raw_content=f"消息{i}",
-                speaker_id="1",
-                group_id="9",
-                scope_key="group:9",
-                timestamp=datetime.now(timezone.utc),
-                message_type="group_msg",
-            )
-        )
+        window.push(_mk_obs(f"消息{i}", speaker_id="1", group_id="9", scope_key="group:9"))
         if i == 2:
             assert not window.should_flush(window.first_at)
     assert window.should_flush(window.first_at)
@@ -517,78 +523,79 @@ def test_settle_rules_and_window_buffer(tmp_path: Path, monkeypatch) -> None:
 
 def test_personal_credential_evidence_excluded_from_group_facts() -> None:
     """个人凭据出站行不进群级事实抽取输入（§4.7）。"""
-    from gsuid_core.ai_core.memory.observer import ObservationRecord
     from gsuid_core.ai_core.memory.ingestion.worker import filter_group_scope_records
 
     now = datetime.now(timezone.utc)
-    rows = [
+    for scope_key, personal, expected_kept in (
         ("group:9", True, False),
         ("group:9", False, True),
         ("user_global:1", True, True),
         ("self:bot:x", True, True),
-    ]
-    for scope_key, personal, expected_kept in rows:
-        rec = ObservationRecord(
-            raw_content="出站文本",
+    ):
+        rec = _mk_obs(
+            "出站文本",
             speaker_id="__assistant_bot__",
             group_id="9",
             scope_key=scope_key,
             timestamp=now,
-            message_type="group_msg",
             personal_credential=personal,
         )
-        kept = filter_group_scope_records(scope_key, [rec])
-        assert (len(kept) == 1) == expected_kept
+        assert (len(filter_group_scope_records(scope_key, [rec])) == 1) == expected_kept
 
 
-def test_observer_gate_and_memory_invariants(monkeypatch) -> None:
+def test_observer_gate_and_memory_invariants(monkeypatch: pytest.MonkeyPatch) -> None:
     """拦截同行 bot 与报错回声，过滤残缺事实、限制自我边配额并剥离唤醒词。"""
-    import asyncio
-
     from gsuid_core.ai_core.kits import memory as mem_kit
-    from gsuid_core.ai_core.memory import group_profile
+    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+    from gsuid_core.ai_core.memory import observer as observer_mod, group_profile
+    from gsuid_core.ai_core.kits.base import inject_memory_cap
     from gsuid_core.ai_core.control.lines import SYSTEM_ECHO_PREFIXES
-    from gsuid_core.ai_core.memory.observer import _gate, observe
+    from gsuid_core.ai_core.memory.config import MemoryConfig
+    from gsuid_core.ai_core.cognition.types import CogKind, CognitiveHit
+    from gsuid_core.ai_core.cognition.facade import render_cognition_block
     from gsuid_core.ai_core.persona.settings import DEFAULT_ERROR_GENERIC
-    from gsuid_core.ai_core.memory.retrieval.types import Edge
+    from gsuid_core.ai_core.classifier.turn_router import (
+        TurnIntent,
+        MemoryIntent,
+        TurnRouteDecision,
+    )
+    from gsuid_core.ai_core.buildin_tools.rag_search import line_pages
     from gsuid_core.ai_core.memory.ingestion.algebra import _is_tautology_fact, _is_incomplete_fact
     from gsuid_core.ai_core.memory.retrieval.dual_route import _cap_self_scope_edges
 
-    asyncio.run(observe("同行bot发言测试", "100000001", "200000001", "800000001", []))
-    assert _gate("你好", "800000001", "800000002", [], "200000001", "group:200000001") is None
-    assert _gate("正常发言", "__assistant_onebot__", "800000002", [], "200000001", "group:200000001") is None
-    assert _gate(DEFAULT_ERROR_GENERIC, "100000001", "800000002", [], "200000001", "group:200000001") is None
-    assert (
-        _gate(f"{SYSTEM_ECHO_PREFIXES[0]} 拦截", "100000001", "800000002", [], "200000001", "group:200000001") is None
-    )
-    assert _gate("周末一起去爬山", "100000001", "800000002", [], "200000001", "group:200000001") == "HIGH"
+    monkeypatch.setattr(observer_mod, "_KNOWN_BOT_SELF_IDS", set())
+    monkeypatch.setattr(observer_mod, "_observation_queue", sync_queue.Queue(maxsize=100))
+    monkeypatch.setattr(observer_mod, "_recent_contents", {})
 
-    assert _is_incomplete_fact("测试用户A提到")
-    assert _is_incomplete_fact("测试用户A提到的")
-    assert _is_incomplete_fact("测试用户A认为是不是")
-    assert not _is_incomplete_fact("测试用户A昨天买了一本书")
-    assert not _is_incomplete_fact("测试用户A昨天去北京了")
-    assert not _is_incomplete_fact("测试用户A喜欢吃辣的")
-    assert not _is_incomplete_fact("测试用户A性格比较外向")
+    asyncio.run(observer_mod.observe("同行bot发言测试", "100000001", "200000001", "800000001", []))
+    for text, spk, expected in (
+        ("你好", "800000001", None),
+        ("正常发言", "__assistant_onebot__", None),
+        (DEFAULT_ERROR_GENERIC, "100000001", None),
+        (f"{SYSTEM_ECHO_PREFIXES[0]} 拦截", "100000001", None),
+        ("周末一起去爬山", "100000001", "HIGH"),
+    ):
+        assert observer_mod._gate(text, spk, "800000002", [], "200000001", "group:200000001") == expected
+
+    for fact, incomplete in (
+        ("测试用户A提到", True),
+        ("测试用户A提到的", True),
+        ("测试用户A认为是不是", True),
+        ("测试用户A昨天买了一本书", False),
+        ("测试用户A昨天去北京了", False),
+        ("测试用户A喜欢吃辣的", False),
+        ("测试用户A性格比较外向", False),
+    ):
+        assert _is_incomplete_fact(fact) is incomplete
     assert _is_tautology_fact("测试用户A 和 测试角色", "测试用户A", "测试角色")
 
-    def _edge(eid: str, sk: str) -> Edge:
-        return {
-            "id": eid,
-            "source_id": "s",
-            "target_id": "t",
-            "source_name": "测试用户A",
-            "target_name": "测试角色",
-            "fact": f"事实{eid}",
-            "weight": 1.0,
-            "score": 0.8,
-            "valid_at_ts": 1.0,
-            "invalid_at_ts": None,
-            "scope_key": sk,
-        }
-
     capped = _cap_self_scope_edges(
-        [_edge("s1", "self:b:p"), _edge("s2", "self:b:p"), _edge("s3", "self:b:p"), _edge("g1", "group:200000001")],
+        [
+            _mk_edge("s1", "self:b:p"),
+            _mk_edge("s2", "self:b:p"),
+            _mk_edge("s3", "self:b:p"),
+            _mk_edge("g1", "group:200000001"),
+        ],
         ["group:200000001", "self:b:p"],
     )
     assert [e["id"] for e in capped] == ["s1", "s2", "g1"]
@@ -597,51 +604,32 @@ def test_observer_gate_and_memory_invariants(monkeypatch) -> None:
     assert mem_kit.retrieve_query_for_search("测试角色 明天几点集合", persona_name="测试角色") == "明天几点集合"
     assert mem_kit.retrieve_query_for_search("测试角色", persona_name="测试角色") == "测试角色"
 
-    from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
-    from gsuid_core.ai_core.classifier.turn_router import TurnRouteDecision
+    def _route_ctx(intent: TurnIntent, mem_intent: MemoryIntent, *, live: bool = False) -> AgentHookContext:
+        return AgentHookContext(
+            point=AgentHookPoint.RETRIEVE_CONTEXT,
+            intent=intent,
+            route_decision=TurnRouteDecision(intent, mem_intent, True, live, live),
+        )
 
-    qa_none_ctx = AgentHookContext(
-        point=AgentHookPoint.RETRIEVE_CONTEXT,
-        intent="问答",
-        route_decision=TurnRouteDecision("问答", "none", True, False, False),
+    intent_cases: tuple[tuple[TurnIntent, MemoryIntent, str], ...] = (
+        ("问答", "none", "point_latest"),
+        ("闲聊", "none", "none"),
     )
-    assert mem_kit.memory_intent_from_ctx(qa_none_ctx) == "point_latest"
-    chat_none_ctx = AgentHookContext(
-        point=AgentHookPoint.RETRIEVE_CONTEXT,
-        intent="闲聊",
-        route_decision=TurnRouteDecision("闲聊", "none", True, False, False),
-    )
-    assert mem_kit.memory_intent_from_ctx(chat_none_ctx) == "none"
-    live_with_mem = AgentHookContext(
-        point=AgentHookPoint.RETRIEVE_CONTEXT,
-        intent="工具",
-        route_decision=TurnRouteDecision("工具", "point_latest", True, True, True),
-    )
-    assert mem_kit.should_prefetch_memory(live_with_mem) is True
-    pure_live = AgentHookContext(
-        point=AgentHookPoint.RETRIEVE_CONTEXT,
-        intent="工具",
-        route_decision=TurnRouteDecision("工具", "none", True, True, True),
-    )
-    assert mem_kit.should_prefetch_memory(pure_live) is False
+    for intent, mem_intent, expected_mem in intent_cases:
+        assert mem_kit.memory_intent_from_ctx(_route_ctx(intent, mem_intent)) == expected_mem
+    prefetch_cases: tuple[tuple[MemoryIntent, bool], ...] = (("point_latest", True), ("none", False))
+    for mem_intent, expected_prefetch in prefetch_cases:
+        assert mem_kit.should_prefetch_memory(_route_ctx("工具", mem_intent, live=True)) is expected_prefetch
 
-    from gsuid_core.ai_core.kits.base import inject_memory_cap
-    from gsuid_core.ai_core.memory.config import MemoryConfig, memory_config
-
-    assert memory_config.evidence_mode is False
+    chat_none_ctx = _route_ctx("闲聊", "none")
+    pure_live = _route_ctx("工具", "none", live=True)
     assert mem_kit.wants_evidence_injection(chat_none_ctx) is False
-    assert inject_memory_cap("普通点查") == memory_config.memory_inject_max_chars
+    normal_cap = inject_memory_cap("普通点查")
     monkeypatch.setattr(MemoryConfig, "evidence_mode", property(lambda _self: True))
     assert mem_kit.memory_intent_from_ctx(chat_none_ctx) == "point_latest"
     assert mem_kit.wants_evidence_injection(chat_none_ctx) is True
     assert mem_kit.wants_evidence_injection(pure_live) is False
-    assert inject_memory_cap("普通点查") == max(
-        memory_config.memory_inject_max_chars, memory_config.memory_inject_wide_chars
-    )
-
-    from gsuid_core.ai_core.cognition.types import CogKind, CognitiveHit
-    from gsuid_core.ai_core.cognition.facade import render_cognition_block
-    from gsuid_core.ai_core.buildin_tools.rag_search import line_pages
+    assert inject_memory_cap("普通点查") > normal_cap
 
     weak_ep = CognitiveHit(
         kind=CogKind.EPISODE,
@@ -679,23 +667,18 @@ def test_observer_gate_and_memory_invariants(monkeypatch) -> None:
     assert "弱相关" not in rendered_only_weak
 
 
-def test_ingest_window_single_deferral_and_fallback(monkeypatch) -> None:
+def test_ingest_window_single_deferral_and_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """open_lines 至多顺延一次且不跨多窗无限累积；超时兜底按 5 分钟间隔分段。"""
-    import asyncio
-    from datetime import timedelta
     from dataclasses import dataclass
 
-    from gsuid_core.ai_core.memory.observer import ObservationRecord
     from gsuid_core.ai_core.memory.ingestion import worker as worker_mod, window_router
     from gsuid_core.ai_core.memory.ingestion.window_router import WindowRouteOutput
 
     t0 = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
-    r0 = ObservationRecord("第一句", "100000001", "200000001", "group:200000001", t0, "group_msg")
-    r1 = ObservationRecord(
-        "十分钟后", "100000001", "200000001", "group:200000001", t0 + timedelta(minutes=10), "group_msg"
-    )
+    r0 = _mk_obs("第一句", timestamp=t0)
+    r1 = _mk_obs("十分钟后", timestamp=t0 + timedelta(minutes=10))
 
-    fb = window_router._fallback([r0, r1])
+    fb = asyncio.run(window_router.route_window("group:200000001", [r0, r1], []))
     assert [c["lines"] for c in fb["clusters"]] == [[0], [1]]
 
     @dataclass
@@ -726,9 +709,7 @@ def test_ingest_window_single_deferral_and_fallback(monkeypatch) -> None:
     assert len(deferred) == 1 and deferred[0].defer_count == 1 and not created
 
     buf = worker_mod._ScopeWindowBuffer()
-    buf.push(
-        ObservationRecord("新消息", "100000002", "200000001", "group:200000001", t0 + timedelta(seconds=1), "group_msg")
-    )
+    buf.push(_mk_obs("新消息", speaker_id="100000002", timestamp=t0 + timedelta(seconds=1)))
     buf.requeue_front(deferred)
     assert buf.drain()[0].raw_content == "第一句"
 
@@ -736,16 +717,8 @@ def test_ingest_window_single_deferral_and_fallback(monkeypatch) -> None:
     asyncio.run(worker_mod.ingest_window([r0], "group:200000001", deferred_out=deferred_second))
     assert not deferred_second and len(created) == 1
 
-    # reply_to_bot 单一事实源：无 @ 或呼名时仍可认定簇寻址到 bot
-    from gsuid_core.ai_core.memory.ingestion.algebra import _cluster_addresses_bot
 
-    r_reply = ObservationRecord(
-        "我怕辣", "100000001", "200000001", "group:200000001", t0, "group_msg", reply_to_bot=True
-    )
-    assert _cluster_addresses_bot([r_reply], [0]) is True
-
-
-def test_memory_chinese_bm25_sparse_recall(tmp_path: Path, monkeypatch) -> None:
+def test_memory_chinese_bm25_sparse_recall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """记忆向量写入与检索走纯 Python CJK 二元语法 BM25，不依赖 jieba/fastembed 且覆盖 entity summary。"""
     import gsuid_core.ai_core.rag.base as rag_base
     from gsuid_core.ai_core.rag.qlocal import LocalQdrant
@@ -827,7 +800,7 @@ def test_memory_chinese_bm25_sparse_recall(tmp_path: Path, monkeypatch) -> None:
             edges = await mem_ops.search_edges("月球陨石", ["group:200000001"], top_k=5)
             assert [ed["id"] for ed in edges] == ["44444444-4444-4444-4444-444444444444"]
 
-            # 存量旧索引空间（如原 fastembed mmh3）原地迁移：保留 dense，刷新 sparse 后可被召回且幂等。
+            # 存量旧索引空间原地迁移：保留 dense，刷新 sparse 后可被召回且幂等。
             from gsuid_core.ai_core import state_store
             from gsuid_core.ai_core.rag.qmodels import PointStruct, SparseVector
             from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -888,33 +861,6 @@ def test_memory_chinese_bm25_sparse_recall(tmp_path: Path, monkeypatch) -> None:
     asyncio.run(scenario())
 
 
-def _episode(
-    eid: str,
-    content: str,
-    scope: str,
-    *,
-    valid_at: str = "2026-11-21T01:00:00+00:00",
-    session_id: str = "",
-    turn_index: int = -1,
-    speaker_ids: "list[str] | None" = None,
-) -> "Episode":
-
-    ep: Episode = {
-        "id": eid,
-        "content": content,
-        "valid_at": valid_at,
-        "scope_key": scope,
-        "embedding": [],
-    }
-    if session_id:
-        ep["session_id"] = session_id
-    if turn_index >= 0:
-        ep["turn_index"] = turn_index
-    if speaker_ids is not None:
-        ep["speaker_ids"] = speaker_ids
-    return ep
-
-
 def test_presence_ribbon_scoped_by_conversation() -> None:
     """off-screen 行踪只投放到同一对话：他群/他人私聊一律不渲染。"""
     from gsuid_core.ai_core.persona.presence import PresenceRibbon, render_presence
@@ -926,115 +872,66 @@ def test_presence_ribbon_scoped_by_conversation() -> None:
         offscreen_scope="group_a",
         offscreen_user_id="100000001",
     )
-    assert "季度报告" in render_presence(r_group_a, "", target_key="group_a", is_private=False, now=now)
-    assert render_presence(r_group_a, "", target_key="group_b", is_private=False, now=now) == ""
-    assert (
-        render_presence(r_group_a, "", target_key="private:100000002", is_private=True, now=now, user_id="100000002")
-        == ""
-    )
-    assert "季度报告" in render_presence(
-        r_group_a, "", target_key="private:100000001", is_private=True, now=now, user_id="100000001"
-    )
     r_legacy = PresenceRibbon(offscreen_doing="旧无归属动作", offscreen_at=now - 600.0, offscreen_scope="")
-    assert render_presence(r_legacy, "", target_key="group_b", is_private=False, now=now) == ""
+    for ribbon, target_key, is_private, uid, expected_sub in (
+        (r_group_a, "group_a", False, "", "季度报告"),
+        (r_group_a, "group_b", False, "", ""),
+        (r_group_a, "private:100000002", True, "100000002", ""),
+        (r_group_a, "private:100000001", True, "100000001", "季度报告"),
+        (r_legacy, "group_b", False, "", ""),
+    ):
+        rendered = render_presence(ribbon, "", target_key=target_key, is_private=is_private, now=now, user_id=uid)
+        assert (expected_sub in rendered) if expected_sub else (rendered == "")
 
 
 def test_group_read_drops_other_groups_and_pre_watermark_self() -> None:
-    """群聊读侧：他群 episode 一律不见，self:* 只放行水位线之后产生的条目。"""
-    from gsuid_core.ai_core.memory.privacy import (
-        prefix_group_tag,
-        enforce_memory_privacy,
-        filter_group_entities_by_watermark,
-        filter_group_episodes_by_watermark,
-    )
+    """群聊读侧：他群条目一律不见，self:* 及缺 scope 历史条目只放行水位线之后。"""
+    from gsuid_core.ai_core.memory.privacy import enforce_memory_privacy
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
     watermark = 1_750_000_000.0
-    eps: list[Episode] = [
-        _episode("ep_old_self", "旧混群发言", "self:bot1:persona1", valid_at="2025-01-01T00:00:00+00:00"),
-        _episode("ep_new_self", "升级后纯净自我探索", "self:bot1:persona1"),
-    ]
-    assert [e["id"] for e in filter_group_episodes_by_watermark(eps, watermark_ts=watermark)] == ["ep_new_self"]
-    assert prefix_group_tag("group:group_a", "项目Alpha").startswith("[群:group_a] ")
-
-    mem_grp_ent = MemoryContext(
-        entities=[
-            {
-                "id": "ent_cur",
-                "name": "当前群实体",
-                "summary": "群A事实",
-                "entity_type": "topic",
-                "layer": 0,
-                "score": 0.9,
-                "scope_key": "group:group_a",
-            },
-            {
-                "id": "ent_other",
-                "name": "他群实体",
-                "summary": "群B秘密",
-                "entity_type": "topic",
-                "layer": 0,
-                "score": 0.9,
-                "scope_key": "group:group_b",
-            },
-            {
-                "id": "ent_self_old",
-                "name": "旧混群自我实体",
-                "summary": "含他群旧摘要",
-                "entity_type": "person",
-                "layer": 0,
-                "score": 0.8,
-                "scope_key": "self:bot1:default",
-                "created_at_ts": 100.0,
-            },
-            {
-                "id": "ent_self_new",
-                "name": "迁移后自我实体",
-                "summary": "纯净公共摘要",
-                "entity_type": "person",
-                "layer": 0,
-                "score": 0.8,
-                "scope_key": "self:bot1:default",
-                "created_at_ts": 500.0,
-            },
-        ]
-    )
-    asyncio.run(enforce_memory_privacy(mem_grp_ent, group_id="group_a", user_id="100000001", watermark_ts=300.0))
-    assert [e["id"] for e in mem_grp_ent.entities] == ["ent_cur", "ent_self_new"]
-
-    # 缺 scope_key 的历史实体按 created_at_ts 走同一道水位线
-    empty_sk_kept = filter_group_entities_by_watermark(
-        [
-            {
-                "id": "ent_empty_old",
-                "name": "历史缺scope实体",
-                "summary": "旧摘要",
-                "entity_type": "topic",
-                "layer": 0,
-                "score": 0.9,
-                "created_at_ts": 100.0,
-            },
-            {
-                "id": "ent_empty_new",
-                "name": "新缺scope实体",
-                "summary": "新摘要",
-                "entity_type": "topic",
-                "layer": 0,
-                "score": 0.9,
-                "created_at_ts": 500.0,
-            },
+    old_ts = 1_700_000_000.0
+    new_ts = 1_760_000_000.0
+    mem = MemoryContext(
+        episodes=[
+            _episode("ep_cur", "群A讨论", "group:group_a"),
+            _episode("ep_other", "群B秘密", "group:group_b"),
+            _episode("ep_old_self", "旧混群发言", "self:bot1:persona1", valid_at="2025-01-01T00:00:00+00:00"),
+            _episode("ep_new_self", "升级后纯净自我探索", "self:bot1:persona1"),
         ],
-        watermark_ts=300.0,
+        entities=[
+            _mk_entity("ent_cur", "当前群实体", summary="群A事实", scope_key="group:group_a"),
+            _mk_entity("ent_other", "他群实体", summary="群B秘密", scope_key="group:group_b"),
+            _mk_entity(
+                "ent_self_old",
+                "旧混群自我实体",
+                summary="含他群旧摘要",
+                entity_type="person",
+                score=0.8,
+                scope_key="self:bot1:default",
+                created_at_ts=old_ts,
+            ),
+            _mk_entity(
+                "ent_self_new",
+                "迁移后自我实体",
+                summary="纯净公共摘要",
+                entity_type="person",
+                score=0.8,
+                scope_key="self:bot1:default",
+                created_at_ts=new_ts,
+            ),
+            _mk_entity("ent_empty_old", "历史缺scope实体", summary="旧摘要", created_at_ts=old_ts),
+            _mk_entity("ent_empty_new", "新缺scope实体", summary="新摘要", created_at_ts=new_ts),
+        ],
     )
-    assert [e["id"] for e in empty_sk_kept] == ["ent_empty_new"]
+    asyncio.run(enforce_memory_privacy(mem, group_id="group_a", user_id="100000001", watermark_ts=watermark))
+    assert [e["id"] for e in mem.episodes] == ["ep_cur", "ep_new_self"]
+    assert [e["id"] for e in mem.entities] == ["ent_cur", "ent_self_new", "ent_empty_new"]
 
 
 def test_dm_read_keeps_own_group_lines_and_paired_replies() -> None:
     """私聊读群 scope：放行本人行 + 紧跟本人纯发言的助手回复，剔除他人行与旧 self。"""
-    from gsuid_core.ai_core.memory.privacy import (
-        enforce_memory_privacy,
-        filter_dm_episodes_for_user,
-    )
+    from gsuid_core.ai_core.memory.privacy import enforce_memory_privacy, filter_dm_episodes_for_user
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
     watermark = 1_750_000_000.0
@@ -1067,7 +964,7 @@ def test_dm_read_keeps_own_group_lines_and_paired_replies() -> None:
     assert "ep_user_a" in dm_ids and "ep_bot_reply_a" in dm_ids and "ep_new_self" in dm_ids
     assert "ep_user_b" not in dm_ids and "ep_old_self" not in dm_ids
 
-    mixed_ep: Episode = _episode(
+    mixed_ep = _episode(
         "ep_mixed",
         "测试用户A(用户ID:100000001): 帮我记下周五开会\n"
         "[我此前说过] 好的，周五开会记下了\n"
@@ -1084,31 +981,26 @@ def test_dm_read_keeps_own_group_lines_and_paired_replies() -> None:
     assert "收到B的私密消息" not in excised_eps[0]["content"]
     assert "9999" in mixed_ep["content"]
 
-    # 私聊跨群回忆：本人 turn 与紧随其后的助手回复一起放行
     mem_cross = MemoryContext(
         episodes=[
-            {
-                "id": "ep_u1",
-                "content": "测试用户A(用户ID:100000001)：帮我记下青城山",
-                "valid_at": "2026-11-21 10:00:00",
-                "scope_key": "group:group_a",
-                "embedding": [],
-                "session_id": "s_cross",
-                "thread_id": "",
-                "turn_index": 5,
-            }
+            _episode(
+                "ep_u1",
+                "测试用户A(用户ID:100000001)：帮我记下青城山",
+                "group:group_a",
+                valid_at="2026-11-21 10:00:00",
+                session_id="s_cross",
+                turn_index=5,
+            )
         ],
         reserved_episodes=[
-            {
-                "id": "ep_a1",
-                "content": "assistant: 记下了青城山行程",
-                "valid_at": "2026-11-21 10:00:02",
-                "scope_key": "group:group_a",
-                "embedding": [],
-                "session_id": "s_cross",
-                "thread_id": "",
-                "turn_index": 6,
-            }
+            _episode(
+                "ep_a1",
+                "assistant: 记下了青城山行程",
+                "group:group_a",
+                valid_at="2026-11-21 10:00:02",
+                session_id="s_cross",
+                turn_index=6,
+            )
         ],
     )
     asyncio.run(enforce_memory_privacy(mem_cross, group_id=None, user_id="100000001", watermark_ts=0.0))
@@ -1119,15 +1011,18 @@ def test_dm_episode_uid_matching_requires_identity_marker() -> None:
     """短 uid 不带身份标注不算归属，防普通数字（价格/数量）误命中放行他人内容。"""
     from gsuid_core.ai_core.memory.privacy import episode_belongs_to_user
 
-    assert episode_belongs_to_user([], "群友说2026年买了100个苹果", "100") is False
-    assert episode_belongs_to_user([], "群友说2026年买了100个苹果", "2026") is False
-    assert episode_belongs_to_user([], "群友 @100 来看一下", "100") is True
-    assert episode_belongs_to_user(["100"], "普通发言", "100") is True
+    for speakers, content, uid, expected in (
+        ([], "群友说2026年买了100个苹果", "100", False),
+        ([], "群友说2026年买了100个苹果", "2026", False),
+        ([], "群友 @100 来看一下", "100", True),
+        (["100"], "普通发言", "100", True),
+    ):
+        assert episode_belongs_to_user(speakers, content, uid) is expected
 
 
 def test_dm_group_summary_episode_with_foreign_speaker_rejected() -> None:
     """回归：单行多说话人会话摘要不得因行首/正文出现本人 uid 整段放行（群→私聊泄露路径）。"""
-    from gsuid_core.ai_core.memory.privacy import enforce_memory_privacy, filter_dm_episodes_for_user
+    from gsuid_core.ai_core.memory.privacy import enforce_memory_privacy
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
     summary_foreign_first = (
@@ -1137,20 +1032,18 @@ def test_dm_group_summary_episode_with_foreign_speaker_rejected() -> None:
         "（更早对话摘要：测试用户A(用户ID:100000001): 周五要开会 / 测试用户B(用户ID:100000002): 我工资卡密码是9999）"
     )
     for body in (summary_foreign_first, summary_uid_first):
-        ep: Episode = _episode(
+        ep = _episode(
             "ep_summary",
             f"[会话摘要] {body}",
             "group:group_a",
             speaker_ids=["100000001", "100000002"],
         )
-        kept = filter_dm_episodes_for_user([ep], user_id="100000001", watermark_ts=0.0)
-        assert kept == [], body
         mem = MemoryContext(episodes=[ep])
         asyncio.run(enforce_memory_privacy(mem, group_id=None, user_id="100000001", watermark_ts=0.0))
         assert mem.episodes == [], body
 
     # 摘要与本人纯 turn 同会话相邻，也不得借 turn 配对挂回（非助手段，且夹带他人原话）
-    user_turn: Episode = _episode(
+    user_turn = _episode(
         "ep_user_turn",
         "测试用户A(用户ID:100000001): 帮我整理一下",
         "group:group_a",
@@ -1166,116 +1059,57 @@ def test_dm_group_summary_episode_with_foreign_speaker_rejected() -> None:
         session_id="s_sum",
         turn_index=5,
     )
-    kept2 = filter_dm_episodes_for_user([user_turn, summary_after], user_id="100000001", watermark_ts=0.0)
-    assert [e["id"] for e in kept2] == ["ep_user_turn"]
-
-
-def test_dm_edges_and_entities_for_user() -> None:
-    """私聊读边/实体：只放行以本人实体为端点的边、本人人物实体与公共非人物实体。"""
-    from gsuid_core.ai_core.memory.privacy import (
-        utc_timestamp,
-        filter_dm_edges_for_user,
-        filter_dm_entities_for_user,
-    )
-    from gsuid_core.ai_core.memory.retrieval.types import Edge, Entity
-
-    now = 1_800_000_000.0
-    edges: list[Edge] = [
-        {
-            "id": "ed_a",
-            "source_id": "ent_a",
-            "target_id": "ent_x",
-            "source_name": "测试用户A",
-            "target_name": "项目Alpha",
-            "fact": "测试用户A负责项目Alpha",
-            "weight": 1.0,
-            "score": 0.9,
-            "scope_key": "group:group_a",
-            "valid_at_ts": now,
-            "invalid_at_ts": None,
-        },
-        {
-            "id": "ed_b",
-            "source_id": "ent_b",
-            "target_id": "ent_y",
-            "source_name": "测试用户B",
-            "target_name": "私事",
-            "fact": "测试用户B买了新房",
-            "weight": 1.0,
-            "score": 0.9,
-            "scope_key": "group:group_a",
-            "valid_at_ts": now,
-            "invalid_at_ts": None,
-        },
-    ]
-    assert [
-        ed["id"]
-        for ed in filter_dm_edges_for_user(
-            edges, user_id="100000001", user_entity_ids=frozenset({"ent_a"}), watermark_ts=1_750_000_000.0
-        )
-    ] == ["ed_a"]
-
-    ents: list[Entity] = [
-        {
-            "id": "ent_a",
-            "name": "测试用户A(100000001)",
-            "entity_type": "person",
-            "summary": "",
-            "layer": 1,
-            "score": 0.9,
-        },
-        {
-            "id": "ent_b",
-            "name": "测试用户B(1000000011)",
-            "entity_type": "person",
-            "summary": "",
-            "layer": 1,
-            "score": 0.9,
-        },
-        {"id": "ent_pub", "name": "Python", "entity_type": "concept", "summary": "", "layer": 1, "score": 0.8},
-    ]
-    assert [
-        e["id"] for e in filter_dm_entities_for_user(ents, user_entity_ids=frozenset({"ent_a"}), user_id="100000001")
-    ] == ["ent_a", "ent_pub"]
-    assert (
-        utc_timestamp(datetime(2026, 11, 21, 12, 0, 0))
-        == datetime(2026, 11, 21, 12, 0, 0, tzinfo=timezone.utc).timestamp()
-    )
+    mem_pair = MemoryContext(episodes=[user_turn, summary_after])
+    asyncio.run(enforce_memory_privacy(mem_pair, group_id=None, user_id="100000001", watermark_ts=0.0))
+    assert [e["id"] for e in mem_pair.episodes] == ["ep_user_turn"]
 
 
 def test_dm_privacy_enforcement_full_context() -> None:
-    """私聊全量裁决：无边时保留 user_global 与迁移后纯净 self 非人物实体，渲染期加 [群:gid]。"""
+    """私聊全量裁决：只放行本人边/实体、关联非人物实体、user_global 与新 self，渲染加 [群:gid]。"""
     from gsuid_core.ai_core.memory.privacy import enforce_memory_privacy
     from gsuid_core.ai_core.memory.retrieval.dual_route import MemoryContext
 
+    now = 1_800_000_000.0
+    ep_mine = _episode(
+        "ep_dm_mine",
+        "测试用户A(用户ID:100000001)：去青城山",
+        "group:group_a",
+        valid_at="2026-11-21 10:00:00",
+        speaker_ids=["100000001"],
+    )
+    ep_other = _episode(
+        "ep_stage_other",
+        "测试用户B(用户ID:100000002)：他人的时间线阶段",
+        "group:group_a",
+        valid_at="2026-11-21 10:01:00",
+        speaker_ids=["100000002"],
+    )
     mem_dm_full = MemoryContext(
-        episodes=[
-            {
-                "id": "ep_dm_mine",
-                "content": "测试用户A(用户ID:100000001)：去青城山",
-                "valid_at": "2026-11-21 10:00:00",
-                "scope_key": "group:group_a",
-                "embedding": [],
-                "speaker_ids": ["100000001"],
-            }
-        ],
-        order_stages=[
-            {
-                "id": "ep_stage_other",
-                "content": "测试用户B(用户ID:100000002)：他人的时间线阶段",
-                "valid_at": "2026-11-21 10:01:00",
-                "scope_key": "group:group_a",
-                "embedding": [],
-                "speaker_ids": ["100000002"],
-            },
-            {
-                "id": "ep_dm_mine",
-                "content": "测试用户A(用户ID:100000001)：去青城山",
-                "valid_at": "2026-11-21 10:00:00",
-                "scope_key": "group:group_a",
-                "embedding": [],
-                "speaker_ids": ["100000001"],
-            },
+        episodes=[ep_mine],
+        order_stages=[ep_other, ep_mine],
+        edges=[
+            _mk_edge(
+                "ed_a",
+                "group:group_a",
+                source_id="ent_a",
+                target_id="ent_x",
+                source_name="测试用户A",
+                target_name="项目Alpha",
+                fact="测试用户A负责项目Alpha",
+                score=0.9,
+                valid_at_ts=now,
+            ),
+            _mk_edge(
+                "ed_b",
+                "group:group_a",
+                source_id="ent_b",
+                target_id="ent_y",
+                source_name="测试用户B",
+                target_name="私事",
+                fact="测试用户B买了新房",
+                score=0.9,
+                valid_at_ts=now,
+            ),
         ],
         events=[
             {
@@ -1302,54 +1136,64 @@ def test_dm_privacy_enforcement_full_context() -> None:
             },
         ],
         entities=[
-            {
-                "id": "ent_ug_proj",
-                "name": "个人侧边项目",
-                "summary": "私聊里聊过的个人计划",
-                "entity_type": "project",
-                "layer": 0,
-                "score": 0.9,
-                "scope_key": "user_global:100000001",
-            },
-            {
-                "id": "ent_self_post_wm",
-                "name": "迁移后自我兴趣",
-                "summary": "纯净公共兴趣",
-                "entity_type": "topic",
-                "layer": 0,
-                "score": 0.9,
-                "scope_key": "self:bot1:default",
-                "created_at_ts": 500.0,
-            },
-            {
-                "id": "ent_self_pre_wm",
-                "name": "旧混群自我兴趣",
-                "summary": "旧混群摘要",
-                "entity_type": "topic",
-                "layer": 0,
-                "score": 0.9,
-                "scope_key": "self:bot1:default",
-                "created_at_ts": 100.0,
-            },
-            {
-                "id": "ent_grp_unlinked",
-                "name": "同群他人项目",
-                "summary": "他人未连边项目",
-                "entity_type": "project",
-                "layer": 0,
-                "score": 0.9,
-                "scope_key": "group:group_a",
-            },
+            _mk_entity("ent_a", "测试用户A(100000001)", entity_type="person", layer=1, scope_key="group:group_a"),
+            _mk_entity("ent_b", "测试用户B(1000000011)", entity_type="person", layer=1, scope_key="group:group_a"),
+            _mk_entity("ent_x", "项目Alpha", entity_type="concept", layer=1, score=0.8, scope_key="group:group_a"),
+            _mk_entity(
+                "ent_ug_proj",
+                "个人侧边项目",
+                summary="私聊里聊过的个人计划",
+                entity_type="project",
+                scope_key="user_global:100000001",
+            ),
+            _mk_entity(
+                "ent_self_post_wm",
+                "迁移后自我兴趣",
+                summary="纯净公共兴趣",
+                scope_key="self:bot1:default",
+                created_at_ts=500.0,
+            ),
+            _mk_entity(
+                "ent_self_pre_wm",
+                "旧混群自我兴趣",
+                summary="旧混群摘要",
+                scope_key="self:bot1:default",
+                created_at_ts=100.0,
+            ),
+            _mk_entity(
+                "ent_grp_unlinked",
+                "同群他人项目",
+                summary="他人未连边项目",
+                entity_type="project",
+                scope_key="group:group_a",
+            ),
+            _mk_entity("ent_pub", "Python", entity_type="concept", layer=1, score=0.8, created_at_ts=500.0),
         ],
     )
-    asyncio.run(enforce_memory_privacy(mem_dm_full, group_id=None, user_id="100000001", watermark_ts=300.0))
+    asyncio.run(
+        enforce_memory_privacy(
+            mem_dm_full,
+            group_id=None,
+            user_id="100000001",
+            watermark_ts=300.0,
+            dm_group_scopes_hint=("group:group_a",),
+            dm_user_entity_ids=frozenset({"ent_a"}),
+        )
+    )
+    assert [ed["id"] for ed in mem_dm_full.edges] == ["ed_a"]
     assert [e["id"] for e in mem_dm_full.order_stages] == ["ep_dm_mine"]
     assert len(mem_dm_full.events) == 1 and "[群:group_a]" not in mem_dm_full.events[0]["summary"]
     assert mem_dm_full.is_private is True and "[群:group_a]" in mem_dm_full.to_prompt_text(max_chars=4000)
-    assert [e["id"] for e in mem_dm_full.entities] == ["ent_ug_proj", "ent_self_post_wm"]
+    assert [e["id"] for e in mem_dm_full.entities] == [
+        "ent_a",
+        "ent_x",
+        "ent_ug_proj",
+        "ent_self_post_wm",
+        "ent_pub",
+    ]
 
 
-def test_isolation_watermark_fail_closed(monkeypatch) -> None:
+def test_isolation_watermark_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     """回归：标记缺失/读不到/库未初始化时水位线不得返回 0，一律按当前时刻挡掉旧 self:*。"""
     import time
 
@@ -1366,16 +1210,15 @@ def test_isolation_watermark_fail_closed(monkeypatch) -> None:
     assert mig_v1.get_isolation_watermark_ts() >= t0
 
     # 标记缺失（启动时 AI 关、运行中再开）→ fail-closed，不得当 0 放行
-    async def _missing_marker(_scope: str, _key: str):
+    async def _missing_marker(_scope: str, _key: str) -> object | None:
         return None
 
-    sentinel = object()
-    monkeypatch.setattr(base_models, "async_maker", sentinel)
+    monkeypatch.setattr(base_models, "async_maker", object())
     monkeypatch.setattr(state_store, "state_get_value", _missing_marker)
     assert asyncio.run(mig_v1.ensure_isolation_watermark_ts()) >= t0
 
     # 标记不可读 → fail-closed
-    async def _unreadable(_scope: str, _key: str):
+    async def _unreadable(_scope: str, _key: str) -> object | None:
         raise RuntimeError("db down")
 
     monkeypatch.setattr(state_store, "state_get_value", _unreadable)
@@ -1384,7 +1227,7 @@ def test_isolation_watermark_fail_closed(monkeypatch) -> None:
     # 有效标记 → 返回标记时间戳
     marker_ts = 1_700_000_000.0
 
-    async def _valid_marker(_scope: str, _key: str):
+    async def _valid_marker(_scope: str, _key: str) -> dict[str, float]:
         return {"migrated_at_ts": marker_ts}
 
     monkeypatch.setattr(state_store, "state_get_value", _valid_marker)
@@ -1395,10 +1238,8 @@ def test_isolation_watermark_fail_closed(monkeypatch) -> None:
 def test_read_chat_history_scope_isolation() -> None:
     """read_chat_history：群只能读本群；私聊跨群只读与本人相关的行；私聊不可互读。"""
     from gsuid_core.models import Event
-    from gsuid_core.ai_core.models import ToolContext
     from gsuid_core.message_history import HistoryManager
     from gsuid_core.ai_core.buildin_tools.chat_history import read_chat_history_text
-    from gsuid_core.ai_core.buildin_tools.memory_timeline import _scope_keys
 
     hm = HistoryManager()
     ev_ga = Event(bot_id="b1", bot_self_id="s1", user_id="100000001", group_id="group_a", user_type="group")
@@ -1415,7 +1256,6 @@ def test_read_chat_history_scope_isolation() -> None:
     dm_other = read_chat_history_text(hm, ev_dm_a, "group:group_a", query="财务", is_master=True)
     assert "没有命中" in dm_other and "私密财务" not in dm_other
     assert "无权读取" in read_chat_history_text(hm, ev_dm_a, "private:100000002", query="绝密", is_master=True)
-    assert _scope_keys(ToolContext(ev=ev_ga)) == ["group:group_a"]
 
 
 def test_filter_records_for_user() -> None:
@@ -1449,19 +1289,7 @@ def test_filter_records_for_user() -> None:
     assert len(vis_slid) == 1 and vis_slid[0].content == "回复A之前的提问"
 
 
-@pytest.fixture
-def journal_tmp(tmp_path: Path, monkeypatch) -> "Iterator[Path]":
-    import gsuid_core.ai_core.journal.storage as jstorage
-
-    monkeypatch.setattr(jstorage, "JOURNAL_DIR", tmp_path / "journals")
-    jstorage._SHARD_CACHE.clear()
-    jstorage._SHARD_UPDATE_TS.clear()
-    yield tmp_path / "journals"
-    jstorage._SHARD_CACHE.clear()
-    jstorage._SHARD_UPDATE_TS.clear()
-
-
-def test_self_shard_archive_and_reset_idempotent(journal_tmp: Path, monkeypatch) -> None:
+def test_self_shard_archive_and_reset_idempotent(journal_tmp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """零删除手账迁移：旧 self.md 归档 + 清空活跃槽；重跑不再归档；水位线后新人格不动。"""
     import gsuid_core.ai_core.migrations.cross_group_isolation_v1 as mig_v1
     from gsuid_core.ai_core.journal import dream as jd, manager as jm, storage as jstorage
@@ -1537,7 +1365,7 @@ def test_user_shard_private_view(journal_tmp: Path) -> None:
 
 
 def test_journal_group_shard_and_self_timeline_user_isolation(journal_tmp: Path) -> None:
-    """群手账逐行按 (替:uid) 归属裁剪；self 时间线含他人代办条目私聊不可见。"""
+    """群手账逐行按 (替:uid) 归属裁剪；self 时间线含他人代办或 (群:gid) 条目按边界隔离。"""
     from gsuid_core.ai_core.journal import manager as jm, storage as jstorage
 
     g_path = jstorage._group_shard_path("test_persona", "group_a")
@@ -1557,20 +1385,23 @@ def test_journal_group_shard_and_self_timeline_user_isolation(journal_tmp: Path)
     self_path.write_text(
         "# test_persona 生活手账 (全局自我核)\n\n## 今日行动流水 (2026-11-21)\n"
         "- [11:00 | 自主探索] 自己看了一会书\n"
-        "- [11:10 | 查资料] 帮用户A整理私密清单 (替:100000001)\n",
+        "- [11:10 | 查资料] 帮用户A整理私密清单 (替:100000001)\n"
+        "- [12:00 | 查资料] 群内通用事 (群:group_a)\n",
         encoding="utf-8",
     )
     jstorage._SHARD_CACHE.clear()
-    assert "私密清单" not in jm.read_life_journal_view("test_persona", group_id="group_a", user_id="100000001")
-    assert "私密清单" not in jm.read_life_journal_view("test_persona", group_id=None, user_id="100000002")
-    assert "私密清单" in jm.read_life_journal_view("test_persona", group_id=None, user_id="100000001")
-    assert (
-        jm._self_timeline_line_visible("- [12:00 | 查资料] 群内通用事 (群:group_a)", gid="", uid="100000001") is False
-    )
+    view_ga = jm.read_life_journal_view("test_persona", group_id="group_a", user_id="100000001")
+    view_gb = jm.read_life_journal_view("test_persona", group_id="group_b", user_id="100000001")
+    view_dm_a = jm.read_life_journal_view("test_persona", group_id=None, user_id="100000001")
+    view_dm_b = jm.read_life_journal_view("test_persona", group_id=None, user_id="100000002")
+    assert "私密清单" not in view_ga and "群内通用事" in view_ga
+    assert "群内通用事" not in view_gb
+    assert "私密清单" in view_dm_a and "群内通用事" not in view_dm_a
+    assert "私密清单" not in view_dm_b and "群内通用事" not in view_dm_b
 
 
-def test_note_handle_acl(tmp_path: Path, monkeypatch) -> None:
-    """read_handle ACL：群笔记只限本群、私聊笔记只限本人私聊、无 scope 旧笔记水位线后拒放。"""
+def test_note_handle_acl(monkeypatch: pytest.MonkeyPatch) -> None:
+    """read_handle ACL：群笔记只限本群、私聊笔记只限本人私聊、无 scope 旧笔记受水位线门控。"""
     from pydantic_ai import RunContext
     from pydantic_ai.usage import RunUsage
     from pydantic_ai.models.test import TestModel
@@ -1604,20 +1435,32 @@ def test_note_handle_acl(tmp_path: Path, monkeypatch) -> None:
             size_bytes=0,
         )
 
+    watermark = 100.0
+
+    async def _wm() -> float:
+        return watermark
+
+    monkeypatch.setattr(mig_v1, "ensure_isolation_watermark_ts", _wm)
+
     note_ga = _mk_handle("note:p/g", "note", "group:group_a")
     note_dm = _mk_handle("note:p/u", "note", "user_global:100000001", "100000001")
     note_legacy = _mk_handle("note:p/old", "note", "")
     j_user = _mk_handle("journal:p/user:100000001/2026-11", "journal", "user:100000001", "100000001")
-    assert asyncio.run(_handle_access_allowed(note_ga, _mk_rctx("group_a", "100000001"))) is True
-    assert asyncio.run(_handle_access_allowed(note_ga, _mk_rctx("group_b", "100000001"))) is False
-    assert asyncio.run(_handle_access_allowed(note_dm, _mk_rctx("", "100000001"))) is True
-    assert asyncio.run(_handle_access_allowed(note_dm, _mk_rctx("", "100000002"))) is False
-    assert asyncio.run(_handle_access_allowed(note_dm, _mk_rctx("group_a", "100000001"))) is False
-    assert asyncio.run(_handle_access_allowed(j_user, _mk_rctx("", "100000001"))) is True
-    assert asyncio.run(_handle_access_allowed(j_user, _mk_rctx("", "100000002"))) is False
-    assert asyncio.run(_handle_access_allowed(j_user, _mk_rctx("group_a", "100000001"))) is False
-    monkeypatch.setattr(mig_v1, "get_isolation_watermark_ts", lambda: 100.0)
-    assert asyncio.run(_handle_access_allowed(note_legacy, _mk_rctx("group_a", "100000001"))) is False
+
+    for handle, gid, uid, wm, expected in (
+        (note_ga, "group_a", "100000001", 100.0, True),
+        (note_ga, "group_b", "100000001", 100.0, False),
+        (note_dm, "", "100000001", 100.0, True),
+        (note_dm, "", "100000002", 100.0, False),
+        (note_dm, "group_a", "100000001", 100.0, False),
+        (j_user, "", "100000001", 100.0, True),
+        (j_user, "", "100000002", 100.0, False),
+        (j_user, "group_a", "100000001", 100.0, False),
+        (note_legacy, "group_a", "100000001", 100.0, False),
+        (note_legacy, "group_a", "100000001", 0.0, True),
+    ):
+        watermark = wm
+        assert asyncio.run(_handle_access_allowed(handle, _mk_rctx(gid, uid))) is expected
 
 
 def test_note_scope_header_roundtrip(tmp_path: Path) -> None:
@@ -1633,21 +1476,14 @@ def test_note_scope_header_roundtrip(tmp_path: Path) -> None:
     assert "# 标题\n正文内容\n" in stamped_txt
 
 
-def test_preference_self_watermark_pushed_to_sql(tmp_path: Path, monkeypatch) -> None:
+def test_preference_self_watermark_pushed_to_sql(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """self:* 水位线在 SQL 层先过滤再 LIMIT：旧规则不占限额，user_global 不受影响。"""
     import gsuid_core.utils.database.base_models as base_models
     from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
-    test_engine = _sqlite_engine(tmp_path / "pref_wm.db")
-    maker = async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)
-    monkeypatch.setattr(base_models, "async_maker", maker)
-    monkeypatch.setattr(base_models, "engine", test_engine)
-    monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
-
     async def _run_pref_sql() -> None:
-        try:
-            async with test_engine.begin() as conn:
-                await conn.run_sync(SQLModel.metadata.create_all)
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="pref_wm.db") as (_engine, maker):
+            monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
             async with maker() as session:
                 for i in range(5):
                     session.add(
@@ -1684,8 +1520,6 @@ def test_preference_self_watermark_pushed_to_sql(tmp_path: Path, monkeypatch) ->
                 self_min_created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             )
             assert {r.id for r in rows} == {"new_self", "ug_old"}
-        finally:
-            await test_engine.dispose()
 
     asyncio.run(_run_pref_sql())
 
@@ -1696,7 +1530,6 @@ def test_qdrant_transport_error_and_parallel_task_cleanup(monkeypatch: pytest.Mo
     import gsuid_core.ai_core.memory.retrieval.dual_route as dual_mod
     import gsuid_core.ai_core.memory.retrieval.thread_recall as thread_mod
     from gsuid_core.ai_core.rag.qhttp import QdrantTransportError
-    from gsuid_core.ai_core.memory.observer import ObservationRecord
 
     async def _scenario() -> None:
         loop_errors: list[dict[str, object]] = []
@@ -1761,9 +1594,8 @@ def test_qdrant_transport_error_and_parallel_task_cleanup(monkeypatch: pytest.Mo
         w._llm_semaphore = asyncio.Semaphore(1)
         buf = worker_mod._ScopeWindowBuffer()
         buf.push(
-            ObservationRecord(
-                raw_content="测试消息",
-                speaker_id="100000001",
+            _mk_obs(
+                "测试消息",
                 group_id="group_1",
                 scope_key="group:group_1",
                 timestamp=now,

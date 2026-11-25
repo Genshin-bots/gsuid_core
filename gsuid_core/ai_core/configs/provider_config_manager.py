@@ -398,12 +398,6 @@ GEMINI_CONFIG_TEMPLATE: dict[str, GSC] = {
     ),
 }
 
-PROVIDER_TEMPLATES: dict[ProviderType, dict[str, GSC]] = {
-    "openai": OPENAI_CONFIG_TEMPLATE,
-    "anthropic": ANTHROPIC_CONFIG_TEMPLATE,
-    "gemini": GEMINI_CONFIG_TEMPLATE,
-}
-
 PROVIDER_MANAGERS: dict[ProviderType, ConfigSetManager] = {
     "openai": ConfigSetManager(
         base_path=OPENAI_CONFIGS_PATH,

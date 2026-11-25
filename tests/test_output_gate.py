@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
+
+from tests._support import make_run_state
 
 
 def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
     from gsuid_core.ai_core.output_gate import (
-        _STATE_KEY,
-        GateBag,
         is_fused,
         pre_send_gate,
         begin_response_batch,
@@ -24,14 +26,13 @@ def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
     merged = merge_rewrite_feedbacks(["a", "b"])
     assert "a" in merged and "b" in merged and "---" in merged
 
-    extra: dict = {}
+    extra: dict[str, object] = {}
     dirty = "点歌？<bubble/>找主人"
     for _ in range(MAX_RETRIES - 1):
         begin_response_batch(extra)
         r = pre_send_gate(dirty, extra, channel="main")
         assert r.decision is GateDecision.REWRITE and r.policy == "angle_bracket" and r.feedback
         assert not is_fused(extra)
-    assert isinstance(extra[_STATE_KEY], GateBag)
 
     begin_response_batch(extra)
     assert pre_send_gate(dirty, extra, channel="main").decision is GateDecision.FUSE
@@ -39,7 +40,7 @@ def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
     plan = plan_angle_after_run(extra, clean_sent=[])
     assert plan.fused and plan.blocked and plan.scrub_nudges
 
-    extra_single: dict = {}
+    extra_single: dict[str, object] = {}
     begin_response_batch(extra_single)
     pre_send_gate("脏<br>1", extra_single, channel="main")
     plan_single = plan_angle_after_run(extra_single, clean_sent=["干净回复"])
@@ -92,34 +93,21 @@ def test_parse_reply_plan_table() -> None:
     from gsuid_core.ai_core.control.angle_guard import strip_protocol_tags, find_illegal_angle_tags
 
     cases = [
-        # (正文, valid_seqs, default, max_targets, 期望组, 期望 invalid, 期望 silence)
-        ("直接一句话", frozenset({1, 2}), (1,), 3, [((1,), "直接一句话")], (), False),
-        ("<reply #2>\n给B", frozenset({1, 2}), (1,), 3, [((2,), "给B")], (), False),
-        ("<reply #1 #2>\n合并回复", frozenset({1, 2, 3}), (1,), 3, [((1, 2), "合并回复")], (), False),
-        ("<reply #9>\n引错", frozenset({1, 2}), (1,), 3, [((1,), "引错")], (9,), False),
-        ("<reply #1 #2 #3>\n截断", frozenset({1, 2, 3}), (1,), 2, [((1, 2), "截断")], (), False),
-        ("<reply #2> 同行给B", frozenset({1, 2}), (1,), 3, [((2,), "同行给B")], (), False),
-        ("<reply #1>\n<SILENCE>\n<reply #2>\n给B", frozenset({1, 2}), (1,), 3, [((2,), "给B")], (), False),
+        # (正文, valid_seqs, default, max_targets, 期望(seqs, 正文, explicit), 期望 invalid, 期望 silence)
+        ("直接一句话", frozenset({1, 2}), (1,), 3, [((1,), "直接一句话", False)], (), False),
+        ("<reply #2>\n给B", frozenset({1, 2}), (1,), 3, [((2,), "给B", True)], (), False),
+        ("<reply #1 #2>\n合并回复", frozenset({1, 2, 3}), (1,), 3, [((1, 2), "合并回复", True)], (), False),
+        ("<reply #9>\n引错", frozenset({1, 2}), (1,), 3, [((1,), "引错", False)], (9,), False),
+        ("<reply #1 #2 #3>\n截断", frozenset({1, 2, 3}), (1,), 2, [((1, 2), "截断", True)], (), False),
+        ("<reply #2> 同行给B", frozenset({1, 2}), (1,), 3, [((2,), "同行给B", True)], (), False),
+        ("<reply #1>\n<SILENCE>\n<reply #2>\n给B", frozenset({1, 2}), (1,), 3, [((2,), "给B", True)], (), False),
         ("<SILENCE>", frozenset({1}), (1,), 3, [], (), True),
     ]
     for text, valid, default, mx, groups, invalid, silence in cases:
         plan = parse_reply_plan(text, valid_seqs=valid, default_seqs=default, max_targets=mx)
         assert plan.silence == silence, text
-        assert [(g.seqs, g.text) for g in plan.groups] == groups, text
+        assert [(g.seqs, g.text, g.explicit) for g in plan.groups] == groups, text
         assert plan.invalid_refs == invalid, text
-
-    assert (
-        parse_reply_plan("直接一句话", valid_seqs=frozenset({1, 2}), default_seqs=(1,), max_targets=3)
-        .groups[0]
-        .explicit
-        is False
-    )
-    assert (
-        parse_reply_plan("<reply #1>\n给第一句", valid_seqs=frozenset({1, 2}), default_seqs=(1,), max_targets=3)
-        .groups[0]
-        .explicit
-        is True
-    )
 
     # 显式 <reply #seq> 指向批内较早消息时保留引用消歧；无标签回复在批内无人插话时免引
     import asyncio
@@ -188,8 +176,25 @@ def test_parse_reply_plan_table() -> None:
 
 def test_report_speech_and_allow_render_gate() -> None:
     """自然多段对话不被误判为汇报，且无出图人格不因待出图拦截文本。"""
-    from gsuid_core.ai_core.agent_run.speech_policy import should_block_user_visible_text
-    from gsuid_core.ai_core.control.outbound_detectors import looks_like_report_speech
+    import asyncio
+    from collections.abc import Sequence
+
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.output_gate import pre_send_gate
+    from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
+    from gsuid_core.ai_core.control.directive import Directive, GateDecision
+    from gsuid_core.ai_core.control.policy_ring import (
+        SettleRingInput,
+        rewrite_directive_for,
+        run_settle_policy_ring,
+    )
+    from gsuid_core.ai_core.agent_run.speech_policy import SpeechContext, evaluate_speech_policy
+    from gsuid_core.ai_core.control.outbound_detectors import (
+        build_ooc_warning,
+        inspect_outbound_ooc,
+        looks_like_report_speech,
+    )
 
     casual_paras = (
         "你先别急，我刚刚把这几个步骤在脑子里过了一遍，其实没你想的那么复杂。\n\n"
@@ -208,34 +213,7 @@ def test_report_speech_and_allow_render_gate() -> None:
     )
     assert looks_like_report_speech(bullet_report)
 
-    blocked_allow, _ = should_block_user_visible_text(
-        "free",
-        bullet_report,
-        pending_async=False,
-        image_sent=False,
-        has_status_tool=False,
-        tool_calls_so_far=(),
-        fact_pack_pending=True,
-        allow_render=True,
-    )
-    blocked_no_render, _ = should_block_user_visible_text(
-        "free",
-        bullet_report,
-        pending_async=False,
-        image_sent=False,
-        has_status_tool=False,
-        tool_calls_so_far=(),
-        fact_pack_pending=True,
-        allow_render=False,
-    )
-    assert blocked_allow is True
-    assert blocked_no_render is False
-
-    # 收敛话术策略表：pre_send_gate(speech_ctx=...) 与 settle 出口共享同一评价器
-    from gsuid_core.ai_core.output_gate import pre_send_gate
-    from gsuid_core.ai_core.control.directive import GateDecision
-    from gsuid_core.ai_core.agent_run.speech_policy import SpeechContext, evaluate_speech_policy
-
+    # 话术策略经由 pre_send_gate 外层契约拦截汇报体；无出图人格（allow_render=False）直接放行
     ctx_inline = SpeechContext(
         policy="free",
         pending_async=False,
@@ -248,6 +226,10 @@ def test_report_speech_and_allow_render_gate() -> None:
     gate_res = pre_send_gate(bullet_report, {}, channel="main", speech_ctx=ctx_inline)
     assert gate_res.decision is GateDecision.REWRITE
     assert gate_res.policy == "speech_policy" and gate_res.detail == "report_speech"
+    gate_no_render = pre_send_gate(
+        bullet_report, {}, channel="main", speech_ctx=replace(ctx_inline, allow_render=False)
+    )
+    assert gate_no_render.decision is GateDecision.ALLOW
 
     ctx_settle = SpeechContext(
         policy="silence_only",
@@ -259,21 +241,6 @@ def test_report_speech_and_allow_render_gate() -> None:
     )
     assert evaluate_speech_policy(ctx_settle, "测试用户A 可以试试这个方案。") == (False, "ok")
 
-    from gsuid_core.ai_core.control.policy_ring import (
-        _OUTBOUND_RING,
-        evaluate_speech_ring,
-        rewrite_directive_for,
-    )
-    from gsuid_core.ai_core.control.outbound_detectors import (
-        _OOC_RING,
-        SOFT_JUDGE_CATEGORIES,
-        NEVER_RELEASE_CATEGORIES,
-        LAST_RESORT_SEND_ORIGINAL_CATEGORIES,
-        build_ooc_warning,
-        inspect_outbound_ooc,
-    )
-
-    assert evaluate_speech_ring(ctx_inline, bullet_report) == (True, "report_speech")
     rw = rewrite_directive_for(
         "report_speech",
         allow_render=True,
@@ -297,24 +264,16 @@ def test_report_speech_and_allow_render_gate() -> None:
     assert not any(ob.tool_name == "create_subagent" for ob in rw_post_img.obligations)
 
     # send_message_by_ai 已向当前用户直发时，settle 策略环不得对被拦截的尾部复述触发二次纠偏/重渲
-    import asyncio
-    from collections.abc import Sequence
-
-    from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
-    from gsuid_core.ai_core.control.directive import Directive
-    from gsuid_core.ai_core.control.policy_ring import SettleRingInput, run_settle_policy_ring
-
     class _NoCorrectionHost:
         persona_name: str | None = "测试人格"
         create_by: str = "Chat"
         sent_texts: set[str] = {"已发送的正文"}
         dispute_count: int = 0
         attempt_tool_calls: Sequence[str] = ("send_message_by_ai",)
-        correction_calls: int = 0
-        scrubbed: list[set[str]] = []
 
         def __init__(self) -> None:
-            self.scrubbed = []
+            self.correction_calls = 0
+            self.scrubbed: list[set[str]] = []
 
         def latest_dispute_preview(self) -> str:
             return ""
@@ -330,12 +289,11 @@ def test_report_speech_and_allow_render_gate() -> None:
             suppress_intermediate_text: bool = True,
             return_mode: ReturnMode = "return",
         ) -> object:
-            _ = (st, directives, suppress_intermediate_text, return_mode)
             self.correction_calls += 1
             return "<SILENCE>"
 
         async def emit_unsent_reply(self, st: RunOnceState, text: str) -> None:
-            _ = (st, text)
+            return None
 
         async def run_inv3_correction(
             self,
@@ -345,7 +303,6 @@ def test_report_speech_and_allow_render_gate() -> None:
             *,
             scrub_replaced: bool = True,
         ) -> str:
-            _ = (st, directive, result_msg, scrub_replaced)
             self.correction_calls += 1
             return "<SILENCE>"
 
@@ -353,38 +310,26 @@ def test_report_speech_and_allow_render_gate() -> None:
             self.scrubbed.append(fabricated)
 
         def note_output_block(self, st: RunOnceState, reason: str, body: str) -> None:
-            _ = (st, reason, body)
+            return None
 
     async def _noop_resend() -> None:
         return None
 
-    from gsuid_core.bot import Bot, _Bot
-    from gsuid_core.models import Event
-    from gsuid_core.ai_core.agent_run.settle import _should_deliver_withheld
-
     dummy_ev = Event(bot_id="onebot", user_id="100000001", group_id="group_1", user_type="group")
-    direct_st = RunOnceState(
-        user_message="[框架·任务完成]",
+    direct_st = make_run_state(
+        "[框架·任务完成]",
         bot=Bot(_Bot("ws_test"), dummy_ev),
         ev=dummy_ev,
-        rag_context=None,
-        tools=[],
-        return_mode="by_bot",
-        output_type=None,
-        intent=None,
         has_active_task=True,
-        budget_gate=False,
         suppress_intermediate_text=False,
-        fake_done_retry=False,
-        turn_graph=None,
         is_framework_injection=True,
-        image_sent_this_run=False,
-        saw_structured_return=True,
-        presentation_withheld=[bullet_report],
-        fab_blocked=["我刚才已经发了"],
-        tool_call_list=["send_message_by_ai"],
-        run_extra={"direct_user_sent": True},
     )
+    direct_st.saw_structured_return = True
+    direct_st.presentation_withheld = [bullet_report]
+    direct_st.fab_blocked = ["我刚才已经发了"]
+    direct_st.tool_call_list = ["send_message_by_ai"]
+    direct_st.run_extra = {"direct_user_sent": True}
+
     host = _NoCorrectionHost()
     ring_out = asyncio.run(
         run_settle_policy_ring(
@@ -403,48 +348,7 @@ def test_report_speech_and_allow_render_gate() -> None:
     assert ring_out.replacement_visible is True
     assert direct_st.silence_reason == "already_sent_by_tool"
     assert host.scrubbed == [{"我刚才已经发了"}]
-    # 纯文本工具直发场景下，INV-4 也不得把暂扣旧文再发一遍
-    assert (
-        _should_deliver_withheld(
-            direct_st,
-            skip_report_exit=ring_out.skip_report_exit,
-            replacement_visible=ring_out.replacement_visible,
-        )
-        is False
-    )
-    assert (
-        rewrite_directive_for(
-            "ok",
-            allow_render=True,
-            tool_calls=0,
-            recited_report=False,
-            forbid_title="",
-            wait_already_sent=False,
-        )
-        is None
-    )
-    assert {r.name for r in _OUTBOUND_RING} == {"speech_policy", "angle_bracket", "ooc", "inner_os"}
-    assert [r.category for r in _OOC_RING] == [
-        "delivery_narration",
-        "meta_narration",
-        "capability_absence",
-        "stale_present",
-        "ai_selfref",
-        "fund_claim",
-        "machine_dump",
-        "model_identity",
-        "internal_handle_leak",
-        "system_term",
-    ]
-    assert NEVER_RELEASE_CATEGORIES == {
-        "fund_claim",
-        "machine_dump",
-        "capability_absence",
-        "meta_narration",
-        "stale_present",
-    }
-    assert SOFT_JUDGE_CATEGORIES == {"model_identity", "ai_selfref"}
-    assert LAST_RESORT_SEND_ORIGINAL_CATEGORIES == {"capability_absence", "meta_narration", "stale_present"}
+
     hit = inspect_outbound_ooc("我是语言模型。")
     assert hit is not None and hit.category == "ai_selfref"
     assert "ai_selfref" in build_ooc_warning(hit)
@@ -452,10 +356,6 @@ def test_report_speech_and_allow_render_gate() -> None:
     # 未知 channel 回落为 main 语义（machine_dump 延迟到 run 末重说而非 tool 当场打回）
     unknown_res = pre_send_gate("Traceback (most recent call last):\n  File x", {}, channel="unknown")
     assert unknown_res.decision is GateDecision.REWRITE and unknown_res.defer_ooc is True
-
-    from gsuid_core.ai_core.agent_run.support import _claims_fake_done
-
-    assert _claims_fake_done("我已经把定时弄好了")
     assert inspect_outbound_ooc("上周那项活动我这边没找到相关记录。") is None
     assert inspect_outbound_ooc("我这边数据库没有这条条目。") is not None
 
@@ -516,50 +416,55 @@ def test_numeric_recitation_and_initial_dispute_contracts() -> None:
     assert "<SILENCE>" in msg_retry
 
 
-def test_agent_run_guards_state_machine(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DeliveryGuard 状态转移与 ToolCircuitBreaker 响应上限/空转剥离对齐。"""
-    from pydantic_ai.messages import ModelRequest, ToolCallPart, ModelResponse, ModelResponsePart
+def test_agent_run_guards_state_machine() -> None:
+    """DeliveryGuard 委派/发图/申辩/熔断契约与 ToolCircuitBreaker 响应上限/空转剥离对齐。"""
+    from pydantic_ai.messages import ModelRequest, ToolCallPart, ModelResponse, UserPromptPart, ModelResponsePart
 
-    import gsuid_core.ai_core.agent_run.guards as guards_mod
-    from gsuid_core.ai_core.models import ToolContext
-    from gsuid_core.ai_core.agent_run import RunOnceState, DeliveryGuard, ToolCircuitBreaker
+    from gsuid_core.ai_core.agent_run import DeliveryGuard, ToolCircuitBreaker
+    from gsuid_core.ai_core.agent_node import AgentNode, get_node, register_agent_node, unregister_agent_node
+    from gsuid_core.ai_core.control.lines import POST_DISPUTE_SILENCE_CONTRACT
     from gsuid_core.ai_core.agent_run.support import canonical_tool_call
     from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
+    from gsuid_core.ai_core.control.angle_guard import build_fuse_warning
 
-    monkeypatch.setattr(guards_mod, "_tool_call_targets_render_agent", lambda part: part.tool_name == "create_subagent")
+    had_render = get_node("render_agent") is not None
+    if not had_render:
+        register_agent_node(AgentNode(node_id="render_agent", display_name="渲染", prompt="", source="builtin"))
+    try:
+        st = make_run_state()
+        assert st.delegated_render is False and st.speech_policy == "free"
+        # 非出图子代理不得抢先静默；目标为 render_agent 才切至 silence_only
+        DeliveryGuard.prescan_render_delegation(
+            st,
+            [ToolCallPart(tool_name="create_subagent", args={"agent_profile": "other_agent"})],
+        )
+        assert st.delegated_render is False and st.speech_policy == "free"
+        DeliveryGuard.prescan_render_delegation(
+            st,
+            [ToolCallPart(tool_name="create_subagent", args={"agent_profile": "render_agent"})],
+        )
+        assert st.delegated_render is True and st.pending_async_delivery is True and st.speech_policy == "silence_only"
 
-    st = RunOnceState(
-        user_message="hi",
-        bot=None,
-        ev=None,
-        rag_context=None,
-        tools=[],
-        return_mode="by_bot",
-        output_type=None,
-        intent=None,
-        has_active_task=False,
-        budget_gate=False,
-        suppress_intermediate_text=True,
-        fake_done_retry=False,
-        turn_graph=None,
-        is_framework_injection=False,
-        context=ToolContext(extra={}),
-    )
-    assert DeliveryGuard.stage_of(st) == "free"
-    DeliveryGuard.prescan_render_delegation(
-        st,
-        [ToolCallPart(tool_name="create_subagent", args={"agent_profile": "render_agent"})],
-    )
-    assert DeliveryGuard.stage_of(st) == "render_delegated"
-    assert st.context is not None
-    st.context.extra["image_sent_this_run"] = True
-    DeliveryGuard.apply_send_message_return(st)
-    assert DeliveryGuard.stage_of(st) == "free"
-    st.context.extra[DISPUTE_CLOSED_KEY] = True
-    DeliveryGuard.inject_request_contracts(st, ModelRequest(parts=[]))
-    assert DeliveryGuard.stage_of(st) == "silence_only"
-    st.ab_abort = True
-    assert DeliveryGuard.stage_of(st) == "fused"
+        assert st.context is not None
+        st.context.extra["image_sent_this_run"] = True
+        DeliveryGuard.apply_send_message_return(st)
+        assert st.image_sent_this_run is True and st.pending_async_delivery is False and st.speech_policy == "free"
+
+        st.context.extra[DISPUTE_CLOSED_KEY] = True
+        req_dispute = ModelRequest(parts=[])
+        DeliveryGuard.inject_request_contracts(st, req_dispute)
+        assert st.speech_policy == "silence_only"
+        assert any(
+            isinstance(p, UserPromptPart) and p.content == POST_DISPUTE_SILENCE_CONTRACT for p in req_dispute.parts
+        )
+
+        st.ab_abort = True
+        req_fuse = ModelRequest(parts=[])
+        DeliveryGuard.inject_request_contracts(st, req_fuse)
+        assert any(isinstance(p, UserPromptPart) and p.content == build_fuse_warning() for p in req_fuse.parts)
+    finally:
+        if not had_render:
+            unregister_agent_node("render_agent")
 
     many_calls: list[ModelResponsePart] = [
         ToolCallPart(tool_name="ping", args={"i": i}, tool_call_id=f"c{i}") for i in range(35)
