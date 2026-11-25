@@ -1413,7 +1413,7 @@ session_logger.log_user_input(final_user_message)
 |----|------|------|
 | L1 保底 | 每轮 | 群聊瘦核 ∪ 钉核 `find_tools` / `create_subagent` / `capability_map` |
 | L2 状态 | 本群/本会话有持久实体，且群聊已点名/省略跟进（私聊始终） | `get_state_driven_family_tools` 补对应族、剥 exclusive；旁观不加。核内**非状态驱动**域首轮族闭合（跳过定时任务/Kanban/产物/record）。`send_*` extras 不进静态附加池。群聊 extras 不 L4 整族展开 |
-| L3 会话快照 | 不写 core | 首轮 `_stabilize_session_toolset` 拍定名单后**原样复用**（`_SESSION_TOOL_CEILING=24` 硬顶）；长尾工具只进当轮 user 侧种子提示 |
+| L3 会话快照 | 不写 core | 首轮 `_stabilize_session_toolset_for` 拍定名单后**原样复用**（`_SESSION_TOOL_CEILING=24` 硬顶）；长尾工具只进当轮 user 侧种子提示 |
 | 语境 | 有 group | 群画像 tags → 附加池；**exclusive 永不进主会话**（无 shield） |
 | L4/L5 向量 | 非 in_flight 短轮 | 近文 + 本轮检索产**种子**（`hinted_seed_names`，不进 tools[]），模型经 `call_tool` 调长尾。点名/跟进不跳过（瘦核不含 web_search） |
 | 委派 | 交互主人格 | exclusive 集合来自节点注册表；roster 在 **system** |

@@ -95,12 +95,6 @@ class RecallCapabilityState(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
-class BotReceiveMode(StrEnum):
-    IDLE = "idle"
-    SINGLE = "single"
-    MULTI = "multi"
-
-
 def _truncate_for_log(obj: Any, max_str_len: int = 100) -> Any:
     """
     递归截断对象中的长字符串，用于日志输出。
@@ -943,15 +937,6 @@ class Bot:
         self.mutiply_event: asyncio.Event = asyncio.Event()
         # 当前用户语言缓存（懒解析，一次事件内复用），见 get_lang()
         self._lang: Optional[str] = None
-
-    @property
-    def receive_mode(self) -> BotReceiveMode:
-        """返回当前交互等待状态：idle / single / multi。"""
-        if self.mutiply_tag:
-            return BotReceiveMode.MULTI
-        if self.receive_tag:
-            return BotReceiveMode.SINGLE
-        return BotReceiveMode.IDLE
 
     @property
     def logger(self) -> GsLogger:

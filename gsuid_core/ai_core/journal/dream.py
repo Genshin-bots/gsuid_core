@@ -571,21 +571,6 @@ def rule_rollover_shard(
 _JOB_ID: str = "ai_journal_hourly_compact"
 
 
-async def _summarize_journal_with_llm(
-    persona_name: str,
-    doc: ShardDocument,
-    ground_truth: GroundTruthDigest,
-    prev_month_rollover: Sequence[str] = (),
-) -> DreamLLMOutcome:
-    """委托做梦引擎调用 high 档模型生成三层覆写槽位。"""
-    return await synthesize_shard_with_llm(
-        persona_name,
-        doc,
-        ground_truth=ground_truth,
-        prev_month_rollover=prev_month_rollover,
-    )
-
-
 def _apply_slots_to_doc(
     doc: ShardDocument,
     slots: DreamSlots,
@@ -704,10 +689,10 @@ async def _dream_one_shard(
         slots: DreamSlots | None = None
         mode = "rule"
         if allow_heavy_llm and is_heavy:
-            outcome = await _summarize_journal_with_llm(
+            outcome = await synthesize_shard_with_llm(
                 persona_name,
                 doc,
-                gt,
+                ground_truth=gt,
                 prev_month_rollover=prev_month_rollover,
             )
             if outcome == "transient_error":

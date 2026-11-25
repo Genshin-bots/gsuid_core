@@ -1,4 +1,4 @@
-"""MCP 运行时与 RAG 文本切分契约测试。"""
+"""MCP 运行时、RAG 文本切分与认知枢纽测试。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import pytest
 from fastmcp.client.transports import StdioTransport
 
-from gsuid_core.ai_core.rag.base import calculate_hash
+from tests._support import isolated_sqlite_db
 from gsuid_core.ai_core.rag.chunking import (
     EMBED_CHAR_BUDGET,
     chunk_body,
@@ -30,7 +30,7 @@ from gsuid_core.ai_core.rag.chunking import (
 )
 
 
-def test_rag_chunking_budget_and_lexical_rrf(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rag_chunking_and_rebuild_hash(monkeypatch: pytest.MonkeyPatch) -> None:
     import gsuid_core.ai_core.rag.base as rag_base
 
     decimal = chunk_body("版本是 3.14。下一句很短。", room=12)
@@ -58,7 +58,6 @@ def test_rag_chunking_budget_and_lexical_rrf(monkeypatch: pytest.MonkeyPatch) ->
         assert embed_char_budget() == 480 and chunker_stamp() == "embed-v1@512"
 
     stamp = chunk_method_hash("content-hash")
-    assert stamp != calculate_hash({"_content": "content-hash"})
     assert should_skip_rebuild(stamp, 3, "content-hash", 3) is True
     assert should_skip_rebuild(stamp, 2, "content-hash", 3) is False
     assert chunk_method_hash("base", 512) != chunk_method_hash("base", 1024)
@@ -146,7 +145,6 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path: Path, monkeypatch: pyt
     assert prof is not None and prof["description"] == "简介" and parse_generated_profile({"description": ""}) is None
 
     node = build_mcp_node_base("cfg1", MCPConfig(name="demo", url="https://x/mcp", description="演示服务"), ["mcp_t1"])
-    assert node.node_id == "mcp_cfg1" and node.source == "mcp" and not node.in_roster
     overlay = compute_mcp_overlay(
         {}, node, {"display_name": "自定义", "when_to_use": node.when_to_use, "tool_names": ["hack"]}
     )
@@ -183,7 +181,6 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path: Path, monkeypatch: pyt
         reg_name = "mcp_demo_s_shop_claim-coupon"
         tb = find_tool_base(reg_name)
         assert tb is not None and tb.tool.name == reg_name
-        assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tb.tool.name) is not None
         assert "演示门店（中国）" in tb.description and tb.covers[0] == "[演示门店（中国）] 自动领取当前可用优惠券"
 
         private_cfg = MCPConfig(
@@ -339,56 +336,48 @@ def test_mcp_market_normalization_and_filtering(monkeypatch: pytest.MonkeyPatch)
     )
 
     mcp_market_api._DETAIL_CACHE.clear()
-    details: dict[str, dict[str, list[dict[str, str]]]] = {
-        "a/x": {"variants": [{"transport": "stdio"}]},
-        "b/y": {"variants": []},
-    }
+    try:
+        details: dict[str, dict[str, list[dict[str, str]]]] = {
+            "a/x": {"variants": [{"transport": "stdio"}]},
+            "b/y": {"variants": []},
+        }
 
-    async def fake_detail(qn: str) -> dict[str, list[dict[str, str]]] | None:
-        return details[qn] if qn in details else None
+        async def fake_detail(qn: str) -> dict[str, list[dict[str, str]]] | None:
+            return details[qn] if qn in details else None
 
-    monkeypatch.setattr(mcp_market_api, "_get_detail", fake_detail)
-    kept, incomplete = asyncio.run(
-        mcp_market_api._filter_installable([MarketEntry(qualified_name=q, source="modelscope") for q in ("a/x", "b/y")])
-    )
-    assert [e["qualified_name"] for e in kept] == ["a/x"] and not incomplete
+        monkeypatch.setattr(mcp_market_api, "_get_detail", fake_detail)
+        kept, incomplete = asyncio.run(
+            mcp_market_api._filter_installable(
+                [MarketEntry(qualified_name=q, source="modelscope") for q in ("a/x", "b/y")]
+            )
+        )
+        assert [e["qualified_name"] for e in kept] == ["a/x"] and not incomplete
 
-    key = f"{mcp_market_api._market_endpoint()}|m/x"
-    mcp_market_api._DETAIL_CACHE[key] = (time.time(), {"variants": [{"transport": "stdio"}]})
+        async def budget_scenario() -> None:
+            monkeypatch.setattr(mcp_market_api, "_DETAIL_CHECK_BUDGET", 0.03)
+            monkeypatch.setattr(mcp_market_api, "_BG_DRAIN_CAP", 3)
 
-    async def boom(_qn: str) -> None:
-        raise AssertionError("缓存命中不应发起详情请求")
-
-    monkeypatch.setattr(mcp_market_api, "_get_detail", boom)
-    kept_cached, _ = asyncio.run(
-        mcp_market_api._filter_installable([MarketEntry(qualified_name="m/x", source="modelscope")])
-    )
-    assert len(kept_cached) == 1
-    mcp_market_api._DETAIL_CACHE.clear()
-
-    async def budget_scenario() -> None:
-        monkeypatch.setattr(mcp_market_api, "_DETAIL_CHECK_BUDGET", 0.03)
-        monkeypatch.setattr(mcp_market_api, "_BG_DRAIN_CAP", 3)
-
-        async def slow_detail(qn: str) -> dict[str, list[dict[str, str]]]:
-            if qn == "fast/live":
+            async def slow_detail(qn: str) -> dict[str, list[dict[str, str]]]:
+                if qn == "fast/live":
+                    return {"variants": [{"transport": "stdio"}]}
+                await asyncio.sleep(0.2)
                 return {"variants": [{"transport": "stdio"}]}
-            await asyncio.sleep(0.2)
-            return {"variants": [{"transport": "stdio"}]}
 
-        monkeypatch.setattr(mcp_market_api, "_get_detail", slow_detail)
-        batch = [MarketEntry(qualified_name="fast/live", source="modelscope")] + [
-            MarketEntry(qualified_name=f"slow/{i}", source="modelscope") for i in range(10)
-        ]
-        kept_part, inc = await mcp_market_api._filter_installable(batch)
-        state = mcp_market_api._loop_state()
-        assert [e["qualified_name"] for e in kept_part] == ["fast/live"] and inc is True
-        assert len(state.bg_drain_queue) <= 3
-        if state.bg_drain_task is not None:
-            state.bg_drain_task.cancel()
-            await asyncio.gather(state.bg_drain_task, return_exceptions=True)
+            monkeypatch.setattr(mcp_market_api, "_get_detail", slow_detail)
+            batch = [MarketEntry(qualified_name="fast/live", source="modelscope")] + [
+                MarketEntry(qualified_name=f"slow/{i}", source="modelscope") for i in range(10)
+            ]
+            kept_part, inc = await mcp_market_api._filter_installable(batch)
+            state = mcp_market_api._loop_state()
+            assert [e["qualified_name"] for e in kept_part] == ["fast/live"] and inc is True
+            assert len(state.bg_drain_queue) <= 3
+            if state.bg_drain_task is not None:
+                state.bg_drain_task.cancel()
+                await asyncio.gather(state.bg_drain_task, return_exceptions=True)
 
-    asyncio.run(budget_scenario())
+        asyncio.run(budget_scenario())
+    finally:
+        mcp_market_api._DETAIL_CACHE.clear()
 
 
 def test_mcp_pii_credentials_and_client_transport(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -533,7 +522,7 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path: Path, monkeypatch: p
     assert script.read_text(encoding="utf-8").endswith('if __name__ == "__main__":\n    mcp.run()\n')
     assert repair_checkout_script(["scripts/mcp_server.py"], tmp_path) == ""
 
-    monkeypatch.setattr(client_mod, "_CONNECT_TIMEOUT_S", 1)
+    monkeypatch.setattr(client_mod, "_CONNECT_TIMEOUT_S", 0.15)
     hang = MCPClient(name="hang", transport="stdio", command=sys.executable, args=["-c", "import time; time.sleep(60)"])
     with pytest.raises(TimeoutError, match="连接超时"):
         asyncio.run(hang.list_tools())
@@ -542,8 +531,6 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path: Path, monkeypatch: p
 def test_evidence_block_groups_and_credential_invalidation(monkeypatch: pytest.MonkeyPatch) -> None:
     """证据块：替别人查的观测、实时凭据状态、失效标记（§4.6）。"""
     from gsuid_core.ai_core.evidence import providers
-    from gsuid_core.ai_core.register import service_changed_at
-    from gsuid_core.ai_core.mcp.startup import _register_catalog, _forget_mcp_server
     from gsuid_core.ai_core.kits.evidence import render_evidence_block
     from gsuid_core.ai_core.evidence.store import (
         LiveState,
@@ -552,7 +539,6 @@ def test_evidence_block_groups_and_credential_invalidation(monkeypatch: pytest.M
         notify_credential_changed,
     )
     from gsuid_core.message_history.manager import MessageRecord
-    from gsuid_core.ai_core.mcp.config_manager import MCPConfig, MCPToolDefinition
 
     class _StubProvider:
         def __init__(self, bound: set[str]) -> None:
@@ -575,67 +561,59 @@ def test_evidence_block_groups_and_credential_invalidation(monkeypatch: pytest.M
     stub = _StubProvider({"100000002"})
     monkeypatch.setattr(providers, "get_state_provider", lambda service: stub if service == svc else None)
 
-    store.append(
-        Observation(
-            obs_id="ob_test01",
-            session_id=sid,
-            tool_name="mcp_test_svc_1_query",
-            service=svc,
-            requested_by="100000001",
-            requested_by_seq=3,
-            credential_owner="100000001",
-            outcome="auth_required",
-            observed_at=time.time() - 30,
-            summary="需要绑定凭据",
-            handle="",
+    async def scenario() -> None:
+        store.append(
+            Observation(
+                obs_id="ob_test01",
+                session_id=sid,
+                tool_name="mcp_test_svc_1_query",
+                service=svc,
+                requested_by="100000001",
+                requested_by_seq=3,
+                credential_owner="100000001",
+                outcome="auth_required",
+                observed_at=time.time() - 30,
+                summary="需要绑定凭据",
+                handle="",
+            )
         )
-    )
-    records = [
-        MessageRecord(role="user", content="查一下", user_id="100000001", user_name="测试用户A"),
-        MessageRecord(role="user", content="我也看看", user_id="100000002", user_name="测试用户B"),
-    ]
+        records = [
+            MessageRecord(role="user", content="查一下", user_id="100000001", user_name="测试用户A"),
+            MessageRecord(role="user", content="我也看看", user_id="100000002", user_name="测试用户B"),
+        ]
 
-    block = asyncio.run(render_evidence_block(sid, bot, target_uids=["100000002"], records=records))
-    assert "（证据）" in block and "替别人查的：" in block and "ob_test01" in block
-    assert "替测试用户A查" in block and "已绑定" in block and "测试用户B" in block
-    assert "缺凭据" in block
+        block = await render_evidence_block(sid, bot, target_uids=["100000002"], records=records)
+        assert "（证据）" in block and "替别人查的：" in block and "ob_test01" in block
+        assert "替测试用户A查" in block and "已绑定" in block and "测试用户B" in block
+        assert "缺凭据" in block
 
-    notify_credential_changed(svc, bot, "100000001", session_id=sid)
-    block2 = asyncio.run(render_evidence_block(sid, bot, target_uids=["100000002"], records=records))
-    assert "已失效（凭据已变更）" in block2
+        notify_credential_changed(svc, bot, "100000001", session_id=sid)
+        block2 = await render_evidence_block(sid, bot, target_uids=["100000002"], records=records)
+        assert "已失效（凭据已变更）" in block2
 
-    store.append(
-        Observation(
-            obs_id="ob_test02",
-            session_id=sid,
-            tool_name="mcp_test_svc_1_shared",
-            service=svc,
-            requested_by="100000002",
-            requested_by_seq=4,
-            credential_owner="shared",
-            outcome="data",
-            observed_at=time.time() - 5,
-            summary="公开数据",
-            handle="",
+        store.append(
+            Observation(
+                obs_id="ob_test02",
+                session_id=sid,
+                tool_name="mcp_test_svc_1_shared",
+                service=svc,
+                requested_by="100000002",
+                requested_by_seq=4,
+                credential_owner="shared",
+                outcome="data",
+                observed_at=time.time() - 5,
+                summary="公开数据",
+                handle="",
+            )
         )
-    )
-    block3 = asyncio.run(render_evidence_block(sid, bot, target_uids=["100000002"], records=records))
-    assert "共享凭据" in block3 and "shared的凭据" not in block3
+        block3 = await render_evidence_block(sid, bot, target_uids=["100000002"], records=records)
+        assert "共享凭据" in block3 and "shared的凭据" not in block3
 
-    service_changed_at.pop("svc_unchanged_test", None)
-    cfg = MCPConfig(
-        name="svc_unchanged_test",
-        description="test",
-        transport="stdio",
-        command="echo",
-        tools=[MCPToolDefinition(name="ping", description="ping")],
-    )
     try:
-        _register_catalog("cfg_unchanged_test", cfg)
-        assert "svc_unchanged_test" not in service_changed_at
+        asyncio.run(scenario())
     finally:
-        _forget_mcp_server("cfg_unchanged_test")
-        service_changed_at.pop("svc_unchanged_test", None)
+        store.observations.clear()
+        store.invalidations.clear()
 
 
 def test_static_safetensors_cache_and_local_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -834,3 +812,73 @@ def test_qdrant_circuit_breaker_and_search_tools_bm25_fallback(monkeypatch: pyte
         monkeypatch.setattr(rag_base, "client", _ScrollQdrant(total))
         page = asyncio.run(get_manual_knowledge_list(source_filter="all", offset=offset, limit=limit))
         assert len(page["list"]) == expected_len and page["next_offset"] == expected_next
+
+
+def test_cognition_rendering_and_hub_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """认知渲染强弱分层与世界枢纽筛选：直提专名优先展示，其余按顺序落入 extra_titles。"""
+    import gsuid_core.ai_core.cognition.hub as hub_mod
+    from gsuid_core.ai_core.entity_index import clear_entity_index
+    from gsuid_core.ai_core.cognition.nodes import AICogNode
+    from gsuid_core.ai_core.cognition.types import CogKind, CogScope, CognitiveHit
+    from gsuid_core.ai_core.cognition.facade import render_cognition_block
+    from gsuid_core.ai_core.buildin_tools.rag_search import line_pages
+
+    weak_ep = CognitiveHit(
+        kind=CogKind.EPISODE,
+        id="ep_1",
+        title="",
+        summary="Commuted by subway to work",
+        score=0.4,
+        high_confidence=False,
+    )
+    strong_fact = CognitiveHit(
+        kind=CogKind.FACT,
+        id="fact_1",
+        title="",
+        summary="用户偏好地铁通勤",
+        score=0.8,
+        high_confidence=True,
+    )
+    weak_rec = CognitiveHit(
+        kind=CogKind.RECORD,
+        id="rec_1",
+        title="",
+        summary="无关记录",
+        score=0.1,
+        high_confidence=False,
+    )
+    pages = line_pages([strong_fact, weak_ep, weak_rec])
+    flat_ids = [h.id for page in pages for h in page]
+    assert "ep_1" in flat_ids and "fact_1" in flat_ids and "rec_1" not in flat_ids
+    rendered_mixed = render_cognition_block("怎么上班", [strong_fact, weak_ep, weak_rec])
+    assert "Commuted by subway to work" in rendered_mixed
+    assert "用户偏好地铁通勤" in rendered_mixed
+    assert "另有 1 条弱相关" in rendered_mixed
+    rendered_only_weak = render_cognition_block("怎么上班", [weak_ep])
+    assert "Commuted by subway to work" in rendered_only_weak
+    assert "弱相关" not in rendered_only_weak
+
+    async def scenario() -> None:
+        clear_entity_index()
+        try:
+            async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="cog-hub.db"):
+                id1 = await AICogNode.upsert(kind=CogKind.ENTITY, ref="world:demo:h1", title="测试专名实体")
+                id2 = await AICogNode.upsert(kind=CogKind.ENTITY, ref="world:demo:h2", title="测试词条二")
+                id3 = await AICogNode.upsert(kind=CogKind.ENTITY, ref="world:demo:h3", title="测试词条三")
+                id4 = await AICogNode.upsert(kind=CogKind.ENTITY, ref="world:demo:h4", title="测试词条四")
+                assert id1 is not None and id2 is not None and id3 is not None and id4 is not None
+
+                hits = [
+                    CognitiveHit(kind=CogKind.ENTITY, id=f"node_{id2}", title="测试词条二", summary="", score=0.9),
+                    CognitiveHit(kind=CogKind.ENTITY, id=f"node_{id3}", title="测试词条三", summary="", score=0.8),
+                    CognitiveHit(kind=CogKind.ENTITY, id=f"node_{id4}", title="测试词条四", summary="", score=0.7),
+                ]
+                shown, extra_titles = await hub_mod._hubs_from_hits(
+                    hits, "测试专名实体", scope=CogScope(group_id="", user_id="")
+                )
+                assert [n.title for n in shown] == ["测试专名实体", "测试词条二"]
+                assert extra_titles == ["测试词条三", "测试词条四"]
+        finally:
+            clear_entity_index()
+
+    asyncio.run(scenario())

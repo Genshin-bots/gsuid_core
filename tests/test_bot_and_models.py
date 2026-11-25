@@ -1,21 +1,28 @@
-"""消息模型、人格形态档与气泡拆条测试。"""
+"""消息模型、人格形态档、气泡拆条与多模态图片规范化测试。"""
 
 from __future__ import annotations
 
+import io
+import zlib
 import base64
+import struct
 import asyncio
 from typing import List, Union, Mapping, Optional
+from pathlib import Path
 from dataclasses import dataclass
 from collections.abc import Callable, Awaitable
 
 import pytest
+from PIL import Image
 
 from gsuid_core.bot import Bot, _Bot
+from tests._support import isolated_history
 from gsuid_core.models import Event
 from gsuid_core.ai_core import delivery as ai_delivery
 from gsuid_core.segment import Message
 from gsuid_core.ai_core.persona.chat_style import (
     DEFAULT_CHAT_STYLE,
+    _style_from,
     speech_shape_spec,
     resolve_chat_style,
 )
@@ -73,15 +80,8 @@ def _run(text: str, monkeypatch: pytest.MonkeyPatch, *, bubbles: Optional[int] =
 
 
 def test_bot_wrapper_and_connection_states() -> None:
-    """Bot/_Bot 包装契约（§8）与连接留存窗、回执能力、接收模式三态机。"""
-    from gsuid_core.bot import (
-        BOT_RETAIN_TIMEOUT,
-        BotReceiveMode,
-        BotConnectionState,
-        RecallCapabilityState,
-    )
-    from gsuid_core.ai_core.agent_errors import strip_framework_user_leaks
-    from gsuid_core.ai_core.trigger_bridge import MockBot
+    """Bot/_Bot 包装契约（§8）与连接留存窗、回执能力三态机。"""
+    from gsuid_core.bot import BOT_RETAIN_TIMEOUT, BotConnectionState, RecallCapabilityState
 
     low = _Bot("ws-alpha")
     ev = Event(
@@ -96,7 +96,6 @@ def test_bot_wrapper_and_connection_states() -> None:
     assert high.bot is low and high.ev is ev and not hasattr(low, "ev")
     assert high.bot_id == ev.bot_id
 
-    # 断线留存窗：server.py 的 stale 判定依赖此时窗，窗内 RETAINED、窗外 EXPIRED
     assert low.connection_state == BotConnectionState.EXPIRED
     low._disconnected_at = 1000.0
     assert low.get_connection_state(now=1000.0 + BOT_RETAIN_TIMEOUT - 1) == BotConnectionState.RETAINED
@@ -108,37 +107,50 @@ def test_bot_wrapper_and_connection_states() -> None:
     low._supports_recall = False
     assert low.recall_capability_state == RecallCapabilityState.UNSUPPORTED
 
-    assert high.receive_mode == BotReceiveMode.IDLE
-    high.receive_tag = True
-    assert high.receive_mode == BotReceiveMode.SINGLE
-    high.mutiply_tag = True
-    assert high.receive_mode == BotReceiveMode.MULTI
 
-    mock = MockBot(high, {"image_ids": []})
-    assert object.__getattribute__(mock, "_real_bot") is high
+def test_chat_style_contract(tmp_path: Path) -> None:
+    from gsuid_core.utils.plugins_config.models import GsIntConfig
+    from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
-    # 框架泄漏剥除：控制信封被剥、段间空行必须保留（拆气泡依赖 \n\s*\n）
-    assert strip_framework_user_leaks("第一句。\n\n第二句。") == "第一句。\n\n第二句。"
-    leaked = strip_framework_user_leaks("<control>内部指令</control>正文。")
-    assert "<control>" not in leaked and "正文。" in leaked
-
-
-def test_chat_style_contract() -> None:
     spec = speech_shape_spec()
-    tiers = spec["tiers"]
-    assert tiers[0]["floor"] == spec["chat_style_min"]
-    assert tiers[0]["bubbles"] == 1
     assert resolve_chat_style(None).bubbles == 2
-    assert tiers[1]["floor"] <= DEFAULT_CHAT_STYLE < tiers[-1]["floor"]
-    assert tiers[-1]["bubbles"] >= 3
+
+    def _mk_cfg(name: str, style: int, soft: int | None = None) -> StringConfig:
+        soft_val = spec["soft_default"] if soft is None else soft
+        return StringConfig(
+            name,
+            tmp_path / f"{name}.json",
+            {
+                "chat_style": GsIntConfig("风格", "测试风格", style),
+                "speech_len_soft": GsIntConfig("建议长度", "测试长度", soft_val),
+            },
+        )
+
+    low_style = _style_from(_mk_cfg("low", spec["chat_style_min"]))
+    mid_style = _style_from(_mk_cfg("mid", DEFAULT_CHAT_STYLE))
+    high_style = _style_from(_mk_cfg("high", spec["chat_style_max"]))
+    assert low_style.bubbles == 1 and mid_style.bubbles == 2 and high_style.bubbles >= 3
+
+    explicit_soft = spec["soft_default"] + 17
+    override_style = _style_from(_mk_cfg("override", spec["chat_style_min"], soft=explicit_soft))
+    assert override_style.bubbles == 1 and override_style.soft == explicit_soft
 
     banned = ("唔", "呼", "zzz", "早柚", "貉", "股票", "黄金", "原神", "提瓦特")
-    for tier in tiers:
+    for tier in spec["tiers"]:
         hint = tier["segment_hint"]
         assert hint and not any(word in hint for word in banned)
 
 
 def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gsuid_core.ai_core.delivery import pack_outbound_bubbles
+    from gsuid_core.ai_core.agent_errors import strip_framework_user_leaks
+
+    # 框架泄漏剥除：控制信封被剥、段间空行必须保留（拆气泡依赖 \n\s*\n）
+    assert strip_framework_user_leaks("第一句。\n\n第二句。") == "第一句。\n\n第二句。"
+    leaked = strip_framework_user_leaks("<control>内部指令</control>正文。")
+    assert "<control>" not in leaked and "正文。" in leaked
+    assert pack_outbound_bubbles(["单段"], 0) == []
+
     out = _run("第一句\n\n第二句", monkeypatch)
     assert [s.strip() for s in out] == ["第一句", "第二句"]
 
@@ -154,15 +166,12 @@ def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch
     assert pairs == [("at", "100000002"), ("text", " 到时间啦")]
 
     # 首气泡打字停顿（sleep）期间若有新用户消息插队，唤醒后自动补挂 Message("reply", msg_id)
-    from gsuid_core.message_history import get_history_manager
     from gsuid_core.ai_core.inbox.turn import InboxTurn, bind_turn, reset_turn
     from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
 
-    hm = get_history_manager()
     ev_u1 = Event("OneBot", "900000001", "mid_1", "group", "group_pause_1", "100000001", {"nickname": "测试用户A"}, 6)
     ev_u2 = Event("OneBot", "900000001", "mid_2", "group", "group_pause_1", "100000002", {"nickname": "测试用户B"}, 6)
-    hm.clear_history(ev_u1)
-    try:
+    with isolated_history(ev_u1) as hm:
         rec1 = hm.add_message(ev_u1, "user", "测试提问", user_name="测试用户A", metadata={"msg_id": "mid_1"})
         assert rec1.link is not None
         turn = InboxTurn(
@@ -202,8 +211,6 @@ def test_send_chat_result_splitting_and_segments(monkeypatch: pytest.MonkeyPatch
         seg1 = [(s.type, s.data) for s in captured[1] if isinstance(s, Message)]
         assert seg0[0] == ("reply", "mid_1")
         assert all(t != "reply" for t, _ in seg1)
-    finally:
-        hm.clear_history(ev_u1)
 
 
 def test_event_link_seq_reply_and_at_self() -> None:
@@ -284,22 +291,24 @@ def test_event_link_seq_reply_and_at_self() -> None:
     assert delayed.link is not None and delayed.link.msg_id == "late_mid_1"
 
 
-def test_outbound_bubble_packing_and_detached_turn_scope() -> None:
-    """气泡零预算返回空列表，detached_turn_scope 隔离前台轮次上下文。"""
-    from gsuid_core.ai_core.delivery import pack_outbound_bubbles
+def test_detached_turn_scope_isolates_turn_and_outbound() -> None:
+    """detached_turn_scope 同时隔离前台轮次与出站回复绑定上下文，退出后完整恢复。"""
     from gsuid_core.ai_core.inbox.turn import InboxTurn, bind_turn, reset_turn, current_turn, detached_turn_scope
-
-    assert pack_outbound_bubbles(["单段"], 0) == []
+    from gsuid_core.message_history.link import OutboundBinding, bind_outbound, reset_outbound, current_outbound
 
     turn = InboxTurn(session_id="group:200000001", persona_name="测试角色", entries=(), from_seq=0, head_seq=1)
-    tok = bind_turn(turn)
+    binding = OutboundBinding(seen_seq=1, in_reply_to_seqs=(1,))
+    turn_tok = bind_turn(turn)
+    out_tok = bind_outbound(binding)
     try:
-        assert current_turn() is turn
+        assert current_turn() is turn and current_outbound() is binding
         with detached_turn_scope():
             assert current_turn() is None
-        assert current_turn() is turn
+            assert current_outbound() is None
+        assert current_turn() is turn and current_outbound() is binding
     finally:
-        reset_turn(tok)
+        reset_outbound(out_tok)
+        reset_turn(turn_tok)
 
 
 def test_convert_message_link_image_to_base64_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -370,3 +379,132 @@ def test_prepare_video_without_image_support_never_extracts_frames() -> None:
         out = asyncio.run(prepare_video_content([sample], ctx))
         assert len(out) == 1 and isinstance(out[0], str)
         assert "无法读取该视频内容" in out[0]
+
+
+def test_image_normalization_animation_and_model_adaptation() -> None:
+    """图片转码、动图合成与分帧拼图、跨模型图片互转不原地改写及失效图剥除。"""
+    from pydantic_ai.messages import ImageUrl, ModelRequest, BinaryContent, ToolReturnPart, UserPromptPart
+
+    from gsuid_core.utils.image.image_io import (
+        sniff_image_mime,
+        normalize_inline_image,
+        to_provider_image_content,
+        adapt_messages_images_for_model,
+    )
+    from gsuid_core.utils.resource_manager import ResourceManager
+    from gsuid_core.ai_core.history_compact import (
+        _is_image_payload_error,
+        _strip_remote_images_from_history,
+    )
+    from gsuid_core.utils.image.image_tools import change_ev_image_to_bytes
+    from gsuid_core.ai_core.multimodal.animated_frames import _composite_frames, render_animation_sheets
+
+    bmp_buf = io.BytesIO()
+    Image.new("RGB", (32, 32), (120, 200, 80)).save(bmp_buf, format="BMP")
+    bmp_b64 = "base64://" + base64.b64encode(bmp_buf.getvalue()).decode("ascii")
+    gemini_injected, gemini_err = to_provider_image_content(bmp_b64, provider_or_model="google")
+    assert gemini_err is None and gemini_injected is not None and len(gemini_injected) == 1
+    assert isinstance(gemini_injected[0], BinaryContent) and gemini_injected[0].media_type == "image/jpeg"
+
+    pil_img = Image.new("RGBA", (16, 16), (255, 0, 0, 128))
+    local_rm = ResourceManager()
+    rid = local_rm.register(pil_img)
+    rm_bytes = asyncio.run(local_rm.get(rid))
+    assert sniff_image_mime(rm_bytes) == "image/png"
+
+    webp_buf = io.BytesIO()
+    Image.new("RGB", (12, 12), (10, 20, 30)).save(webp_buf, format="WEBP")
+    webp_raw_b64 = base64.b64encode(webp_buf.getvalue()).decode("ascii")
+    webp_data_uri = f"data:image/webp;base64,{webp_raw_b64}"
+    assert sniff_image_mime(asyncio.run(change_ev_image_to_bytes(webp_data_uri))) == "image/webp"
+    assert sniff_image_mime(asyncio.run(change_ev_image_to_bytes(webp_raw_b64))) == "image/webp"
+
+    def _png_chunk(tag: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
+
+    def _rgba_idat(w: int, h: int, rgba: tuple[int, int, int, int]) -> bytes:
+        row = b"\x00" + bytes(rgba) * w
+        return zlib.compress(row * h)
+
+    apng_bytes = b"".join(
+        [
+            b"\x89PNG\r\n\x1a\n",
+            _png_chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 8, 6, 0, 0, 0)),
+            _png_chunk(b"acTL", struct.pack(">II", 3, 0)),
+            _png_chunk(b"fcTL", struct.pack(">IIIIIHHBB", 0, 16, 16, 0, 0, 1, 10, 0, 0)),
+            _png_chunk(b"IDAT", _rgba_idat(16, 16, (255, 0, 0, 255))),
+            _png_chunk(b"fcTL", struct.pack(">IIIIIHHBB", 1, 8, 8, 4, 4, 1, 10, 2, 1)),
+            _png_chunk(b"fdAT", struct.pack(">I", 2) + _rgba_idat(8, 8, (0, 255, 0, 255))),
+            _png_chunk(b"fcTL", struct.pack(">IIIIIHHBB", 3, 4, 4, 0, 0, 1, 10, 0, 0)),
+            _png_chunk(b"fdAT", struct.pack(">I", 4) + _rgba_idat(4, 4, (0, 0, 255, 255))),
+            _png_chunk(b"IEND", b""),
+        ]
+    )
+    norm_apng = normalize_inline_image(apng_bytes, flatten_animation=False)
+    assert norm_apng == (apng_bytes, "image/png")
+    comp_apng = _composite_frames(Image.open(io.BytesIO(apng_bytes)))
+    assert len(comp_apng) == 3
+    assert comp_apng[1].getpixel((12, 12)) == (255, 0, 0, 255)
+    assert comp_apng[1].getpixel((6, 6)) == (0, 255, 0, 255)
+    assert comp_apng[2].getpixel((6, 6)) == (255, 0, 0, 255)
+    assert comp_apng[2].getpixel((1, 1)) == (0, 0, 255, 255)
+    apng_sheets = render_animation_sheets(apng_bytes)
+    assert apng_sheets is not None and len(apng_sheets.images) == 3
+
+    gif_buf = io.BytesIO()
+    gif_frames = [Image.new("RGB", (24, 24), (idx * 10, 50, 100)) for idx in range(20)]
+    gif_frames[0].save(gif_buf, format="GIF", save_all=True, append_images=gif_frames[1:], duration=50)
+    gif_sheets = render_animation_sheets(gif_buf.getvalue())
+    assert gif_sheets is not None and len(gif_sheets.images) == 5
+    sheet0 = Image.open(io.BytesIO(gif_sheets.images[0]))
+    assert sheet0.width == sheet0.height and sheet0.width >= 600
+
+    png_buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(png_buf, format="PNG")
+    png_data_uri = f"data:image/png;base64,{base64.b64encode(png_buf.getvalue()).decode('ascii')}"
+    orig_user_part = UserPromptPart(content=["测试图片消息", ImageUrl(url=png_data_uri)])
+    orig_tool_part = ToolReturnPart(
+        tool_name="read_image",
+        content=[ImageUrl(url=png_data_uri)],
+        tool_call_id="call_img_1",
+    )
+    orig_req = ModelRequest(parts=[orig_user_part, orig_tool_part])
+    google_adapted = adapt_messages_images_for_model([orig_req], "google")
+    assert isinstance(orig_user_part.content[1], ImageUrl)
+    adapted_req = google_adapted[0]
+    assert isinstance(adapted_req, ModelRequest)
+    adapted_up = adapted_req.parts[0]
+    adapted_tr = adapted_req.parts[1]
+    assert isinstance(adapted_up, UserPromptPart) and isinstance(adapted_up.content[1], BinaryContent)
+    assert isinstance(adapted_tr, ToolReturnPart) and isinstance(adapted_tr.content, list)
+    assert isinstance(adapted_tr.content[0], BinaryContent)
+
+    openai_adapted = adapt_messages_images_for_model(google_adapted, "openai")
+    openai_req = openai_adapted[0]
+    assert isinstance(openai_req, ModelRequest)
+    openai_up = openai_req.parts[0]
+    assert isinstance(openai_up, UserPromptPart) and isinstance(openai_up.content[1], ImageUrl)
+    assert openai_up.content[1].url.startswith("data:image/png;base64,")
+
+    svg_b64 = "base64://" + base64.b64encode(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").decode("ascii")
+    svg_injected, svg_err = to_provider_image_content(svg_b64, provider_or_model="openai")
+    assert svg_injected is None and svg_err is not None and "不是有效图片" in svg_err
+
+    assert _is_image_payload_error("Invalid request: invalid base64 image_url trace_id: 123")
+    assert _is_image_payload_error('URL protocol "data" is not allowed. Only http:// and https:// are supported.')
+    assert _is_image_payload_error(".messages[8].image[0]: You have uploaded an unsupported image.")
+    history_req = ModelRequest(
+        parts=[
+            UserPromptPart(
+                content=[
+                    "用户提问",
+                    ImageUrl(url="data:image/png;base64,AAAA"),
+                ]
+            )
+        ]
+    )
+    assert _strip_remote_images_from_history([history_req], include_inline=False) == 0
+    assert _strip_remote_images_from_history([history_req], include_inline=True) == 1
+    assert isinstance(history_req.parts[0], UserPromptPart)
+    assert list(history_req.parts[0].content) == ["用户提问", "[图片已失效，无法再显示]"]

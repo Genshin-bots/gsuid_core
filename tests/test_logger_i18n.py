@@ -15,10 +15,7 @@ import pytest
 from gsuid_core.i18n import (
     Lang,
     t,
-    load_catalogs,
-    ensure_log_emoji,
     starts_with_emoji,
-    plugin_locale_key_count,
     unregister_plugin_locales,
     discover_and_register_plugin_locales,
 )
@@ -480,6 +477,11 @@ def _load_catalogs() -> dict[str, dict[str, str]]:
     return catalogs
 
 
+@pytest.fixture(scope="module")
+def _catalogs() -> dict[str, dict[str, str]]:
+    return _load_catalogs()
+
+
 def _placeholder_signature(text: str) -> tuple[Counter[tuple[str, str, str]], Counter[tuple[str, str]]]:
     brace = Counter(
         (match.group(1), match.group(2) or "", match.group(3) or "") for match in _BRACE_FIELD_RE.finditer(text)
@@ -498,7 +500,7 @@ def _format_offenders(offenders: Iterable[str]) -> str:
     return "\n".join(f"  {item}" for item in offenders)
 
 
-def test_framework_logger_i18n_and_static_keys() -> None:
+def test_framework_logger_i18n_and_static_keys(_catalogs: dict[str, dict[str, str]]) -> None:
     parsed_sample = _parse_text(
         """
 import logging
@@ -526,7 +528,7 @@ logger.exception(error)
     with pytest.raises(ValueError, match="重复 key"):
         json.loads('{"same": "first", "same": "second"}', object_pairs_hook=_reject_duplicate_keys)
 
-    catalogs = _load_catalogs()
+    catalogs = _catalogs
     assert {lang.value for lang in Lang} == set(catalogs)
     assert "zh-cn" in catalogs
     reference = catalogs["zh-cn"]
@@ -572,23 +574,29 @@ logger.exception(error)
     assert not key_offenders, "静态 i18n key 或调用参数不完整：\n" + _format_offenders(key_offenders)
 
 
-def test_emoji_assembly_and_plugin_locale_isolation(tmp_path: Path) -> None:
-    load_catalogs()
-    catalogs = _load_catalogs()
+def test_emoji_assembly_and_plugin_locale_isolation(
+    tmp_path: Path,
+    _catalogs: dict[str, dict[str, str]],
+) -> None:
+    catalogs = _catalogs
+
+    def _render(key: str) -> str:
+        names = {item[0] for item in _placeholder_signature(catalogs["zh-cn"][key])[0]}
+        return t(key, lang="zh-cn", **{name: "x" for name in names})
+
     sample = next((k for k in catalogs["zh-cn"] if k.startswith("log.server.")), None)
-    assert sample is not None
-    assert starts_with_emoji(t(sample, lang="zh-cn"))
-    assert ensure_log_emoji("log.meme.foo", "hello").startswith("🎭")
+    assert sample is not None and starts_with_emoji(_render(sample))
+    meme_sample = next((k for k in catalogs["zh-cn"] if k.startswith("log.meme.")), None)
+    assert meme_sample is not None and _render(meme_sample).startswith("🎭")
 
     msg_keys = [k for k in catalogs["zh-cn"] if k.startswith("msg.")]
     assert msg_keys
     for key in msg_keys:
-        names = {item[0] for item in _placeholder_signature(catalogs["zh-cn"][key])[0]}
-        text = t(key, lang="zh-cn", **{name: "x" for name in names})
+        text = _render(key)
         assert not starts_with_emoji(text), f"{key} 不应带日志 emoji: {text!r}"
 
     for lang, catalog in catalogs.items():
-        leaked = [k for k in catalog if k.startswith(("log.fakepluginuid.", "log.genshinuid."))]
+        leaked = [k for k in catalog if k.startswith("log.genshinuid.")]
         assert not leaked, f"{lang} 混入插件 key: {leaked}"
 
     plugin_name = "FakePluginUID"
@@ -605,12 +613,10 @@ def test_emoji_assembly_and_plugin_locale_isolation(tmp_path: Path) -> None:
     unregister_plugin_locales(plugin_name)
     try:
         assert discover_and_register_plugin_locales(plugin_root, plugin_name) > 0
-        assert plugin_locale_key_count(plugin_name) > 0
         resolved = t(sample_key, lang="zh-cn", name="world")
         assert "hello" in resolved and "world" in resolved and sample_key not in resolved
     finally:
         unregister_plugin_locales(plugin_name)
 
-    assert plugin_locale_key_count(plugin_name) == 0
     after_unregister = t(sample_key, lang="zh-cn", name="world")
     assert sample_key in after_unregister and "[FakePlugin]" not in after_unregister and "world" not in after_unregister

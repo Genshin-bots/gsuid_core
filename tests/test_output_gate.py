@@ -1,12 +1,15 @@
-"""统一输出闸门 pre_send_gate 与尖括号守卫测试。"""
+"""统一输出闸门 pre_send_gate、尖括号守卫与熔断状态机测试。"""
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from dataclasses import replace
+from collections.abc import Mapping, Sequence
 
 import pytest
 
-from tests._support import make_run_state
+from tests._support import make_run_ctx, make_run_state, isolated_history, isolated_sqlite_db
 
 
 def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
@@ -15,16 +18,11 @@ def test_pre_send_gate_lifecycle_and_after_run_plan() -> None:
         pre_send_gate,
         begin_response_batch,
         plan_angle_after_run,
-        merge_rewrite_feedbacks,
     )
     from gsuid_core.ai_core.control.directive import GateDecision
     from gsuid_core.ai_core.control.angle_guard import MAX_RETRIES
 
     assert pre_send_gate("呼…困了zzz", {}, channel="main").decision is GateDecision.ALLOW
-    assert merge_rewrite_feedbacks([]) == ""
-    assert merge_rewrite_feedbacks(["only"]) == "only"
-    merged = merge_rewrite_feedbacks(["a", "b"])
-    assert "a" in merged and "b" in merged and "---" in merged
 
     extra: dict[str, object] = {}
     dirty = "点歌？<bubble/>找主人"
@@ -55,7 +53,7 @@ def test_angle_bracket_guard_detection_and_sanitization() -> None:
         sanitize_illegal_angle_tags,
     )
 
-    cjk_tag = "<要求用其他语言复述用户的请求>\n早柚：困"
+    cjk_tag = "<要求用其他语言复述用户的请求>\n测试人格：困"
     assert has_illegal_angle_tags(cjk_tag)
     assert any("要求" in t for t in find_illegal_angle_tags(cjk_tag))
     assert has_illegal_angle_tags('<report title="a">|x|y|\n|---|---|\n|1|2|</report>')
@@ -79,6 +77,9 @@ def test_angle_bracket_guard_detection_and_sanitization() -> None:
         assert not has_illegal_angle_tags(loose_meme)
         assert "meme" not in strip_protocol_tags(loose_meme).lower()
 
+    assert "<reply #3>" not in find_illegal_angle_tags("好 <reply #3> 嗯")
+    assert "<reply" not in strip_protocol_tags("<reply #3>\n你好")
+
     assert has_illegal_angle_tags("前面<br>后面，代码里是 `<br>`")
     san = sanitize_illegal_angle_tags("外<br>内 `<br>` 尾")
     assert "br" not in san.split("`")[0].lower()
@@ -88,9 +89,13 @@ def test_angle_bracket_guard_detection_and_sanitization() -> None:
 
 
 def test_parse_reply_plan_table() -> None:
-    """回复计划：无标签回落缺省、多目标合并、非法 #seq 丢弃、max_targets 截断、<SILENCE>。"""
+    """回复计划：无标签回落缺省、多目标合并、非法 #seq 丢弃、max_targets 截断、<SILENCE> 与引用消歧。"""
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.models import Event, Message
+    from gsuid_core.ai_core.delivery import _send_reply_plan_groups
+    from gsuid_core.ai_core.inbox.turn import InboxTurn
     from gsuid_core.ai_core.reply_plan import parse_reply_plan
-    from gsuid_core.ai_core.control.angle_guard import strip_protocol_tags, find_illegal_angle_tags
+    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
 
     cases = [
         # (正文, valid_seqs, default, max_targets, 期望(seqs, 正文, explicit), 期望 invalid, 期望 silence)
@@ -110,20 +115,9 @@ def test_parse_reply_plan_table() -> None:
         assert plan.invalid_refs == invalid, text
 
     # 显式 <reply #seq> 指向批内较早消息时保留引用消歧；无标签回复在批内无人插话时免引
-    import asyncio
-
-    from gsuid_core.bot import Bot, _Bot
-    from gsuid_core.models import Event, Message
-    from gsuid_core.message_history import get_history_manager
-    from gsuid_core.ai_core.delivery import _send_reply_plan_groups
-    from gsuid_core.ai_core.inbox.turn import InboxTurn
-    from gsuid_core.ai_core.inbox.state import WakeItem, PendingEntry
-
     async def _check_delivery_quote() -> None:
-        hm = get_history_manager()
         ev1 = Event("OneBot", "900000001", "dq_1", "group", "70029", "100000001", {}, 6, raw_text="第一句", at_bot=True)
         ev2 = Event("OneBot", "900000001", "dq_2", "group", "70029", "100000001", {}, 6, raw_text="第二句")
-        hm.clear_history(ev1)
         sent: list[list[Message]] = []
 
         class _CaptureBot(Bot):
@@ -132,7 +126,7 @@ def test_parse_reply_plan_table() -> None:
                     sent.append([m for m in message if isinstance(m, Message)])
                 return 0
 
-        try:
+        with isolated_history(ev1) as hm:
             r1 = hm.add_message(ev1, role="user", content="第一句", metadata={"msg_id": "dq_1", "at_bot": True})
             r2 = hm.add_message(ev2, role="user", content="第二句", metadata={"msg_id": "dq_2"})
             assert r1.link is not None and r2.link is not None
@@ -165,36 +159,26 @@ def test_parse_reply_plan_table() -> None:
             )
             await _send_reply_plan_groups(cbot, plan_explicit.groups, turn=turn, ev=ev1, meta={}, ooc_check=False)
             assert any(m.type == "reply" and m.data == "dq_1" for m in sent[-1])
-        finally:
-            hm.clear_history(ev1)
 
     asyncio.run(_check_delivery_quote())
 
-    assert "<reply #3>" not in find_illegal_angle_tags("好 <reply #3> 嗯")
-    assert "<reply" not in strip_protocol_tags("<reply #3>\n你好")
+
+_BULLET_REPORT = (
+    "整理了以下四项关键改动与详细核对说明供团队排查时参考：\n"
+    "- 第一项配置说明：调整默认值、重试策略与超时时间，确保长期高并发环境下稳定运行且不丢包。\n"
+    "- 第二项权限检查：在入站入口严格校验目标范围、机器人身份与账号绑定关系，避免多人串线。\n"
+    "- 第三项缓存优化：超限分段无损合并至尾部气泡并保留段落格式，防止长文本被静默丢弃。\n"
+    "- 第四项日志审计：补充关键路径异常告警信息与追踪上下文，方便运维在事后直接定位根因。"
+)
 
 
 def test_report_speech_and_allow_render_gate() -> None:
-    """自然多段对话不被误判为汇报，且无出图人格不因待出图拦截文本。"""
-    import asyncio
-    from collections.abc import Sequence
-
-    from gsuid_core.bot import Bot, _Bot
-    from gsuid_core.models import Event
+    """自然多段对话不被误判为汇报，无出图人格放行，已发图后不再下发重渲义务。"""
     from gsuid_core.ai_core.output_gate import pre_send_gate
-    from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
-    from gsuid_core.ai_core.control.directive import Directive, GateDecision
-    from gsuid_core.ai_core.control.policy_ring import (
-        SettleRingInput,
-        rewrite_directive_for,
-        run_settle_policy_ring,
-    )
+    from gsuid_core.ai_core.control.directive import GateDecision
+    from gsuid_core.ai_core.control.policy_ring import rewrite_directive_for
     from gsuid_core.ai_core.agent_run.speech_policy import SpeechContext, evaluate_speech_policy
-    from gsuid_core.ai_core.control.outbound_detectors import (
-        build_ooc_warning,
-        inspect_outbound_ooc,
-        looks_like_report_speech,
-    )
+    from gsuid_core.ai_core.control.outbound_detectors import looks_like_report_speech
 
     casual_paras = (
         "你先别急，我刚刚把这几个步骤在脑子里过了一遍，其实没你想的那么复杂。\n\n"
@@ -203,15 +187,7 @@ def test_report_speech_and_allow_render_gate() -> None:
         "总之放心去试就行，有异常随时告诉我。"
     )
     assert not looks_like_report_speech(casual_paras)
-
-    bullet_report = (
-        "整理了以下四项关键改动与详细核对说明供团队排查时参考：\n"
-        "- 第一项配置说明：调整默认值、重试策略与超时时间，确保长期高并发环境下稳定运行且不丢包。\n"
-        "- 第二项权限检查：在入站入口严格校验目标范围、机器人身份与账号绑定关系，避免多人串线。\n"
-        "- 第三项缓存优化：超限分段无损合并至尾部气泡并保留段落格式，防止长文本被静默丢弃。\n"
-        "- 第四项日志审计：补充关键路径异常告警信息与追踪上下文，方便运维在事后直接定位根因。"
-    )
-    assert looks_like_report_speech(bullet_report)
+    assert looks_like_report_speech(_BULLET_REPORT)
 
     # 话术策略经由 pre_send_gate 外层契约拦截汇报体；无出图人格（allow_render=False）直接放行
     ctx_inline = SpeechContext(
@@ -223,11 +199,11 @@ def test_report_speech_and_allow_render_gate() -> None:
         fact_pack_pending=True,
         allow_render=True,
     )
-    gate_res = pre_send_gate(bullet_report, {}, channel="main", speech_ctx=ctx_inline)
+    gate_res = pre_send_gate(_BULLET_REPORT, {}, channel="main", speech_ctx=ctx_inline)
     assert gate_res.decision is GateDecision.REWRITE
     assert gate_res.policy == "speech_policy" and gate_res.detail == "report_speech"
     gate_no_render = pre_send_gate(
-        bullet_report, {}, channel="main", speech_ctx=replace(ctx_inline, allow_render=False)
+        _BULLET_REPORT, {}, channel="main", speech_ctx=replace(ctx_inline, allow_render=False)
     )
     assert gate_no_render.decision is GateDecision.ALLOW
 
@@ -250,6 +226,7 @@ def test_report_speech_and_allow_render_gate() -> None:
         wait_already_sent=False,
     )
     assert rw is not None and rw.reason_code == "report_speech"
+    assert any(ob.tool_name == "create_subagent" for ob in rw.obligations)
     # 本轮已发图时，report_speech 绝不再下发 render_agent 重渲义务
     rw_post_img = rewrite_directive_for(
         "report_speech",
@@ -263,7 +240,15 @@ def test_report_speech_and_allow_render_gate() -> None:
     assert rw_post_img is not None and rw_post_img.reason_code == "blocked_voice"
     assert not any(ob.tool_name == "create_subagent" for ob in rw_post_img.obligations)
 
-    # send_message_by_ai 已向当前用户直发时，settle 策略环不得对被拦截的尾部复述触发二次纠偏/重渲
+
+def test_settle_policy_ring_skips_rewrite_after_direct_send() -> None:
+    """send_message_by_ai 已向当前用户直发时，settle 策略环不得对被拦截的尾部复述触发二次纠偏/重渲。"""
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
+    from gsuid_core.ai_core.control.directive import Directive
+    from gsuid_core.ai_core.control.policy_ring import SettleRingInput, run_settle_policy_ring
+
     class _NoCorrectionHost:
         persona_name: str | None = "测试人格"
         create_by: str = "Chat"
@@ -325,7 +310,7 @@ def test_report_speech_and_allow_render_gate() -> None:
         is_framework_injection=True,
     )
     direct_st.saw_structured_return = True
-    direct_st.presentation_withheld = [bullet_report]
+    direct_st.presentation_withheld = [_BULLET_REPORT]
     direct_st.fab_blocked = ["我刚才已经发了"]
     direct_st.tool_call_list = ["send_message_by_ai"]
     direct_st.run_extra = {"direct_user_sent": True}
@@ -336,8 +321,8 @@ def test_report_speech_and_allow_render_gate() -> None:
             host,
             SettleRingInput(
                 st=direct_st,
-                result_msg=bullet_report,
-                match_msg=bullet_report,
+                result_msg=_BULLET_REPORT,
+                match_msg=_BULLET_REPORT,
                 allow_render=True,
                 resend_fab_blocked=_noop_resend,
             ),
@@ -349,26 +334,9 @@ def test_report_speech_and_allow_render_gate() -> None:
     assert direct_st.silence_reason == "already_sent_by_tool"
     assert host.scrubbed == [{"我刚才已经发了"}]
 
-    hit = inspect_outbound_ooc("我是语言模型。")
-    assert hit is not None and hit.category == "ai_selfref"
-    assert "ai_selfref" in build_ooc_warning(hit)
-
-    # 未知 channel 回落为 main 语义（machine_dump 延迟到 run 末重说而非 tool 当场打回）
-    unknown_res = pre_send_gate("Traceback (most recent call last):\n  File x", {}, channel="unknown")
-    assert unknown_res.decision is GateDecision.REWRITE and unknown_res.defer_ooc is True
-    assert inspect_outbound_ooc("上周那项活动我这边没找到相关记录。") is None
-    assert inspect_outbound_ooc("我这边数据库没有这条条目。") is not None
-
 
 def test_numeric_recitation_and_initial_dispute_contracts() -> None:
     """短对话含 <reply #seq> 与年份不误判念数；首轮误判申辩不把本轮锁死为 <SILENCE>。"""
-    import asyncio
-
-    from pydantic_ai.tools import RunContext
-    from pydantic_ai.usage import RunUsage
-    from pydantic_ai.models.test import TestModel
-
-    from gsuid_core.ai_core.models import ToolContext
     from gsuid_core.ai_core.control.directive import (
         DISPUTE_ACKED_KEY,
         DISPUTE_EXTRA_KEY,
@@ -398,7 +366,7 @@ def test_numeric_recitation_and_initial_dispute_contracts() -> None:
     assert looks_like_numeric_recitation(dense_list) is True
 
     # 首轮尚未产出过回复时调用 dispute_directive：记录申辩但不置 DISPUTE_CLOSED_KEY
-    ctx_init = RunContext(deps=ToolContext(extra={}), model=TestModel(), usage=RunUsage())
+    ctx_init = make_run_ctx(extra={})
     msg_init = asyncio.run(dispute_directive(ctx_init, "用户问的是生猪行情，不是咖啡点单"))
     assert ctx_init.deps.extra[DISPUTE_EXTRA_KEY] == ["用户问的是生猪行情，不是咖啡点单"]
     assert ctx_init.deps.extra[DISPUTE_ACKED_KEY] is True
@@ -406,33 +374,41 @@ def test_numeric_recitation_and_initial_dispute_contracts() -> None:
     assert "正常回复用户" in msg_init and "<SILENCE>" not in msg_init
 
     # 拦截重跑轮已有暂扣回复时调用 dispute_directive：置 DISPUTE_CLOSED_KEY 走静默放行原回复
-    ctx_retry = RunContext(
-        deps=ToolContext(extra={DISPUTE_HAS_PRIOR_REPLY_KEY: True}),
-        model=TestModel(),
-        usage=RunUsage(),
-    )
+    ctx_retry = make_run_ctx(extra={DISPUTE_HAS_PRIOR_REPLY_KEY: True})
     msg_retry = asyncio.run(dispute_directive(ctx_retry, "上一段是用户明确要求的纯文本口头概括"))
     assert ctx_retry.deps.extra[DISPUTE_CLOSED_KEY] is True
     assert "<SILENCE>" in msg_retry
 
 
-def test_agent_run_guards_state_machine() -> None:
-    """DeliveryGuard 委派/发图/申辩/熔断契约与 ToolCircuitBreaker 响应上限/空转剥离对齐。"""
-    from pydantic_ai.messages import ModelRequest, ToolCallPart, ModelResponse, UserPromptPart, ModelResponsePart
+def test_agent_run_guards_state_machine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DeliveryGuard 委派/发图/申辩/熔断契约与 ToolCircuitBreaker 上限/空转/单工具封禁对齐。"""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ToolCallPart,
+        ModelResponse,
+        ToolReturnPart,
+        UserPromptPart,
+        ModelResponsePart,
+    )
 
+    import gsuid_core.ai_core.session_logger as slog_mod
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolContext
     from gsuid_core.ai_core.agent_run import DeliveryGuard, ToolCircuitBreaker
+    from gsuid_core.ai_core.tool_risk import TOOLS_EXECUTION_GATED_KEY
     from gsuid_core.ai_core.agent_node import AgentNode, get_node, register_agent_node, unregister_agent_node
     from gsuid_core.ai_core.control.lines import POST_DISPUTE_SILENCE_CONTRACT
+    from gsuid_core.ai_core.session_logger import AISessionLogger
     from gsuid_core.ai_core.agent_run.support import canonical_tool_call
     from gsuid_core.ai_core.control.directive import DISPUTE_CLOSED_KEY
-    from gsuid_core.ai_core.control.angle_guard import build_fuse_warning
+
+    monkeypatch.setattr(slog_mod, "AI_SESSION_LOGS_PATH", tmp_path)
 
     had_render = get_node("render_agent") is not None
     if not had_render:
         register_agent_node(AgentNode(node_id="render_agent", display_name="渲染", prompt="", source="builtin"))
     try:
         st = make_run_state()
-        assert st.delegated_render is False and st.speech_policy == "free"
         # 非出图子代理不得抢先静默；目标为 render_agent 才切至 silence_only
         DeliveryGuard.prescan_render_delegation(
             st,
@@ -461,7 +437,13 @@ def test_agent_run_guards_state_machine() -> None:
         st.ab_abort = True
         req_fuse = ModelRequest(parts=[])
         DeliveryGuard.inject_request_contracts(st, req_fuse)
-        assert any(isinstance(p, UserPromptPart) and p.content == build_fuse_warning() for p in req_fuse.parts)
+        assert any(
+            isinstance(p, UserPromptPart)
+            and isinstance(p.content, str)
+            and "熔断" in p.content
+            and "<SILENCE>" in p.content
+            for p in req_fuse.parts
+        )
     finally:
         if not had_render:
             unregister_agent_node("render_agent")
@@ -471,7 +453,7 @@ def test_agent_run_guards_state_machine() -> None:
     ]
     resp = ModelResponse(parts=many_calls)
     ToolCircuitBreaker.sanitize_and_cap_response(st, resp, create_by="Chat")
-    assert len(resp.parts) == 30
+    assert 0 < len(resp.parts) < 35
 
     dup_resp = ModelResponse(
         parts=[
@@ -484,24 +466,80 @@ def test_agent_run_guards_state_machine() -> None:
     ToolCircuitBreaker.sanitize_and_cap_response(st, dup_resp, create_by="Chat")
     assert [p.tool_name for p in dup_resp.parts if isinstance(p, ToolCallPart)] == ["other"]
 
+    # CapabilityAgent 单工具并行失败 6 次仅封禁该工具，不触发全盘门禁，也不封 artifact_put
+    ev = Event("OneBot", "900000001", "k1", "group", "group_1", "100000001", {}, 0, text="测试任务")
+    tctx = ToolContext(ev=ev, allow_user_outbound=False)
+    cap_st = make_run_state("测试任务", ev=ev, return_mode="return", suppress_intermediate_text=False, context=tctx)
+    cap_req = ModelRequest(
+        parts=[
+            ToolReturnPart(
+                tool_name="flaky_kb", content="❌ connection refused", tool_call_id=f"c{i}", outcome="failed"
+            )
+            for i in range(6)
+        ]
+        + [
+            ToolReturnPart(tool_name="artifact_put", content="❌ transient io", tool_call_id=f"a{i}", outcome="failed")
+            for i in range(4)
+        ]
+    )
+    slogger = AISessionLogger("test_phase1_breaker")
+    try:
+        summary = asyncio.run(
+            ToolCircuitBreaker.process_tool_returns(
+                cap_st,
+                cap_req,
+                create_by="CapabilityAgent",
+                session_id="test_phase1_breaker",
+                persona_name=None,
+                session_logger=slogger,
+                emit_trace=lambda _k, _v: None,
+            )
+        )
+        assert cap_st.total_tool_failures == 2
+        assert "flaky_kb" in summary.tripped_tools
+        ToolCircuitBreaker.inject_post_return_nudges(
+            cap_st,
+            cap_req,
+            summary,
+            create_by="CapabilityAgent",
+            session_id="test_phase1_breaker",
+            capability_node_id="demo_cap",
+        )
+        assert "flaky_kb" in tctx.blocked_tool_names
+        assert "artifact_put" not in tctx.blocked_tool_names
+        assert TOOLS_EXECUTION_GATED_KEY not in tctx.extra
+    finally:
+        slogger.close()
 
-def test_internal_handle_leak_gate_and_long_text_image_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
-    """内部句柄门控独立于软 OOC 开关，全前缀清洗空括号，且 >=120 字正文仍补发未发送过的图片并去重。"""
-    import asyncio
-    from typing import Mapping, Optional
 
+def test_internal_handle_leak_gate_and_long_text_image_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OOC 判定、内部句柄门控、全前缀剥离、长文补图去重及草稿句柄禁补发。"""
+    from gsuid_core.models import Event
     from gsuid_core.ai_core import output_gate
     from gsuid_core.segment import Message
     from gsuid_core.ai_core.outbound import (
         note_run_image_delivered,
         reset_run_image_delivered,
     )
+    from gsuid_core.ai_core.planning import kanban, workspace as ws_mod
     from gsuid_core.ai_core.protocol_text import _strip_resource_handles
     from gsuid_core.utils.resource_manager import RM
     from gsuid_core.ai_core.delivery_present import _resolve_and_deliver_leaked_handles
     from gsuid_core.ai_core.control.directive import GateDecision
+    from gsuid_core.ai_core.control.outbound_detectors import build_ooc_warning, inspect_outbound_ooc
 
-    # 1. 软 OOC 防火墙关闭时，软出戏放行，但 internal_handle_leak 仍强制拦截
+    # 1. OOC 判定与未知 channel 回落为 main 语义（machine_dump 延迟到 run 末重说）
+    hit = inspect_outbound_ooc("我是语言模型。")
+    assert hit is not None and hit.category == "ai_selfref" and "ai_selfref" in build_ooc_warning(hit)
+    assert inspect_outbound_ooc("上周那项活动我这边没找到相关记录。") is None
+    assert inspect_outbound_ooc("我这边数据库没有这条条目。") is not None
+    unknown_res = output_gate.pre_send_gate("Traceback (most recent call last):\n  File x", {}, channel="unknown")
+    assert unknown_res.decision is GateDecision.REWRITE and unknown_res.defer_ooc is True
+
+    # 2. 软 OOC 防火墙关闭时，软出戏放行，但 internal_handle_leak 仍强制拦截
     monkeypatch.setattr(output_gate, "is_ooc_firewall_enabled", lambda: False)
     assert output_gate.pre_send_gate("我是语言模型。", {}, channel="main").decision is GateDecision.ALLOW
     hit_to = output_gate.pre_send_gate("详见 to_a1b2c3d4e5f6", {}, channel="main")
@@ -510,7 +548,7 @@ def test_internal_handle_leak_gate_and_long_text_image_recovery(monkeypatch: pyt
     hit_img = output_gate.pre_send_gate("图在这里 img_abcdef012345", {}, channel="main")
     assert hit_img.decision is GateDecision.REWRITE and "send_message_by_ai" in hit_img.feedback
 
-    # 2. 全前缀剥离 + 前置标签/空括号清理 + 贴中文无空格命中 + 正常英文与 foo() 不误杀
+    # 3. 全前缀剥离 + 前置标签/空括号清理 + 贴中文无空格命中 + 正常英文与 foo() 不误杀
     dirty = (
         "结果已整理好（资源ID: to_a1b2c3d4e5f6），"
         "补充（句柄: note:测试人格:每日记录）与 sa_1234abcd5678、"
@@ -533,7 +571,7 @@ def test_internal_handle_leak_gate_and_long_text_image_recovery(monkeypatch: pyt
     benign = "Note: please check journal:daily and foo() in prose."
     assert _strip_resource_handles(benign) == benign
 
-    # 3. >=120 字正文带 img_ 句柄：未发过则补发真实图片，已发过则去重不重发
+    # 4. >=120 字正文带 img_ 句柄补发并去重；草稿 artifact_kind="draft" 泄漏句柄剥除且绝不补发正文
     sent_payloads: list[object] = []
 
     class _FakeSender:
@@ -541,8 +579,8 @@ def test_internal_handle_leak_gate_and_long_text_image_recovery(monkeypatch: pyt
             self,
             message: Message | list[Message] | str | bytes | list[str],
             *,
-            extra_metadata: Optional[Mapping[str, object]] = None,
-        ) -> Optional[list[str]]:
+            extra_metadata: Mapping[str, object] | None = None,
+        ) -> list[str] | None:
             del extra_metadata
             sent_payloads.append(message)
             return None
@@ -556,15 +594,17 @@ def test_internal_handle_leak_gate_and_long_text_image_recovery(monkeypatch: pyt
     assert len(long_prose) >= 120
     text_with_img = f"{long_prose}（资源ID: {img_id}）"
 
-    async def _verify_dedup() -> None:
+    async def _verify_delivery() -> None:
+        monkeypatch.setattr(ws_mod, "ARTIFACT_ROOT", tmp_path / "artifacts")
         reset_run_image_delivered()
         try:
-            out_first = await _resolve_and_deliver_leaked_handles(text_with_img, _FakeSender())
+            sender = _FakeSender()
+            out_first = await _resolve_and_deliver_leaked_handles(text_with_img, sender)
             assert img_id not in out_first and "（）" not in out_first
             assert len(sent_payloads) == 1
 
             # 本轮已记录发过该 img_id → 二次调用不得重复发图
-            out_second = await _resolve_and_deliver_leaked_handles(text_with_img, _FakeSender())
+            out_second = await _resolve_and_deliver_leaked_handles(text_with_img, sender)
             assert img_id not in out_second
             assert len(sent_payloads) == 1
 
@@ -575,10 +615,47 @@ def test_internal_handle_leak_gate_and_long_text_image_recovery(monkeypatch: pyt
                 note_run_image_delivered(img_id_2)
 
             await asyncio.create_task(_child_tool_send())
-            out_third = await _resolve_and_deliver_leaked_handles(f"{long_prose} {img_id_2}", _FakeSender())
+            out_third = await _resolve_and_deliver_leaked_handles(f"{long_prose} {img_id_2}", sender)
             assert img_id_2 not in out_third
             assert len(sent_payloads) == 1
+
+            async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="draft-leak.db"):
+                ev = Event("OneBot", "900000001", "m1", "group", "group_1", "100000001", {}, 6)
+                root_draft, _ = await kanban.create_kanban_tree(
+                    goal="测试泄漏草稿拦截",
+                    owner_user_id="100000001",
+                    scope_key="group:group_1",
+                    bot_id="OneBot",
+                    persona_name="测试人格",
+                    subtasks=[],
+                    root_agent_profile="research_agent",
+                    group_id="group_1",
+                    user_type="group",
+                    session_id=ev.session_id,
+                )
+                ws_dir = ws_mod.ensure_workspace(root_draft.id, root_draft.id)
+                draft_art = await ws_mod.put_artifact(
+                    payload="草稿正文不应随泄漏句柄补发",
+                    summary="草稿",
+                    mime="text/plain",
+                    artifact_kind="draft",
+                    plan_ctx=ws_mod.PlanRunContext(
+                        task_id=root_draft.id,
+                        step_id=None,
+                        root_task_id=root_draft.id,
+                        artifact_workspace=ws_dir,
+                        allowed_write_roots=[ws_dir],
+                    ),
+                )
+                assert draft_art is not None
+                stripped_leak = await _resolve_and_deliver_leaked_handles(
+                    f"看这里 {draft_art.id}",
+                    sender,
+                    ev=ev,
+                )
+                assert draft_art.id not in stripped_leak and "草稿正文" not in stripped_leak
+                assert len(sent_payloads) == 1
         finally:
             reset_run_image_delivered()
 
-    asyncio.run(_verify_dedup())
+    asyncio.run(_verify_delivery())

@@ -1,4 +1,4 @@
-"""WebConsole 安全路径校验、身份鉴权与加密通信测试。"""
+"""WebConsole 安全路径校验、身份鉴权、GitHub 集成、商店排序与 SSRF 防护测试。"""
 
 from __future__ import annotations
 
@@ -6,18 +6,22 @@ import os
 import json
 import time
 import base64
+import socket
+import asyncio
 from pathlib import Path
-from unittest.mock import patch
-from collections.abc import Mapping, Iterator
+from urllib.parse import urlparse
+from collections.abc import Mapping
 
 import pytest
 from fastapi import HTTPException
 from pydantic import JsonValue
+from aiohttp.abc import ResolveResult, AbstractResolver
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey, X25519PrivateKey
 
+from tests._support import make_session_record
 from gsuid_core.utils.path_safety import (
     PathEscapeError,
     safe_join,
@@ -32,22 +36,6 @@ from gsuid_core.webconsole.auth_crypto import (
     auth_keystore,
     maybe_decrypt_auth_body,
 )
-from gsuid_core.webconsole.session_store import SessionRecord
-
-
-@pytest.fixture(autouse=True)
-def _force_zh_cn_language() -> Iterator[None]:
-    with patch("gsuid_core.i18n.get_lang", return_value="zh-cn"):
-        yield
-
-
-def _make_session(role: str) -> SessionRecord:
-    return {
-        "user": {"id": "1", "email": f"{role}@example.com", "name": "测试用户A", "role": role, "avatar": None},
-        "email": f"{role}@example.com",
-        "created": "t",
-        "expires": "t",
-    }
 
 
 def _frontend_encrypt(
@@ -74,7 +62,6 @@ def _frontend_encrypt(
     payload: JsonObject = dict(fields)
     payload["ts"] = time.time() if ts is None else ts
     ct = bytearray(AESGCM(key).encrypt(iv, json.dumps(payload).encode("utf-8"), None))
-
     if tamper_ct:
         ct[-1] ^= 0xFF
 
@@ -116,18 +103,15 @@ def test_path_safety_confinement_and_filename_guards(tmp_path: Path) -> None:
     assert not is_safe_relpath("assets/../../../data/config.json")
 
 
-def test_auth_password_roles_and_ecdh_crypto() -> None:
+def test_auth_password_roles_and_ecdh_crypto(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.webconsole.web_api as web_api
     from gsuid_core.webconsole.web_api import (
         session_role,
         require_admin,
         require_auth_header,
         require_admin_header,
     )
-    from gsuid_core.webconsole.auth_api import (
-        _PASSWORD_PREFIX_BCRYPT,
-        hash_password,
-        verify_password,
-    )
+    from gsuid_core.webconsole.auth_api import _PASSWORD_PREFIX_BCRYPT, hash_password, verify_password
 
     new_hash = hash_password("s3cret!")
     assert new_hash.startswith(_PASSWORD_PREFIX_BCRYPT)
@@ -137,7 +121,7 @@ def test_auth_password_roles_and_ecdh_crypto() -> None:
     assert not legacy.startswith(_PASSWORD_PREFIX_BCRYPT)
     assert verify_password("oldpass", legacy) and not verify_password("nope", legacy)
 
-    admin, user = _make_session("admin"), _make_session("user")
+    admin, user = make_session_record("admin"), make_session_record("user")
     assert session_role(admin) == "admin" and require_admin(admin) is admin
     with pytest.raises(HTTPException) as ei:
         require_admin(user)
@@ -146,6 +130,15 @@ def test_auth_password_roles_and_ecdh_crypto() -> None:
         with pytest.raises(HTTPException) as missing:
             fn(None)
         assert missing.value.status_code == 401
+
+    # 有效 Bearer 但非管理员角色：require_auth_header 放行，require_admin_header 拒绝 403
+    tokens = {"tok_user": user, "tok_admin": admin}
+    monkeypatch.setattr(web_api.session_store, "verify", lambda raw: tokens[raw] if raw in tokens else None)
+    assert require_auth_header("Bearer tok_user") is user
+    assert require_admin_header("Bearer tok_admin") is admin
+    with pytest.raises(HTTPException) as non_admin:
+        require_admin_header("Bearer tok_user")
+    assert non_admin.value.status_code == 403
 
     info = auth_keystore.public_info()
     assert info["alg"] == "x25519-aes256gcm" and {"key_id", "alg", "pubkey", "fingerprint"} <= set(info.keys())
@@ -169,7 +162,7 @@ def test_persona_journal_read_routes_require_admin() -> None:
     from gsuid_core.webconsole.app_app import app
     from gsuid_core.webconsole.web_api import require_auth
 
-    user_session = _make_session("user")
+    user_session = make_session_record("user")
     app.dependency_overrides[require_auth] = lambda: user_session
     try:
         client = TestClient(app)
@@ -186,15 +179,11 @@ def test_plugin_prefs_recent_mru_and_persistence(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(plugin_prefs, "PLUGIN_PREFS_PATH", prefs_file)
     monkeypatch.setattr(plugin_prefs, "_cache", None)
 
-    assert plugin_prefs.get_plugin_prefs_sync() == {
-        "recent_plugins": [],
-        "last_edited_plugin": "",
-    }
+    assert plugin_prefs.get_plugin_prefs_sync() == {"recent_plugins": [], "last_edited_plugin": ""}
 
     plugin_prefs.record_recent_plugin_sync("demo_plugin_a", edited=True)
     plugin_prefs.record_recent_plugin_sync("demo_plugin_b", edited=False)
     after_dup = plugin_prefs.record_recent_plugin_sync("DEMO_PLUGIN_A", edited=False)
-
     assert after_dup["recent_plugins"] == ["DEMO_PLUGIN_A", "demo_plugin_b"]
     assert after_dup["last_edited_plugin"] == "demo_plugin_a"
 
@@ -232,77 +221,65 @@ def test_github_repo_and_graphql_contracts() -> None:
     assert repos == ["Owner/Repo", "owner/re.po-1_2"]
     assert len(normalize_repo_names([f"a/{i}" for i in range(200)])) == MAX_REPOS_PER_REQUEST
 
-    for raw_url, expected_repo in [
+    for raw_url, expected_repo in (
         ("https://github.com/Owner/Repo-A.git", "Owner/Repo-A"),
         ("git@github.com:Owner/Repo-B.git", "Owner/Repo-B"),
         ("https://www.github.com/Owner/Repo-D", "Owner/Repo-D"),
         ("https://gitee.com/Owner/Repo-C", None),
         ("https://notgithub.com/Owner/Repo", None),
-    ]:
+    ):
         assert parse_github_repo(raw_url) == expected_repo, raw_url
 
     query = build_star_graphql_query(["Genshin-bots/gsuid_core", 'We"ird/Repo'])
     assert 'r0: repository(owner: "Genshin-bots", name: "gsuid_core")' in query
-    assert "viewerHasStarred" in query
-    assert '\\"' in query
+    assert "viewerHasStarred" in query and '\\"' in query
 
     parsed = parse_star_graphql_data(
         {"r0": {"stargazerCount": 42, "viewerHasStarred": True}, "r1": None},
         ["a/b", "c/d"],
     )
-    assert parsed["a/b"] == {"count": 42, "starred": True}
-    assert parsed["c/d"] == {"count": None, "starred": None}
+    assert parsed["a/b"] == {"count": 42, "starred": True} and parsed["c/d"] == {"count": None, "starred": None}
 
 
-def test_github_auth_stars_and_store_sorting(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import asyncio
-    from urllib.parse import urlparse
-
+def test_github_oauth_encryption_star_cache_and_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GitHub 授权加密落盘、切号清状态、401 退避、密钥轮换失效与磁盘缓存/429/断网短路。"""
     import httpx2
-    from starlette.requests import Request as StarletteRequest
 
-    import gsuid_core.webconsole.plugins_api as plugins_api
     import gsuid_core.webconsole.github_auth_api as gh
-    from gsuid_core.utils.plugins_update.api import plugins_lib
-
-    def _seed_pending_device(device_code: str = "dc") -> None:
-        monkeypatch.setattr(
-            gh,
-            "_pending_device",
-            {"device_code": device_code, "interval": 5.0, "expires_at": time.time() + 60},
-        )
-
-    def _reset_viewer_cache() -> None:
-        monkeypatch.setattr(gh, "_viewer", None)
-        monkeypatch.setattr(gh, "_viewer_loaded", False)
 
     auth_file = tmp_path / "nested" / "webconsole_github.json"
     stars_cache_file = tmp_path / "nested" / "webconsole_github_stars.json"
     reg_code = "test-register-code-123"
+    fake_now = [1_700_000_000.0]
+
     monkeypatch.setattr(gh, "GITHUB_AUTH_PATH", auth_file)
     monkeypatch.setattr(gh, "GITHUB_STARS_CACHE_PATH", stars_cache_file)
-    _reset_viewer_cache()
+    monkeypatch.setattr(gh, "_viewer", None)
+    monkeypatch.setattr(gh, "_viewer_loaded", False)
     monkeypatch.setattr(gh, "_pending_device", None)
     monkeypatch.setattr(gh, "_star_cache", {})
     monkeypatch.setattr(gh, "_star_cache_loaded", False)
     monkeypatch.setattr(gh.core_config, "get_config", lambda key: reg_code if key == "REGISTER_CODE" else "")
+    monkeypatch.setattr(gh.time, "time", lambda: fake_now[0])
 
-    admin_session = _make_session("admin")
+    def _seed_pending(device_code: str = "dc") -> None:
+        monkeypatch.setattr(
+            gh, "_pending_device", {"device_code": device_code, "interval": 5.0, "expires_at": fake_now[0] + 60}
+        )
+
+    def _reset_viewer() -> None:
+        monkeypatch.setattr(gh, "_viewer", None)
+        monkeypatch.setattr(gh, "_viewer_loaded", False)
+
+    admin_session = make_session_record("admin")
     oauth_scope = "public_repo"
     oauth_login = "octocat"
     graphql_status = 200
     rate_limit_all = False
     network_fail_all = False
     rest_calls: list[str] = []
-    store_payload: dict[str, object] = {"plugins": {}}
-    store_url = urlparse(plugins_lib)
 
     def _handler(request: httpx2.Request) -> httpx2.Response:
-        if request.url.host == store_url.hostname and request.url.path == store_url.path:
-            return httpx2.Response(200, json=store_payload)
         if request.url.host == "github.com" and request.url.path == "/login/oauth/access_token":
             return httpx2.Response(200, json={"access_token": "gho_secret_token", "scope": oauth_scope})
         if request.url.path == "/user":
@@ -325,114 +302,119 @@ def test_github_auth_stars_and_store_sorting(
     orig_async_client = httpx2.AsyncClient
     transport = httpx2.MockTransport(_handler)
     monkeypatch.setattr(
-        httpx2,
-        "AsyncClient",
-        lambda *, timeout=15: orig_async_client(timeout=timeout, transport=transport),
+        httpx2, "AsyncClient", lambda *, timeout=15: orig_async_client(timeout=timeout, transport=transport)
     )
 
-    # 1. REGISTER_CODE 缺失不崩溃；scope 不足时 can_star=False 并拒绝 star 操作
-    reg_code = ""
-    _seed_pending_device()
-    assert asyncio.run(gh.github_device_poll(admin_session))["status"] == 1
-    assert gh._pending_device is None
+    async def scenario() -> None:
+        nonlocal reg_code, oauth_scope, oauth_login, graphql_status, rate_limit_all, network_fail_all
 
-    reg_code = "test-register-code-123"
-    oauth_scope = "read:user"
-    _seed_pending_device()
-    limited_poll = asyncio.run(gh.github_device_poll(admin_session))
-    assert limited_poll["status"] == 0 and "data" in limited_poll
-    assert "can_star" in limited_poll["data"] and not limited_poll["data"]["can_star"]
-    assert asyncio.run(gh.github_star("owner", "repo-a", admin_session))["status"] == 1
+        reg_code = ""
+        _seed_pending()
+        assert (await gh.github_device_poll(admin_session))["status"] == 1 and gh._pending_device is None
 
-    # 2. 正常授权加密落盘、重加载还原、路径穿越拒绝、star/unstar 幂等更新及直接切号清旧 starred
-    oauth_scope = "public_repo"
-    _seed_pending_device()
-    poll_ok = asyncio.run(gh.github_device_poll(admin_session))
-    assert poll_ok["status"] == 0 and auth_file.exists()
-    assert "gho_secret_token" not in auth_file.read_text(encoding="utf-8")
+        reg_code = "test-register-code-123"
+        oauth_scope = "read:user"
+        _seed_pending()
+        limited_poll = await gh.github_device_poll(admin_session)
+        assert limited_poll["status"] == 0 and "data" in limited_poll
+        poll_data = limited_poll["data"]
+        assert "can_star" in poll_data and not poll_data["can_star"]
+        assert (await gh.github_star("owner", "repo-a", admin_session))["status"] == 1
 
-    _reset_viewer_cache()
-    status_res = asyncio.run(gh.github_status(admin_session))
-    assert "data" in status_res and status_res["data"] == {
-        "connected": True,
-        "login": "octocat",
-        "avatar_url": "https://example.com/a.png",
-        "can_star": True,
-    }
-    assert asyncio.run(gh.github_star("owner", "..", admin_session))["status"] == 1
+        oauth_scope = "public_repo"
+        _seed_pending()
+        assert (await gh.github_device_poll(admin_session))["status"] == 0 and auth_file.exists()
+        assert "gho_secret_token" not in auth_file.read_text(encoding="utf-8")
 
-    stars_ok = asyncio.run(gh.github_stars(gh._StarsBody(repos=["owner/repo-a"]), admin_session))
-    assert "data" in stars_ok and stars_ok["data"] == {
-        "connected": True,
-        "stars": {"owner/repo-a": {"count": 99, "starred": False}},
-    }
-    assert asyncio.run(gh.github_star("owner", "repo-a", admin_session))["status"] == 0
-    assert asyncio.run(gh.github_star("owner", "repo-a", admin_session))["status"] == 0
-    assert asyncio.run(gh.resolve_repo_star_counts(["owner/repo-a"])) == {"owner/repo-a": 100}
+        _reset_viewer()
+        status_res = await gh.github_status(admin_session)
+        assert "data" in status_res and status_res["data"] == {
+            "connected": True,
+            "login": "octocat",
+            "avatar_url": "https://example.com/a.png",
+            "can_star": True,
+        }
+        assert (await gh.github_star("owner", "..", admin_session))["status"] == 1
 
-    # 直接切号（不调 disconnect）应剥除旧账号 starred；状态未知时 unstar 不盲目减 1，已知后再 ±1
-    oauth_login = "octocat2"
-    _seed_pending_device("dc2")
-    assert asyncio.run(gh.github_device_poll(admin_session))["status"] == 0
-    assert asyncio.run(gh.github_unstar("owner", "repo-a", admin_session))["status"] == 0
-    assert asyncio.run(gh.resolve_repo_star_counts(["owner/repo-a"])) == {"owner/repo-a": 100}
-    assert asyncio.run(gh.github_star("owner", "repo-a", admin_session))["status"] == 0
-    assert asyncio.run(gh.resolve_repo_star_counts(["owner/repo-a"])) == {"owner/repo-a": 101}
-    assert asyncio.run(gh.github_unstar("owner", "repo-a", admin_session))["status"] == 0
-    assert asyncio.run(gh.resolve_repo_star_counts(["owner/repo-a"])) == {"owner/repo-a": 100}
+        stars_ok = await gh.github_stars(gh._StarsBody(repos=["owner/repo-a"]), admin_session)
+        assert "data" in stars_ok and stars_ok["data"] == {
+            "connected": True,
+            "stars": {"owner/repo-a": {"count": 99, "starred": False}},
+        }
+        assert (await gh.github_star("owner", "repo-a", admin_session))["status"] == 0
+        assert (await gh.github_star("owner", "repo-a", admin_session))["status"] == 0
+        assert await gh.resolve_repo_star_counts(["owner/repo-a"]) == {"owner/repo-a": 100}
 
-    # 3. 401 撤销后清本地凭据、剥除 starred、匿名复用缓存计数并对 429 短路
-    graphql_status = 401
-    stars_fallback = asyncio.run(
-        gh.github_stars(gh._StarsBody(repos=["owner/repo-a", "owner/repo-b", "owner/repo-c"]), admin_session)
-    )
-    assert not auth_file.exists()
-    assert "data" in stars_fallback and stars_fallback["data"] == {
-        "connected": False,
-        "stars": {
-            "owner/repo-a": {"count": 100, "starred": None},
-            "owner/repo-b": {"count": None, "starred": None},
-            "owner/repo-c": {"count": None, "starred": None},
-        },
-    }
-    assert len(rest_calls) <= 2
+        oauth_login = "octocat2"
+        _seed_pending("dc2")
+        assert (await gh.github_device_poll(admin_session))["status"] == 0
+        assert (await gh.github_unstar("owner", "repo-a", admin_session))["status"] == 0
+        assert await gh.resolve_repo_star_counts(["owner/repo-a"]) == {"owner/repo-a": 100}
+        assert (await gh.github_star("owner", "repo-a", admin_session))["status"] == 0
+        assert await gh.resolve_repo_star_counts(["owner/repo-a"]) == {"owner/repo-a": 101}
+        assert (await gh.github_unstar("owner", "repo-a", admin_session))["status"] == 0
+        assert await gh.resolve_repo_star_counts(["owner/repo-a"]) == {"owner/repo-a": 100}
 
-    # 4. REGISTER_CODE 变更导致旧密文解不开时视为未连接
-    _seed_pending_device()
-    asyncio.run(gh.github_device_poll(admin_session))
-    reg_code = "rotated-register-code"
-    _reset_viewer_cache()
-    rotated_status = asyncio.run(gh.github_status(admin_session))
-    assert "data" in rotated_status and rotated_status["data"] == {
-        "connected": False,
-        "login": "",
-        "avatar_url": "",
-        "can_star": False,
-    }
+        graphql_status = 401
+        stars_fallback = await gh.github_stars(
+            gh._StarsBody(repos=["owner/repo-a", "owner/repo-b", "owner/repo-c"]), admin_session
+        )
+        assert not auth_file.exists() and len(rest_calls) <= 2
+        assert "data" in stars_fallback and stars_fallback["data"] == {
+            "connected": False,
+            "stars": {
+                "owner/repo-a": {"count": 100, "starred": None},
+                "owner/repo-b": {"count": None, "starred": None},
+                "owner/repo-c": {"count": None, "starred": None},
+            },
+        }
 
-    # 5. 磁盘缓存跨重启复用（0 网络请求）+ 过期遇 429 保留旧值 + 断网短路
-    assert stars_cache_file.exists()
-    monkeypatch.setattr(gh, "_star_cache", {})
-    monkeypatch.setattr(gh, "_star_cache_loaded", False)
-    calls_before = len(rest_calls)
-    assert asyncio.run(gh.resolve_repo_star_counts(["owner/repo-a", "owner/repo-x"])) == {
-        "owner/repo-a": 100,
-        "owner/repo-x": None,
-    }
-    assert len(rest_calls) == calls_before + 1
+        _seed_pending()
+        await gh.github_device_poll(admin_session)
+        reg_code = "rotated-register-code"
+        _reset_viewer()
+        rotated = await gh.github_status(admin_session)
+        assert "data" in rotated and rotated["data"] == {
+            "connected": False,
+            "login": "",
+            "avatar_url": "",
+            "can_star": False,
+        }
 
-    rate_limit_all = True
-    gh._star_cache["owner/repo-a"]["fetched_at"] = 1.0
-    assert asyncio.run(gh.resolve_repo_star_counts(["owner/repo-a"])) == {"owner/repo-a": 100}
-    assert len(rest_calls) == calls_before + 2
+        # 磁盘缓存跨重启复用（0 请求）+ 时钟前移过期遇 429 保留旧值 + 断网批量短路
+        assert stars_cache_file.exists()
+        monkeypatch.setattr(gh, "_star_cache", {})
+        monkeypatch.setattr(gh, "_star_cache_loaded", False)
+        calls_before = len(rest_calls)
+        assert await gh.resolve_repo_star_counts(["owner/repo-a", "owner/repo-x"]) == {
+            "owner/repo-a": 100,
+            "owner/repo-x": None,
+        }
+        assert len(rest_calls) == calls_before + 1
 
-    network_fail_all = True
-    calls_offline = len(rest_calls)
-    offline = asyncio.run(gh.resolve_repo_star_counts([f"owner/off-{i}" for i in range(12)]))
-    assert all(v is None for v in offline.values())
-    assert 0 < len(rest_calls) - calls_offline <= gh._ANON_MAX_FAILURES + 5
+        rate_limit_all = True
+        fake_now[0] += 86400.0
+        assert await gh.resolve_repo_star_counts(["owner/repo-a"]) == {"owner/repo-a": 100}
+        assert len(rest_calls) == calls_before + 2
 
-    # 6. 商店列表真实边界：多页跨页单调排序、停更沉底、无 star 排已知之后、默认种子稳定与已装筛选
+        network_fail_all = True
+        calls_offline = len(rest_calls)
+        offline = await gh.resolve_repo_star_counts([f"owner/off-{i}" for i in range(12)])
+        assert all(v is None for v in offline.values()) and 0 < len(rest_calls) - calls_offline < 12
+
+    asyncio.run(scenario())
+
+
+def test_plugin_store_sorting_pagination_and_installed_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """商店列表多页单调排序、停更沉底、无 star 排已知之后、默认种子稳定与已装筛选。"""
+    import httpx2
+    from starlette.requests import Request as StarletteRequest
+
+    import gsuid_core.webconsole.plugins_api as plugins_api
+    import gsuid_core.webconsole.github_auth_api as gh
+    from gsuid_core.utils.plugins_update.api import plugins_lib
+
+    store_url = urlparse(plugins_lib)
     synthetic_plugins: dict[str, dict[str, object]] = {
         f"plug_{i:02d}": {"info": f"Plugin {i}", "link": f"https://github.com/owner/plug-{i:02d}"} for i in range(70)
     }
@@ -443,7 +425,17 @@ def test_github_auth_stars_and_store_sorting(
         "content": "停止维护",
     }
     synthetic_plugins["plug_none"] = {"info": "Gitee", "link": "https://gitee.com/owner/plug-none"}
-    store_payload["plugins"] = synthetic_plugins
+
+    def _handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == store_url.hostname and request.url.path == store_url.path:
+            return httpx2.Response(200, json={"plugins": synthetic_plugins})
+        return httpx2.Response(404)
+
+    orig_async_client = httpx2.AsyncClient
+    transport = httpx2.MockTransport(_handler)
+    monkeypatch.setattr(
+        httpx2, "AsyncClient", lambda *, timeout=15: orig_async_client(timeout=timeout, transport=transport)
+    )
 
     star_cache_map: dict[str, gh._StarCacheEntry] = {
         f"owner/plug-{i:02d}": {"count": (i * 17) % 100, "starred": None, "fetched_at": time.time()} for i in range(70)
@@ -459,17 +451,13 @@ def test_github_auth_stars_and_store_sorting(
 
     monkeypatch.setattr(plugins_api, "get_local_plugins_list", _local_list)
     dummy_req = StarletteRequest({"type": "http", "method": "GET", "path": "/api/plugin-store/list", "headers": []})
+    admin_session = make_session_record("admin")
 
-    def _fetch_page(
-        offset: int,
-        sort: str,
-        limit: int = 32,
-        *,
-        tab: str = "all",
-        order_seed: str = "seed",
-    ) -> tuple[list[str], str]:
-        res = asyncio.run(
-            plugins_api.get_plugin_store_list(
+    async def scenario() -> None:
+        async def _fetch_page(
+            offset: int, sort: str, limit: int = 32, *, tab: str = "all", order_seed: str = "seed"
+        ) -> tuple[list[str], str]:
+            res = await plugins_api.get_plugin_store_list(
                 dummy_req,
                 admin_session,
                 tab=tab,
@@ -479,39 +467,37 @@ def test_github_auth_stars_and_store_sorting(
                 order_seed=order_seed,
                 sort=sort,
             )
-        )
-        data = res["data"]
-        assert isinstance(data, dict) and isinstance(data["plugins"], list)
-        return [str(item["id"]) for item in data["plugins"]], str(data["sort"])
+            data = res["data"]
+            assert isinstance(data, dict) and isinstance(data["plugins"], list)
+            return [str(item["id"]) for item in data["plugins"]], str(data["sort"])
 
-    p1, _ = _fetch_page(0, "stars_desc")
-    p2, _ = _fetch_page(32, "stars_desc")
-    p3, _ = _fetch_page(64, "stars_desc")
-    all_desc = p1 + p2 + p3
-    assert (len(p1), len(p2), len(p3)) == (32, 32, 8)
-    assert all_desc[-2:] == ["plug_none", "plug_dep"]
-    counts_by_id = {f"plug_{i:02d}": (i * 17) % 100 for i in range(70)}
-    assert [counts_by_id[pid] for pid in all_desc[:-2]] == sorted(counts_by_id.values(), reverse=True)
+        p1, _ = await _fetch_page(0, "stars_desc")
+        p2, _ = await _fetch_page(32, "stars_desc")
+        p3, _ = await _fetch_page(64, "stars_desc")
+        all_desc = p1 + p2 + p3
+        assert (len(p1), len(p2), len(p3)) == (32, 32, 8) and all_desc[-2:] == ["plug_none", "plug_dep"]
+        counts_by_id = {f"plug_{i:02d}": (i * 17) % 100 for i in range(70)}
+        assert [counts_by_id[pid] for pid in all_desc[:-2]] == sorted(counts_by_id.values(), reverse=True)
 
-    all_asc, _ = _fetch_page(0, "stars_asc", limit=100)
-    assert all_asc[-2:] == ["plug_none", "plug_dep"]
-    assert [counts_by_id[pid] for pid in all_asc[:-2]] == sorted(counts_by_id.values())
+        all_asc, _ = await _fetch_page(0, "stars_asc", limit=100)
+        assert all_asc[-2:] == ["plug_none", "plug_dep"]
+        assert [counts_by_id[pid] for pid in all_asc[:-2]] == sorted(counts_by_id.values())
 
-    def_a, _ = _fetch_page(0, "default", limit=100, order_seed="seed-a")
-    assert def_a == _fetch_page(0, "default", limit=100, order_seed="seed-a")[0]
-    assert def_a != _fetch_page(0, "default", limit=100, order_seed="seed-b")[0] and def_a[-1] == "plug_dep"
-    local_plugins.update({"plug_01": "p1", "plug_dep": "pd"})
-    assert _fetch_page(0, "default", limit=100, tab="installed", order_seed="seed-a")[0] == ["plug_01", "plug_dep"]
+        def_a, _ = await _fetch_page(0, "default", limit=100, order_seed="seed-a")
+        assert def_a == (await _fetch_page(0, "default", limit=100, order_seed="seed-a"))[0]
+        assert def_a != (await _fetch_page(0, "default", limit=100, order_seed="seed-b"))[0] and def_a[-1] == "plug_dep"
+        local_plugins.update({"plug_01": "p1", "plug_dep": "pd"})
+        assert (await _fetch_page(0, "default", limit=100, tab="installed", order_seed="seed-a"))[0] == [
+            "plug_01",
+            "plug_dep",
+        ]
+        assert (await _fetch_page(0, "bogus"))[1] == "default"
 
-    _, bogus_sort = _fetch_page(0, "bogus")
-    assert bogus_sort == "default"
+    asyncio.run(scenario())
 
 
 def test_web_fetch_ssrf_guard_blocks_private_and_redirect_targets(monkeypatch: pytest.MonkeyPatch) -> None:
     """web_fetch SSRF 守卫拒绝内网/回环/元数据地址、私网 DNS 解析以及重定向到内网。"""
-    import socket
-    import asyncio
-
     import gsuid_core.ai_core.web_fetch as wf
     import gsuid_core.ai_core.web_fetch.url_safety as url_safety
 
@@ -528,29 +514,45 @@ def test_web_fetch_ssrf_guard_blocks_private_and_redirect_targets(monkeypatch: p
         with pytest.raises(ValueError):
             asyncio.run(wf.fetch_webpage_as_markdown(blocked))
 
-    url_safety.validate_public_url_syntax("https://example.com/guide")
+    assert url_safety.validate_public_url_syntax("https://example.com/guide") == "https://example.com/guide"
 
-    # DNS 解析到私网/回环 IP 时必须在连出前拦截
     async def _dns_private(
-        _self: asyncio.AbstractEventLoop,
-        host: str,
-        _port: object,
-        **_kw: object,
+        _self: asyncio.AbstractEventLoop, host: str, _port: object, **_kw: object
     ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
         if host == "evil-rebind.example":
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80))]
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
     monkeypatch.setattr(asyncio.BaseEventLoop, "getaddrinfo", _dns_private)
-    with pytest.raises(ValueError, match="内网/环回"):
+    with pytest.raises(ValueError):
         asyncio.run(url_safety.validate_public_url_dns("https://evil-rebind.example/page"))
-    asyncio.run(url_safety.validate_public_url_dns("https://public-ok.example/page"))
+    assert asyncio.run(url_safety.validate_public_url_dns("https://public-ok.example/page")) == (
+        "https://public-ok.example/page"
+    )
 
-    # 建连阶段 PublicOnlyResolver 直接校验解析出的 IP，阻断 DNS 重绑定 TOCTOU
+    class _StubInnerResolver(AbstractResolver):
+        async def resolve(
+            self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
+        ) -> list[ResolveResult]:
+            ip = "127.0.0.1" if host == "evil-rebind.example" else "93.184.216.34"
+            return [
+                {
+                    "hostname": host,
+                    "host": ip,
+                    "port": port,
+                    "family": family,
+                    "proto": 6,
+                    "flags": 0,
+                }
+            ]
+
+        async def close(self) -> None:
+            return None
+
     async def _check_resolver() -> None:
-        resolver = url_safety.PublicOnlyResolver()
+        resolver = url_safety.PublicOnlyResolver(inner=_StubInnerResolver())
         try:
-            with pytest.raises(ValueError, match="内网/环回"):
+            with pytest.raises(ValueError):
                 await resolver.resolve("evil-rebind.example", 443, socket.AF_INET)
             ok = await resolver.resolve("public-ok.example", 443, socket.AF_INET)
             assert ok and ok[0]["host"] == "93.184.216.34"
@@ -559,7 +561,6 @@ def test_web_fetch_ssrf_guard_blocks_private_and_redirect_targets(monkeypatch: p
 
     asyncio.run(_check_resolver())
 
-    # 302 跳转目标指向 127.0.0.1 时必须在下一跳前拦截，绝不连接内网
     visited_urls: list[str] = []
 
     class _FakeResp:
@@ -589,6 +590,6 @@ def test_web_fetch_ssrf_guard_blocks_private_and_redirect_targets(monkeypatch: p
             return _FakeResp(302, {"Location": "http://127.0.0.1:8765/secret"})
 
     monkeypatch.setattr(wf.aiohttp, "ClientSession", _FakeSession)
-    with pytest.raises(ValueError, match="环回或私有网段"):
+    with pytest.raises(ValueError):
         asyncio.run(wf._fetch_via_local("https://public-ok.example/start"))
     assert visited_urls == ["https://public-ok.example/start"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import asyncio
 from collections.abc import Iterator
 
@@ -23,10 +24,13 @@ from gsuid_core.ai_core.hooks import (
     drop_hooks_for_kit,
     drop_hooks_for_module,
 )
+from gsuid_core.ai_core.configs.ai_config import ai_config
 
 
 @pytest.fixture(autouse=True)
-def _clean_hooks() -> Iterator[None]:
+def _clean_hooks(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr(ai_config.get_config("enable"), "data", True)
+    monkeypatch.setattr(ai_config.get_config("agent_hooks_enable"), "data", True)
     clear_hooks()
     yield
     clear_hooks()
@@ -34,17 +38,34 @@ def _clean_hooks() -> Iterator[None]:
 
 def test_hook_points_specs_and_ids() -> None:
     assert set(HOOK_POINT_SPECS) == set(AgentHookPoint)
+    seen_ids: set[str] = set()
     for point in AgentHookPoint:
         spec = spec_for(point)
         assert spec.anchor and spec.default_timeout_ms > 0
+        assert re.fullmatch(r"H\d{2}", point.value) is not None, point
+        assert point.value not in seen_ids, point.value
+        seen_ids.add(point.value)
+
+    # 已发布点位编号属于插件/套件稳定契约（points.py），禁止变更或复用
+    published_ids = {
+        AgentHookPoint.ON_INBOUND: "H00",
+        AgentHookPoint.BEFORE_AI_CHAT: "H01",
+        AgentHookPoint.AFTER_SESSION: "H02",
+        AgentHookPoint.CLASSIFY: "H03",
+        AgentHookPoint.RETRIEVE_CONTEXT: "H05",
+        AgentHookPoint.COMPOSE_CONTEXT: "H06",
+        AgentHookPoint.AFTER_CONTEXT: "H07",
+        AgentHookPoint.AFTER_RUN: "H08",
+        AgentHookPoint.ASSEMBLE_TOOLS: "H14",
+        AgentHookPoint.AFTER_ASSEMBLE_TOOLS: "H15",
+        AgentHookPoint.ON_STABLE_CONTEXT: "H29",
+    }
+    for point, expected_id in published_ids.items():
+        assert point.value == expected_id, point
+
+    # H05 检索是唯一允许的长超时点位
     longest = max(HOOK_POINT_SPECS.values(), key=lambda s: s.default_timeout_ms)
     assert longest.point is AgentHookPoint.RETRIEVE_CONTEXT
-
-    assert AgentHookPoint.ON_INBOUND.value == "H00"
-    assert AgentHookPoint.RETRIEVE_CONTEXT.value == "H05"
-    assert AgentHookPoint.COMPOSE_CONTEXT.value == "H06"
-    assert AgentHookPoint.ASSEMBLE_TOOLS.value == "H14"
-    assert AgentHookPoint.ON_STABLE_CONTEXT.value == "H29"
 
 
 def test_dispatch_order_sync_fail_open_timeout_and_short_circuit() -> None:

@@ -1029,12 +1029,6 @@ async def _finalize_and_log_assembled_tools(
 
 
 class ToolsPhase:
-    def _stabilize_session_toolset(self: RunOnceHost, core: ToolList, ctx_tags: list[str]) -> ToolList:
-        return _stabilize_session_toolset_for(self, core, ctx_tags)
-
-    async def _restore_frozen_session_tools(self: RunOnceHost, caller_tools: ToolList | None = None) -> ToolList:
-        return await _restore_frozen_session_tools_for(self, caller_tools)
-
     async def _run_once_assemble_tools(self: RunOnceHost, st: RunOnceState) -> None:
         """工具五层装配 + 去重 + 渐进式暴露。"""
         from gsuid_core.ai_core.command_aside.policy import aside_blocks_tools

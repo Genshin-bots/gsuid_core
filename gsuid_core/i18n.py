@@ -430,10 +430,6 @@ def discover_and_register_plugin_locales(plugin_dir: Path | str, plugin_name: Op
     return register_plugin_locales(name, locales, reload=True)
 
 
-def plugin_locale_key_count(plugin_name: str) -> int:
-    return len(_plugin_keys.get(plugin_name, ()))
-
-
 load_catalogs()
 
 

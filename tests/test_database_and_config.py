@@ -1,7 +1,8 @@
-"""数据库写者闸门、事务安全与进程重启契约测试。"""
+"""数据库写者闸门、事务安全、任务模型路由与 OpenAI 协议自愈测试。"""
 
 from __future__ import annotations
 
+import json as _json
 import asyncio
 from types import SimpleNamespace
 from pathlib import Path
@@ -15,10 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import gsuid_core.supervisor as supervisor_mod
 import gsuid_core.utils.database.base_models as base_models
 import gsuid_core.buildin_plugins.core_command.core_restart.restart as restart_mod
-from tests._support import isolated_sqlite_db
+from tests._support import isolated_sqlite_db, make_session_record
 from gsuid_core.supervisor import RESTART_EXIT_CODE, Supervisor, dependency_sync_command
 from gsuid_core.utils.database.write_gate import SqliteWriteGate
 from gsuid_core.utils.database.base_models import with_session, with_read_session
+from gsuid_core.utils.plugins_config.models import GSCData
 from gsuid_core.utils.plugins_config.gs_config import ConfigSetManager
 from gsuid_core.buildin_plugins.core_command.core_restart.restart import (
     RESTART_GUARD_MAX_IN_WINDOW,
@@ -45,10 +47,14 @@ class _FakeChild:
 def test_sqlite_write_gate_reentry_and_priority() -> None:
     async def scenario() -> None:
         gate = SqliteWriteGate()
-        async with gate:
-            async with gate.hold(core=False):
-                async with gate:
-                    pass
+
+        async def _reenter() -> None:
+            async with gate:
+                async with gate.hold(core=False):
+                    async with gate:
+                        pass
+
+        await asyncio.wait_for(_reenter(), 1.0)
 
         order: list[str] = []
         release = asyncio.Event()
@@ -84,8 +90,6 @@ def test_sqlite_write_gate_reentry_and_priority() -> None:
 def test_session_read_only_and_savepoint_isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def scenario() -> None:
         async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="session-test.db", tables=()) as (_engine, maker):
-            monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
-            monkeypatch.setattr(base_models, "_db_type", "sqlite")
 
             class Probe:
                 @classmethod
@@ -162,10 +166,12 @@ def test_restart_env_guard_and_supervisor(tmp_path: Path, monkeypatch: pytest.Mo
         }
     )
     assert cleaned == {"PATH": "/usr/bin"}
-    assert (
-        build_restart_shell_command("Windows", 4242, "uv run core")
-        == "taskkill /F /PID 4242 & timeout /t 2 /nobreak > NUL & uv run core"
-    )
+    for system, expected_cmd in (
+        ("Windows", "taskkill /F /PID 4242 & timeout /t 2 /nobreak > NUL & uv run core"),
+        ("Linux", "kill -9 4242 ; sleep 1 ; uv run core"),
+        ("Darwin", "kill -9 4242 ; sleep 1 ; uv run core"),
+    ):
+        assert build_restart_shell_command(system, 4242, "uv run core") == expected_cmd, system
 
     guard = tmp_path / "core_restart_guard.json"
     for index in range(RESTART_GUARD_MAX_IN_WINDOW):
@@ -217,6 +223,9 @@ class _StubConfigManager(ConfigSetManager):
     def exists(self, config_name: str) -> bool:
         return config_name in self.names
 
+    def get_config_dict(self, config_name: str) -> dict[str, GSCData]:
+        return {"model_name": config_name} if config_name in self.names else {}
+
 
 def _patch_task_model_env(
     monkeypatch: pytest.MonkeyPatch,
@@ -249,7 +258,7 @@ def _patch_task_model_env(
 
 def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
     """按任务覆盖：改档、指定配置、层级回退（子代理→能力代理→默认档）与失效配置兜底。"""
-    from gsuid_core.ai_core.configs import models, provider_config_manager
+    from gsuid_core.ai_core.configs import models
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
     _patch_task_model_env(
@@ -268,8 +277,6 @@ def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
             "broken": "not-a-list",
         },
     )
-    with pytest.raises(ValueError):
-        provider_config_manager.provider_manager("unknown")
 
     route_cases: list[tuple[models.TaskLevel, str | None, tuple[str, str, str, str | None, str | None]]] = [
         ("high", "chat", ("openai++Low", "", "level", "low", None)),
@@ -309,15 +316,17 @@ def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
         assert models.provider_config_exists(cfg_name) is expected_exists, cfg_name
 
 
-def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
-    """规范化主备重名校验、能力代理覆盖投影与 refresh_model_if_changed 热替换。"""
+def test_task_model_api_and_agent_refresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """规范化主备重名校验、能力代理覆盖投影与 refresh_model_if_changed 真实指纹热替换。"""
     from pydantic_ai.models.test import TestModel
 
+    import gsuid_core.ai_core.session_logger as slog_mod
     from gsuid_core.ai_core import gs_agent as gs_agent_mod
+    from gsuid_core.ai_core.models import SessionLogEntry
     from gsuid_core.ai_core.configs import models
     from gsuid_core.ai_core.agent_node import AgentNode, get_node, register_agent_node, unregister_agent_node
+    from gsuid_core.ai_core.session_logger import extract_session_usage
     from gsuid_core.ai_core.session_registry import get_ai_session_registry
-    from gsuid_core.webconsole.session_store import SessionRecord
     from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER
     from gsuid_core.webconsole.ai_task_models_api import (
@@ -327,6 +336,8 @@ def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> No
         clear_ai_task_model,
     )
     from gsuid_core.ai_core.capability_agents.runner import reopen_capability_agent
+
+    monkeypatch.setattr(slog_mod, "AI_SESSION_LOGS_PATH", tmp_path)
 
     stored: dict[str, list[str]] = {}
     _patch_task_model_env(
@@ -346,126 +357,121 @@ def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> No
         return True
 
     monkeypatch.setattr(ai_config, "set_config", _save_cfg)
+    admin = make_session_record("admin")
 
-    admin = SessionRecord(user={"role": "admin"}, email="a@test", created="", expires="")
-    dup = asyncio.run(
-        set_ai_task_model("turn_router", TaskOverrideBody(primary="MiniMAX", secondary="openai++MiniMAX"), admin)
-    )
-    assert dup["status"] == 1 and "不能与主配置相同" in dup["msg"]
-
-    ok = asyncio.run(set_ai_task_model("turn_router", TaskOverrideBody(primary="MiniMAX", secondary="Backup"), admin))
-    assert ok["status"] == 0 and stored["turn_router"] == ["openai++MiniMAX", "openai++Backup"]
-
-    # 能力代理动态投影、单代理覆盖、父级继承与卸载后的孤儿识别
-    node_a = AgentNode(
-        node_id="test_cap_render",
-        display_name="测试渲染代理",
-        prompt="test",
-        when_to_use="测试渲染",
-        source="builtin",
-        plugin="core",
-    )
-    node_b = AgentNode(
-        node_id="test_cap_user",
-        display_name="测试自定义代理",
-        prompt="test",
-        when_to_use="测试自定义",
-        source="user",
-    )
-    node_eval = AgentNode(
-        node_id="capability_evaluator",
-        display_name="评估器",
-        prompt="eval",
-        source="builtin",
-    )
-    had_eval = get_node("capability_evaluator") is not None
-    register_agent_node(node_a)
-    register_agent_node(node_b)
-    if not had_eval:
-        register_agent_node(node_eval)
-    try:
-        bad_eval = asyncio.run(
-            set_ai_task_model("capability_agent:capability_evaluator", TaskOverrideBody(primary="RenderCfg"), admin)
+    async def scenario() -> None:
+        dup = await set_ai_task_model(
+            "turn_router", TaskOverrideBody(primary="MiniMAX", secondary="openai++MiniMAX"), admin
         )
-        assert bad_eval["status"] == 1
-        bad_missing = asyncio.run(
-            set_ai_task_model("capability_agent:missing_node", TaskOverrideBody(primary="RenderCfg"), admin)
+        assert dup["status"] == 1 and "不能与主配置相同" in dup["msg"]
+
+        ok = await set_ai_task_model("turn_router", TaskOverrideBody(primary="MiniMAX", secondary="Backup"), admin)
+        assert ok["status"] == 0 and stored["turn_router"] == ["openai++MiniMAX", "openai++Backup"]
+
+        # 能力代理动态投影、单代理覆盖、父级继承与卸载后的孤儿识别
+        node_a = AgentNode(
+            node_id="test_cap_render",
+            display_name="测试渲染代理",
+            prompt="test",
+            when_to_use="测试渲染",
+            source="builtin",
+            plugin="core",
         )
-        assert bad_missing["status"] == 1
-
-        set_parent = asyncio.run(set_ai_task_model("capability_agent", TaskOverrideBody(primary="Backup"), admin))
-        assert set_parent["status"] == 0
-        set_child = asyncio.run(
-            set_ai_task_model("capability_agent:test_cap_render", TaskOverrideBody(primary="RenderCfg"), admin)
+        node_b = AgentNode(
+            node_id="test_cap_user",
+            display_name="测试自定义代理",
+            prompt="test",
+            when_to_use="测试自定义",
+            source="user",
         )
-        assert set_child["status"] == 0 and set_child["data"] is not None
-        by_id = {k["id"]: k for k in set_child["data"]["kinds"]}
-        assert "capability_agent:capability_evaluator" not in by_id
-        assert by_id["capability_agent:test_cap_render"]["parent_id"] == "capability_agent"
-        assert by_id["capability_agent:test_cap_render"]["node_source"] == "builtin"
-        assert by_id["capability_agent:test_cap_render"]["stats_keys"] == ["capability_agent:test_cap_render"]
-        assert by_id["capability_agent:test_cap_render"]["effective"]["primary"] == "openai++RenderCfg"
-        assert by_id["capability_agent:test_cap_render"]["effective"]["inherited_from"] is None
-        assert by_id["capability_agent:test_cap_user"]["effective"]["primary"] == "openai++Backup"
-        assert by_id["capability_agent:test_cap_user"]["effective"]["inherited_from"] == "capability_agent"
-
-        built_models: list[str] = []
-
-        def _fake_model(lvl: models.TaskLevel, kind: str | None = None) -> TestModel:
-            full_name = models.get_config_name_for_task(lvl, kind)
-            built_models.append(full_name)
-            return TestModel(model_name=full_name)
-
-        monkeypatch.setattr(gs_agent_mod, "get_model_for_task", _fake_model)
-        monkeypatch.setattr(
-            gs_agent_mod,
-            "get_model_fingerprint_for_task",
-            lambda lvl, kind=None: f"fp:{models.get_config_name_for_task(lvl, kind)}",
+        node_eval = AgentNode(
+            node_id="capability_evaluator",
+            display_name="评估器",
+            prompt="eval",
+            source="builtin",
         )
-
-        # 验证 CapabilityAgent 实例化走独立 task_kind、节点标识与对应覆盖模型
-        reopened = asyncio.run(reopen_capability_agent("test_cap_render", "capagent_test_cap_render_1", None))
-        assert reopened is not None
-        try:
-            assert reopened.capability_node_id == "test_cap_render"
-            assert reopened.task_kind == "capability_agent:test_cap_render"
-            assert reopened.model_config_name == "openai++RenderCfg"
-            assert isinstance(reopened.model, TestModel) and reopened.model.model_name == "openai++RenderCfg"
-            assert built_models == ["openai++RenderCfg"]
-        finally:
-            get_ai_session_registry().remove_ai_session("capagent_test_cap_render_1")
-            reopened._session_logger.close()
-
-        built_models.clear()
-        agent = gs_agent_mod.GsCoreAIAgent(task_level="low", task_kind=TASK_TURN_ROUTER, thinking=False)
-        try:
-            assert agent.model_config_name == "openai++MiniMAX"
-            assert isinstance(agent.model, TestModel) and agent.model.model_name == "openai++MiniMAX"
-
-            stored["turn_router"] = ["openai++Backup", ""]
-            assert asyncio.run(agent.refresh_model_if_changed()) is True
-            assert agent.model_config_name == "openai++Backup"
-            assert isinstance(agent.model, TestModel) and agent.model.model_name == "openai++Backup"
-            assert built_models == ["openai++MiniMAX", "openai++Backup"]
-        finally:
-            agent._session_logger.close()
-    finally:
-        unregister_agent_node("test_cap_render")
-        unregister_agent_node("test_cap_user")
+        had_eval = get_node("capability_evaluator") is not None
+        register_agent_node(node_a)
+        register_agent_node(node_b)
         if not had_eval:
-            unregister_agent_node("capability_evaluator")
+            register_agent_node(node_eval)
+        try:
+            bad_eval = await set_ai_task_model(
+                "capability_agent:capability_evaluator", TaskOverrideBody(primary="RenderCfg"), admin
+            )
+            assert bad_eval["status"] == 1
+            bad_missing = await set_ai_task_model(
+                "capability_agent:missing_node", TaskOverrideBody(primary="RenderCfg"), admin
+            )
+            assert bad_missing["status"] == 1
 
-    # 卸载节点后旧覆盖落入 orphans，DELETE 可清理
-    after_remove = asyncio.run(get_ai_task_models(admin))
-    assert after_remove["data"] is not None
-    assert "capability_agent:test_cap_render" in after_remove["data"]["orphans"]
-    cleaned = asyncio.run(clear_ai_task_model("capability_agent:test_cap_render", admin))
-    assert cleaned["data"] is not None
-    assert "capability_agent:test_cap_render" not in cleaned["data"]["orphans"]
+            set_parent = await set_ai_task_model("capability_agent", TaskOverrideBody(primary="Backup"), admin)
+            assert set_parent["status"] == 0
+            set_child = await set_ai_task_model(
+                "capability_agent:test_cap_render", TaskOverrideBody(primary="RenderCfg"), admin
+            )
+            assert set_child["status"] == 0 and set_child["data"] is not None
+            by_id = {k["id"]: k for k in set_child["data"]["kinds"]}
+            assert "capability_agent:capability_evaluator" not in by_id
+            assert by_id["capability_agent:test_cap_render"]["parent_id"] == "capability_agent"
+            assert by_id["capability_agent:test_cap_render"]["node_source"] == "builtin"
+            assert by_id["capability_agent:test_cap_render"]["stats_keys"] == ["capability_agent:test_cap_render"]
+            assert by_id["capability_agent:test_cap_render"]["effective"]["primary"] == "openai++RenderCfg"
+            assert by_id["capability_agent:test_cap_render"]["effective"]["inherited_from"] is None
+            assert by_id["capability_agent:test_cap_user"]["effective"]["primary"] == "openai++Backup"
+            assert by_id["capability_agent:test_cap_user"]["effective"]["inherited_from"] == "capability_agent"
 
-    from gsuid_core.ai_core.models import SessionLogEntry
-    from gsuid_core.ai_core.session_logger import extract_session_usage
-    from gsuid_core.ai_core.statistics.price import calculate_model_cost
+            built_models: list[str] = []
+
+            def _fake_model(lvl: models.TaskLevel, kind: str | None = None) -> TestModel:
+                full_name = models.get_config_name_for_task(lvl, kind)
+                built_models.append(full_name)
+                return TestModel(model_name=full_name)
+
+            monkeypatch.setattr(gs_agent_mod, "get_model_for_task", _fake_model)
+
+            # 验证 CapabilityAgent 实例化走独立 task_kind、节点标识与对应覆盖模型
+            reopened = await reopen_capability_agent("test_cap_render", "capagent_test_cap_render_1", None)
+            assert reopened is not None
+            try:
+                assert reopened.capability_node_id == "test_cap_render"
+                assert reopened.task_kind == "capability_agent:test_cap_render"
+                assert reopened.model_config_name == "openai++RenderCfg"
+                assert isinstance(reopened.model, TestModel) and reopened.model.model_name == "openai++RenderCfg"
+                assert built_models == ["openai++RenderCfg"]
+            finally:
+                get_ai_session_registry().remove_ai_session("capagent_test_cap_render_1")
+                reopened._session_logger.close()
+
+            built_models.clear()
+            agent = gs_agent_mod.GsCoreAIAgent(task_level="low", task_kind=TASK_TURN_ROUTER, thinking=False)
+            try:
+                assert agent.model_config_name == "openai++MiniMAX"
+                assert isinstance(agent.model, TestModel) and agent.model.model_name == "openai++MiniMAX"
+                assert await agent.refresh_model_if_changed() is False
+
+                stored["turn_router"] = ["openai++Backup", ""]
+                assert await agent.refresh_model_if_changed() is True
+                assert agent.model_config_name == "openai++Backup"
+                assert isinstance(agent.model, TestModel) and agent.model.model_name == "openai++Backup"
+                assert built_models == ["openai++MiniMAX", "openai++Backup"]
+            finally:
+                agent._session_logger.close()
+        finally:
+            unregister_agent_node("test_cap_render")
+            unregister_agent_node("test_cap_user")
+            if not had_eval:
+                unregister_agent_node("capability_evaluator")
+
+        # 卸载节点后旧覆盖落入 orphans，DELETE 可清理
+        after_remove = await get_ai_task_models(admin)
+        assert after_remove["data"] is not None
+        assert "capability_agent:test_cap_render" in after_remove["data"]["orphans"]
+        cleaned = await clear_ai_task_model("capability_agent:test_cap_render", admin)
+        assert cleaned["data"] is not None
+        assert "capability_agent:test_cap_render" not in cleaned["data"]["orphans"]
+
+    asyncio.run(scenario())
 
     log_entries: list[SessionLogEntry] = [
         {
@@ -484,8 +490,6 @@ def test_task_model_api_and_agent_refresh(monkeypatch: pytest.MonkeyPatch) -> No
     usage = extract_session_usage(log_entries)
     by_model = {u["model"]: u["input_tokens"] for u in usage["models"]}
     assert by_model == {"m-pre": 10, "m-run": 50}
-    assert calculate_model_cost("minimax-m3.1-flash", 1_000_000, 1_000_000) == pytest.approx(0.75)
-    assert calculate_model_cost("unknown-model-xyz", 1_000_000, 1_000_000) == 0.0
 
 
 def test_model_http_proxy_pool_isolation_and_leak_guard() -> None:
@@ -499,7 +503,7 @@ def test_model_http_proxy_pool_isolation_and_leak_guard() -> None:
         reset_shared_model_http_client_by_full_name,
     )
 
-    async def _exercise_proxy_tunnel() -> None:
+    async def scenario() -> None:
         async def _fake_proxy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             await reader.read(4096)
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -529,26 +533,249 @@ def test_model_http_proxy_pool_isolation_and_leak_guard() -> None:
             srv.close()
             await srv.wait_closed()
 
-    asyncio.run(_exercise_proxy_tunnel())
+        created: list[httpx2.AsyncClient] = []
+        try:
+            c1 = _shared_model_httpx2_client("openai", "test_primary_pool")
+            c2 = _shared_model_httpx2_client("openai", "test_backup_pool")
+            created.extend([c1, c2])
+            assert c1 is not c2
+            assert _shared_model_httpx2_client("openai", "test_primary_pool") is c1
+            assert reset_shared_model_http_client_by_full_name("openai++test_primary_pool") is True
+            c1_rebuilt = _shared_model_httpx2_client("openai", "test_primary_pool")
+            created.append(c1_rebuilt)
+            assert c1_rebuilt is not c1
+            assert _shared_model_httpx2_client("openai", "test_backup_pool") is c2
+        finally:
+            reset_shared_model_http_client_by_full_name("openai++test_primary_pool")
+            reset_shared_model_http_client_by_full_name("openai++test_backup_pool")
+            for client in created:
+                await client.aclose()
 
-    try:
-        c1 = _shared_model_httpx2_client("openai", "test_primary_pool")
-        c2 = _shared_model_httpx2_client("openai", "test_backup_pool")
-        assert c1 is not c2
-        assert _shared_model_httpx2_client("openai", "test_primary_pool") is c1
-        assert reset_shared_model_http_client_by_full_name("openai++test_primary_pool") is True
-        c1_rebuilt = _shared_model_httpx2_client("openai", "test_primary_pool")
-        assert c1_rebuilt is not c1
-        assert _shared_model_httpx2_client("openai", "test_backup_pool") is c2
-    finally:
-        reset_shared_model_http_client_by_full_name("openai++test_primary_pool")
-        reset_shared_model_http_client_by_full_name("openai++test_backup_pool")
+    asyncio.run(scenario())
 
     inner_pool_err = httpx2.PoolTimeout("pool exhausted")
     wrapped = RuntimeError("Request timed out.")
     wrapped.__cause__ = inner_pool_err
     assert _is_pool_timeout_error(wrapped) is True
     assert _is_pool_timeout_error(httpx2.ReadTimeout("read slow")) is False
+
+
+def test_openai_wire_strict_and_reasoning_recovery() -> None:
+    """OpenAI 协议自愈：reasoning_effort 学习、strict 误判防护、混传 strict 400 重试与跨实例失效。"""
+    import httpx2
+    from openai import AsyncOpenAI
+    from pydantic_ai.tools import ToolDefinition
+    from pydantic_ai.models import ModelRequestParameters
+    from pydantic_ai.messages import TextPart, ModelMessage, ModelRequest, UserPromptPart
+    from pydantic_ai.exceptions import ModelHTTPError
+    from pydantic_ai.profiles.openai import openai_model_profile
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from gsuid_core.ai_core.configs.models import openai_user_thinking_profile
+    from gsuid_core.ai_core.configs.openai_wire import (
+        AutoUsageOpenAIChatModel,
+        RecoveringOpenAIChatModel,
+        RecoveringOpenAIResponsesModel,
+        revise_openai_attempt,
+        clear_openai_wire_facts,
+        openai_profile_for_model,
+    )
+
+    clear_openai_wire_facts()
+    try:
+        base_prof = openai_user_thinking_profile("max")(openai_model_profile("MiniMax-M3.1-Flash"))
+        assert "supports_thinking" in base_prof and base_prof["supports_thinking"] is True
+        err_none = ModelHTTPError(
+            status_code=400,
+            model_name="MiniMax-M3.1-Flash",
+            body={"error": {"message": "invalid reasoning_effort: none; expected low, medium, high, max"}},
+        )
+        rev1 = revise_openai_attempt(
+            "https://api.minimaxi.com/v1",
+            "MiniMax-M3.1-Flash",
+            err_none,
+            None,
+            ModelRequestParameters(thinking=False),
+        )
+        assert rev1 is not None
+        learned_prof = openai_profile_for_model("https://api.minimaxi.com/v1", "MiniMax-M3.1-Flash")(base_prof)
+        assert "openai_reasoning_efforts" in learned_prof
+        assert learned_prof["openai_reasoning_efforts"] == frozenset({"low", "medium", "high", "max"})
+
+        err_strictly = ModelHTTPError(
+            status_code=400,
+            model_name="test/model-flash",
+            body={"error": {"message": "temperature must be strictly positive"}},
+        )
+        assert (
+            revise_openai_attempt(
+                "https://gateway.invalid/v1",
+                "test/model-flash",
+                err_strictly,
+                None,
+                ModelRequestParameters(),
+            )
+            is None
+        )
+
+        sent_tools_strict: list[tuple[str, dict[str, bool]]] = []
+
+        def _strict_handler(request: httpx2.Request) -> httpx2.Response:
+            payload = _json.loads(request.content.decode("utf-8"))
+            assert isinstance(payload, dict) and "tools" in payload and isinstance(payload["tools"], list)
+            path = request.url.path
+            flags: dict[str, bool] = {}
+            for item in payload["tools"]:
+                assert isinstance(item, dict)
+                if path.endswith("/responses"):
+                    assert isinstance(item["name"], str)
+                    flags[item["name"]] = "strict" in item and bool(item["strict"])
+                else:
+                    assert "function" in item and isinstance(item["function"], dict)
+                    fn = item["function"]
+                    assert isinstance(fn["name"], str)
+                    flags[fn["name"]] = "strict" in fn and bool(fn["strict"])
+            sent_tools_strict.append((path, flags))
+            if any(flags.values()) and not all(flags.values()):
+                nested = _json.dumps(
+                    {
+                        "error": {
+                            "message": (
+                                'Prefill server error (400 Bad Request): {"object":"error",'
+                                '"message":"Cannot use strict tool with non-strict tool in the same request",'
+                                '"type":"BadRequest","param":null,"code":400}'
+                            ),
+                            "type": "invalid_request_error",
+                        }
+                    }
+                )
+                return httpx2.Response(400, json={"message": nested, "type": "invalid_request_error"})
+            if path.endswith("/responses"):
+                return httpx2.Response(
+                    200,
+                    json={
+                        "id": "resp-test",
+                        "object": "response",
+                        "created_at": 1700000000,
+                        "status": "completed",
+                        "model": "test/model-flash",
+                        "output": [
+                            {
+                                "id": "msg-test",
+                                "type": "message",
+                                "status": "completed",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "ok-resp", "annotations": []}],
+                            }
+                        ],
+                        "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+                    },
+                )
+            if "stream" in payload and payload["stream"] is True:
+                chunk = {
+                    "id": "chatcmpl-stream",
+                    "object": "chat.completion.chunk",
+                    "created": 1700000000,
+                    "model": "test/model-flash",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": "ok-stream"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                }
+                sse = f"data: {_json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode("utf-8")
+                return httpx2.Response(200, content=sse, headers={"content-type": "text/event-stream"})
+            return httpx2.Response(
+                200,
+                json={
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1700000000,
+                    "model": "test/model-flash",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                },
+            )
+
+        gw_url = "https://gateway.invalid/v1"
+        gw_model = "test/model-flash"
+        wire_prof = openai_profile_for_model(gw_url, gw_model)
+
+        async def _run_strict_recovery() -> None:
+            async with httpx2.AsyncClient(transport=httpx2.MockTransport(_strict_handler)) as hc:
+                client = AsyncOpenAI(api_key="k", base_url=gw_url, max_retries=0, http_client=hc)
+                provider = OpenAIProvider(openai_client=client)
+                stream_m = AutoUsageOpenAIChatModel(gw_model, provider=provider, profile=wire_prof)
+                sibling_m = RecoveringOpenAIChatModel(gw_model, provider=provider, profile=wire_prof)
+                _ = sibling_m.profile
+                resp_m = RecoveringOpenAIResponsesModel(gw_model, provider=provider, profile=wire_prof)
+                _ = resp_m.profile
+
+                mixed_tools = [
+                    ToolDefinition(
+                        name="all_required_tool",
+                        description="all params required",
+                        parameters_json_schema={
+                            "type": "object",
+                            "properties": {"q": {"type": "string"}},
+                            "required": ["q"],
+                        },
+                    ),
+                    ToolDefinition(
+                        name="optional_param_tool",
+                        description="has optional param",
+                        parameters_json_schema={
+                            "type": "object",
+                            "properties": {"q": {"type": "string"}, "limit": {"type": "integer"}},
+                            "required": ["q"],
+                        },
+                    ),
+                ]
+                req_params = ModelRequestParameters(function_tools=mixed_tools)
+                msg: list[ModelMessage] = [ModelRequest(parts=[UserPromptPart(content="hi")])]
+
+                prepped_settings, prepped_params = stream_m.prepare_request(None, req_params)
+                async with stream_m.request_stream(msg, prepped_settings, prepped_params) as stream:
+                    async for _ in stream:
+                        pass
+                    streamed = stream.get()
+                assert streamed.parts and isinstance(streamed.parts[0], TextPart)
+                assert streamed.parts[0].content == "ok-stream"
+
+                sib_settings, sib_params = sibling_m.prepare_request(None, req_params)
+                sib_res = await sibling_m.request(msg, sib_settings, sib_params)
+                assert sib_res.parts and isinstance(sib_res.parts[0], TextPart) and sib_res.parts[0].content == "ok"
+
+                resp_settings, resp_params = resp_m.prepare_request(None, req_params)
+                resp_res = await resp_m.request(msg, resp_settings, resp_params)
+                assert resp_res.parts and isinstance(resp_res.parts[0], TextPart)
+                assert resp_res.parts[0].content == "ok-resp"
+
+        asyncio.run(_run_strict_recovery())
+        assert sent_tools_strict == [
+            ("/v1/chat/completions", {"all_required_tool": True, "optional_param_tool": False}),
+            ("/v1/chat/completions", {"all_required_tool": False, "optional_param_tool": False}),
+            ("/v1/chat/completions", {"all_required_tool": False, "optional_param_tool": False}),
+            ("/v1/responses", {"all_required_tool": False, "optional_param_tool": False}),
+        ]
+
+        err_strict_again = ModelHTTPError(
+            status_code=400,
+            model_name=gw_model,
+            body={"error": {"message": "Cannot use strict tool with non-strict tool in the same request"}},
+        )
+        assert revise_openai_attempt(gw_url, gw_model, err_strict_again, None, ModelRequestParameters()) is None
+    finally:
+        clear_openai_wire_facts()
 
 
 def test_meme_pack_create_and_batch_upload_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -573,7 +800,6 @@ def test_meme_pack_create_and_batch_upload_contract(tmp_path: Path, monkeypatch:
         create_meme_pack,
         remove_pack_members,
     )
-    from gsuid_core.webconsole.session_store import SessionRecord
     from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
     def _png_bytes(color: tuple[int, int, int]) -> bytes:
@@ -598,8 +824,6 @@ def test_meme_pack_create_and_batch_upload_contract(tmp_path: Path, monkeypatch:
 
     async def scenario() -> None:
         async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="meme-pack-test.db"):
-            monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
-            monkeypatch.setattr(base_models, "_db_type", "sqlite")
             monkeypatch.setattr(meme_library, "get_memes_base_path", lambda: tmp_path / "memes")
             monkeypatch.setattr(meme_api, "get_memes_base_path", lambda: tmp_path / "memes")
             monkeypatch.setattr(persona_store, "is_repo_pack", lambda _name: False)
@@ -617,12 +841,7 @@ def test_meme_pack_create_and_batch_upload_contract(tmp_path: Path, monkeypatch:
             monkeypatch.setattr(meme_api, "write_member_payloads", _fake_write_payloads)
             monkeypatch.setattr(meme_pack_api, "write_member_payloads", _fake_write_payloads)
 
-            fake_user: SessionRecord = {
-                "user": {"id": "1", "name": "tester"},
-                "email": "tester@example.invalid",
-                "created": "2026-01-01T00:00:00",
-                "expires": "2099-01-01T00:00:00",
-            }
+            fake_user = make_session_record("admin")
 
             # 1. 新建表情包并去除首尾空白
             res_a = await create_meme_pack(PackNameBody(name="  测试文件夹A  "), _user=fake_user)
@@ -722,7 +941,11 @@ def test_estimate_model_cost_endpoints() -> None:
 
 
 def test_ai_model_session_decorator_flags() -> None:
-    """抽查 AI 模型方法的读写会话标记，锁定「纯读不占写闸门」防线。"""
+    """抽查高频 AI 表方法的读写会话标记：纯读不占写闸门，写入必须进写闸门。
+
+    钉的是 _session_wrapper 的 read_only 闭包标记——装饰器体系（§3.2）是框架稳定契约，
+    热路径读方法误用 @with_session 会让全库读悄悄排到写闸门后面，行为测试不可见。
+    """
     import inspect
 
     from gsuid_core.ai_core.budget.models import AIBudgetWhitelist

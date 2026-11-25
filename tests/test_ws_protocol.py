@@ -58,7 +58,7 @@ def test_decode_inbound_frame_contract(monkeypatch: pytest.MonkeyPatch) -> None:
 
     warnings.clear()
     assert decode_inbound_frame(b"[]", "yunzai") is None
-    assert len(warnings) == 1 and "Expected" in warnings[0]
+    assert len(warnings) == 1 and "yunzai" in warnings[0]
 
     warnings.clear()
     raw = msgjson.encode(

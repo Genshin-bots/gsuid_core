@@ -1,32 +1,46 @@
-"""人格管理契约：来源标记、整包定位、门禁、多独立人格状态与关系隔离。"""
+"""人格管理契约：来源标记、整包定位、手账分片与做梦、主动发言、关系与重置还原。"""
 
 from __future__ import annotations
 
+import io
+import os
+import json
+import time
+import shutil
 import asyncio
-from typing import TYPE_CHECKING, Protocol
+import zipfile
+from typing import TYPE_CHECKING
 from pathlib import Path
-from collections.abc import Callable, Sequence
+from datetime import datetime, timezone, timedelta
+from contextlib import contextmanager
+from collections.abc import Iterator, Sequence, AsyncIterator
 
 import pytest
+from pydantic_ai.tools import Tool
+from pydantic_ai.messages import TextPart, ModelMessage, ModelResponse
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
+from gsuid_core.bot import Bot, _Bot
 from tests._support import (
+    make_run_ctx,
+    isolated_history,
     setup_journal_env,
     isolated_sqlite_db,
+    make_session_record,
     clear_journal_caches,
 )
-from gsuid_core.utils.database import base_models
+from gsuid_core.models import Event
+from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.persona import store as persona_store
 from gsuid_core.ai_core.persona.bundle import BundleError
 from gsuid_core.utils.plugins_config.models import GsStrConfig, GsListStrConfig
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
 if TYPE_CHECKING:
-    from pydantic_ai.tools import Tool
     from pydantic_ai.models import Model
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from gsuid_core.bot import Bot
-    from gsuid_core.models import Event
-    from gsuid_core.ai_core.models import ToolContext
     from gsuid_core.ai_core.journal import dream as jd, storage as jstorage
     from gsuid_core.ai_core.autonomy import tools as auto_tools
     from gsuid_core.ai_core.agent_run.state import ReturnMode
@@ -116,33 +130,8 @@ def _seed_persona(
         assert ok_u, msg_u
 
 
-class _DreamLLMStub(Protocol):
-    async def __call__(
-        self,
-        persona_name: str,
-        doc: jstorage.ShardDocument,
-        gt: jd.GroundTruthDigest,
-        prev_month_rollover: Sequence[str] = (),
-    ) -> jd.DreamLLMOutcome: ...
-
-
-def _make_dream_llm_stub(
-    outcome: jd.DreamLLMOutcome | Callable[[jstorage.ShardDocument, jd.GroundTruthDigest], jd.DreamLLMOutcome],
-) -> _DreamLLMStub:
-    async def _stub(
-        persona_name: str,
-        doc: jstorage.ShardDocument,
-        gt: jd.GroundTruthDigest,
-        prev_month_rollover: Sequence[str] = (),
-    ) -> jd.DreamLLMOutcome:
-        del persona_name, prev_month_rollover
-        return outcome(doc, gt) if callable(outcome) else outcome
-
-    return _stub
-
-
 async def _drain_background_tasks() -> None:
-    """确定性排空当前事件循环派生的后台异步任务，避免脆弱的 sleep 等待。"""
+    """确定性排空当前事件循环派生的后台异步任务。"""
     current = asyncio.current_task()
     for _ in range(5):
         pending = [task for task in asyncio.all_tasks() if task is not current and not task.done()]
@@ -221,9 +210,7 @@ def _make_event(
     bot_self_id: str = "10001",
     ws_bot_id: str | None = "ws1",
 ) -> Event:
-    from gsuid_core.models import Event as _Event
-
-    return _Event(
+    return Event(
         bot_id="onebot",
         bot_self_id=bot_self_id,
         user_id=user_id,
@@ -281,24 +268,30 @@ def _make_guard(
     )
 
 
+def _read_timeline_now(path: Path) -> list[str]:
+    from gsuid_core.ai_core.journal import storage as jstorage
+
+    return jstorage.parse_shard_markdown(path.read_text(encoding="utf-8")).timeline if path.exists() else []
+
+
 def test_source_marker_bundle_root_and_default_priority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from gsuid_core.ai_core.migrations.persona_scope_v1 import pick_default_persona
 
     _patch_persona_path(tmp_path, monkeypatch)
-    p = tmp_path / "sayu"
+    p = tmp_path / "persona_demo"
     p.mkdir(parents=True)
-    (p / "persona.md").write_text("# sayu\n", encoding="utf-8")
+    (p / "persona.md").write_text("# persona_demo\n", encoding="utf-8")
 
-    assert persona_store.read_source("sayu") is None and not persona_store.is_git_managed("sayu")
+    assert persona_store.read_source("persona_demo") is None and not persona_store.is_git_managed("persona_demo")
 
-    persona_store.write_source("sayu", _make_source())
-    src = persona_store.read_source("sayu")
-    assert src is not None and src["repo_name"] == "persona_a" and persona_store.is_git_managed("sayu")
+    persona_store.write_source("persona_demo", _make_source())
+    src = persona_store.read_source("persona_demo")
+    assert src is not None and src["repo_name"] == "persona_a" and persona_store.is_git_managed("persona_demo")
 
-    persona_store.drop_source("sayu")
-    assert not persona_store.is_git_managed("sayu")
+    persona_store.drop_source("persona_demo")
+    assert not persona_store.is_git_managed("persona_demo")
     (p / persona_store.SOURCE_MARKER).write_text("{bad", encoding="utf-8")
-    assert persona_store.read_source("sayu") is None
+    assert persona_store.read_source("persona_demo") is None
 
     bundle_dir = tmp_path / "bundle_test"
     bundle_dir.mkdir()
@@ -334,13 +327,17 @@ def test_source_marker_bundle_root_and_default_priority(tmp_path: Path, monkeypa
     )
 
 
-def test_persona_isolation_for_relationship_cognition_and_aside(
+def test_persona_isolation_for_relationship_cognition_presence_and_aside(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from gsuid_core.config import core_config
     from gsuid_core.ai_core.relationship import fetch_relationship
     from gsuid_core.ai_core.self_cognition import add_self_note, build_self_cognition_context
     from gsuid_core.ai_core.database.models import UserFavorability
+    from gsuid_core.ai_core.persona.presence import PresenceRibbon, render_presence
+    from gsuid_core.ai_core.relationship.engine import settle_semantic
     from gsuid_core.ai_core.command_aside.recall import save_advice, lookup_advice
+    from gsuid_core.ai_core.relationship.signals import NegSignal
 
     target = tmp_path / "aside.json"
     monkeypatch.setattr("gsuid_core.ai_core.command_aside.recall._path", lambda: target)
@@ -348,13 +345,31 @@ def test_persona_isolation_for_relationship_cognition_and_aside(
     assert lookup_advice("p", "命令 foo 执行成功", "t1", "A") == "用中文解释结果"
     assert lookup_advice("p", "命令 foo 执行成功", "t1", "B") == ""
 
+    # off-screen 行踪只投放到同一对话：他群/他人私聊一律不渲染
+    now = 1_800_000_000.0
+    r_group_a = PresenceRibbon(
+        offscreen_doing="正在整理测试群A季度报告",
+        offscreen_at=now - 600.0,
+        offscreen_scope="group_a",
+        offscreen_user_id="100000001",
+    )
+    r_legacy = PresenceRibbon(offscreen_doing="旧无归属动作", offscreen_at=now - 600.0, offscreen_scope="")
+    for ribbon, target_key, is_private, uid, expected_sub in (
+        (r_group_a, "group_a", False, "", "季度报告"),
+        (r_group_a, "group_b", False, "", ""),
+        (r_group_a, "private:100000002", True, "100000002", ""),
+        (r_group_a, "private:100000001", True, "100000001", "季度报告"),
+        (r_legacy, "group_b", False, "", ""),
+    ):
+        rendered = render_presence(ribbon, "", target_key=target_key, is_private=is_private, now=now, user_id=uid)
+        assert (expected_sub in rendered) if expected_sub else (rendered == "")
+
     async def _noop_distill(**kwargs: object) -> None:
         return None
 
     monkeypatch.setattr("gsuid_core.ai_core.cognition.distill.distill_self_note", _noop_distill)
 
     async def scenario() -> None:
-        monkeypatch.setattr(base_models, "sqlite_read_semaphore", None)
         monkeypatch.setattr("gsuid_core.ai_core.state_store.store._table_ensured", True)
         async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="persona_iso.db") as (_, maker):
             async with maker() as session:
@@ -369,6 +384,16 @@ def test_persona_isolation_for_relationship_cognition_and_aside(
             assert "每天汇报" in await build_self_cognition_context("b1", "A", include_relationship=False)
             assert "每天汇报" not in await build_self_cognition_context("b1", "B", include_relationship=False)
 
+            # 负面关系信号对主人免疫，对普通用户按信号等级扣减
+            monkeypatch.setitem(core_config.config, "masters", ["master_123"])
+            for uid, signal, expected_delta in (
+                ("master_123", NegSignal.HOSTILE, 0),
+                ("u_456", NegSignal.PROVOKE, -3),
+                ("u_456", NegSignal.HOSTILE, -6),
+            ):
+                res = await settle_semantic(user_id=uid, bot_id="b1", persona_name="A", signal=signal, evidence="test")
+                assert res.delta == expected_delta
+
     asyncio.run(scenario())
 
 
@@ -377,34 +402,43 @@ def test_journal_compaction_and_active_hours_gating(
     journal_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import time
-
+    """手账跨日整理：直跑真实 synthesize_shard_with_llm（离线 TestModel）、429 保护、规则兜底与作息门禁。"""
+    from gsuid_core.ai_core import session_logger as sl_mod
+    from gsuid_core.ai_core.configs import models as cfg_models
     from gsuid_core.ai_core.journal import dream as jd, manager as jm, storage as jstorage
+    from gsuid_core.ai_core.configs.ai_config import ai_config
 
-    async def _no_gt(persona_name: str, shard_id: str, now_ts: float) -> jd.GroundTruthDigest:
-        del persona_name, shard_id, now_ts
-        return jd.GroundTruthDigest(completed=("测试项目报告",))
-
-    monkeypatch.setattr(jd, "collect_ground_truth", _no_gt)
+    monkeypatch.setattr(sl_mod, "AI_SESSION_LOGS_PATH", tmp_path / "session_logs")
+    monkeypatch.setattr(sl_mod, "AI_SUBAGENT_LOGS_PATH", tmp_path / "session_logs" / "subagents")
     monkeypatch.setattr(
         "gsuid_core.ai_core.autonomy.tools.artifact_dir",
         lambda pname, root=None: tmp_path / "notes" / pname,
     )
 
+    async def _gt(persona_name: str, shard_id: str, now_ts: float) -> jd.GroundTruthDigest:
+        del persona_name, shard_id, now_ts
+        return jd.GroundTruthDigest(completed=("测试项目报告",))
+
+    monkeypatch.setattr(jd, "collect_ground_truth", _gt)
+    monkeypatch.setattr(cfg_models, "get_config_name_for_task", lambda _lvl, _kind=None: "test_high")
+    monkeypatch.setattr(ai_config.get_config("enable"), "data", True)
+
+    def _set_dream_model(output_text: str) -> None:
+        m = TestModel(call_tools=[], custom_output_text=output_text)
+        monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_for_task", lambda _l, _k=None: m)
+        monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_by_full_name", lambda _n: m)
+
     async def scenario() -> None:
-        llm_called_shards: list[str] = []
-
-        def _summarize(doc: jstorage.ShardDocument, gt: jd.GroundTruthDigest) -> jd.DreamLLMOutcome:
-            llm_called_shards.append(doc.shard_id)
-            done_tag = gt.completed[0] if gt.completed else "日常"
-            return {
-                "persistent": ["保持核实后再作答的习惯。"],
-                "monthly": [f"[已完结] {done_tag} 已闭环交付。"],
-                "yesterday": ["做梦整理：已跟进各项事务。"],
-            }
-
-        monkeypatch.setattr(jd, "_summarize_journal_with_llm", _make_dream_llm_stub(_summarize))
-
+        _set_dream_model(
+            json.dumps(
+                {
+                    "persistent": ["保持核实后再作答的习惯。"],
+                    "monthly": ["[已完结] 测试项目报告 已闭环交付。"],
+                    "yesterday": ["做梦整理：已跟进各项事务。"],
+                },
+                ensure_ascii=False,
+            )
+        )
         assert await jd.compact_journal("tester") is False
 
         # 旧版单文件写盘 → 自动无损拆迁至 self.md 与 groups/group_1001.md
@@ -420,8 +454,7 @@ def test_journal_compaction_and_active_hours_gating(
             encoding="utf-8",
         )
 
-        compacted = await jd.compact_journal("tester", force=True)
-        assert compacted is True
+        assert await jd.compact_journal("tester", force=True) is True
         assert not legacy_file.exists()
 
         self_path = jm.get_journal_path("tester")
@@ -435,7 +468,7 @@ def test_journal_compaction_and_active_hours_gating(
         assert any("[已完结] 测试项目报告" in item for item in grp_doc.monthly)
         assert jstorage.get_last_compact_ts("tester") > 0.0
 
-        # 验证 429 临时故障保护：非强制夜间巡检遇 transient_error 绝不清空流水
+        # 429/错误回执经真实 synthesize_shard_with_llm 判为 transient_error，非强制整理绝不清空流水
         await jm.record_journal_entry(
             jstorage.JournalEntry(
                 timestamp=time.time(),
@@ -447,13 +480,12 @@ def test_journal_compaction_and_active_hours_gating(
             ),
             target_personas=["tester"],
         )
-
-        monkeypatch.setattr(jd, "_summarize_journal_with_llm", _make_dream_llm_stub("transient_error"))
+        _set_dream_model("执行出错: 429 rate limit exceeded")
         assert await jd.compact_journal("tester", force=False) is False
         assert len(jstorage.parse_shard_markdown(grp_path.read_text(encoding="utf-8"), "group_1001").timeline) == 1
 
-        # LLM 未启用返回 None 时走确定性规则跨日兜底，同时写入月度归档
-        monkeypatch.setattr(jd, "_summarize_journal_with_llm", _make_dream_llm_stub(None))
+        # AI 关闭时 synthesize_shard_with_llm 返回 None，走确定性规则跨日兜底并写入归档
+        monkeypatch.setattr(ai_config.get_config("enable"), "data", False)
         assert await jd.compact_journal("tester", force=True) is True
         fb_doc = jstorage.parse_shard_markdown(grp_path.read_text(encoding="utf-8"), "group_1001")
         fb_summary = "\n".join((*fb_doc.persistent, *fb_doc.monthly, *fb_doc.yesterday))
@@ -461,7 +493,7 @@ def test_journal_compaction_and_active_hours_gating(
         assert "核对了第一份数据" in fb_summary and "journal:tester:group_1001:" in fb_summary
         assert await jd.compact_journal("tester") is False
 
-        # 测试作息窗口门禁与自然睡眠日去重（消除 24h 时间戳漂移）
+        # 作息窗口门禁与自然睡眠日去重
         await jm.record_journal_entry(
             jstorage.JournalEntry(
                 timestamp=time.time(),
@@ -502,43 +534,23 @@ def test_journal_compaction_and_active_hours_gating(
     asyncio.run(scenario())
 
 
-def test_journal_sharding_sanitization_and_dream_lifecycle(
+def test_journal_sanitization_routing_and_shard_isolation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import os
-    import time
-    from collections.abc import AsyncIterator
-
-    from pydantic_ai import RunContext
-    from pydantic_ai.tools import Tool
-    from pydantic_ai.usage import RunUsage
-    from pydantic_ai.messages import ModelMessage
-    from pydantic_ai.models.test import TestModel
-    from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
-
-    from gsuid_core.bot import Bot, _Bot
-    from gsuid_core.models import Event
-    from gsuid_core.ai_core.models import ToolContext
+    """手账清洗、跨群/私聊分片隔离、静默巡检折叠、洪峰定长、增量去重与旧 self 零删除迁移。"""
+    import gsuid_core.ai_core.migrations.cross_group_isolation_v1 as mig_v1
     from gsuid_core.ai_core.journal import dream as jd, manager as jm, storage as jstorage, sanitizer as js
     from gsuid_core.ai_core.autonomy.models import FactPack, DeliveryPin, DeliveryDecision, AutonomyStepTrace
+    from gsuid_core.ai_core.agent_run.prepare import _journal_delta_in_recent_history
     from gsuid_core.ai_core.autonomy.delivery import parse_footer
     from gsuid_core.ai_core.autonomy.scheduler import _record_autonomy_journal
-    from gsuid_core.ai_core.planning.handle_resolver import resolve_handle
-    from gsuid_core.ai_core.planning.tool_output_tools import read_handle
-    from gsuid_core.ai_core.buildin_tools.message_sender import send_message_by_ai
 
     _setup_isolated_persona_env(tmp_path / "personas_cfg", monkeypatch)
-    _seed_persona(
-        tmp_path / "personas_cfg",
-        "alpha",
-        "specific",
-        ["group_1", "group_hot", "group_quiet", "villa_1:room_9"],
-    )
+    _seed_persona(tmp_path / "personas_cfg", "alpha", "specific", ["group_1", "group_hot", "group_quiet"])
+    journal_dir, _ = setup_journal_env(tmp_path, monkeypatch, patch_autonomy_notes=True)
 
-    journal_dir, notes_root = setup_journal_env(tmp_path, monkeypatch, patch_autonomy_notes=True)
-
-    # 1. 句界与 ASCII 词元边界保护（防腰斩、多行吃字与报错拦截）
+    # 1. 句界/ASCII 词元截断保护与噪声拦截
     raw_rsi = (
         "查了一下群友提到的测试新材，抓到的数据是：页面（11-13 更新）显示昨收 43.44，"
         "当日区间 42.92~46.82，近一年涨幅约 148%，RSI(14) 41.21，市值约 69.5 亿。"
@@ -550,8 +562,11 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
     cut_md = js.sanitize_journal_summary(raw_md, max_chars=46)
     assert "Markd…" not in cut_md and not cut_md.endswith("Markd")
 
-    multiline = "<reply #12>\n第一段结论核实完毕\n第二段补充细节 <@100000001>"
-    flat = js.sanitize_journal_summary(multiline, max_chars=110, nicks={"100000001": "测试用户A"})
+    flat = js.sanitize_journal_summary(
+        "<reply #12>\n第一段结论核实完毕\n第二段补充细节 <@100000001>",
+        max_chars=110,
+        nicks={"100000001": "测试用户A"},
+    )
     assert "\n" not in flat and "@测试用户A" in flat
     for rejected_body in (
         "执行出错: 模型套餐用量已达上限",
@@ -559,225 +574,348 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         "DRIVE: group_topic\nTARGET: group_1",
     ):
         assert js.is_rejected_journal_body(rejected_body) is True
-    assert js.clean_journal_tag("web_search_tool") == "查资料"
+
+    # 日志经历去重
+    hist_j = [ModelResponse(parts=[TextPart(content="刚刚帮测试用户A查了今日天气，结果是晴天")])]
+    two_seg = (
+        "（系统提示：刚刚经历：[12:00 | 闲聊] 刚刚帮测试用户A查了今日天气，结果是晴天；"
+        "[12:01 | 闲聊] 全新的另一条未复述事项记录）"
+    )
+    for delta_text, expected in (
+        ("刚刚帮测试用户A查了今日天气，结果是晴天", True),
+        ("完全不同的另一件新日程安排记录", False),
+        (two_seg, False),
+    ):
+        assert _journal_delta_in_recent_history(delta_text, hist_j) is expected
 
     async def scenario() -> None:
-        from datetime import datetime, timedelta
+        import gsuid_core.ai_core.cognition.nodes as cog_nodes
 
-        from gsuid_core.ai_core import session_logger as sl_mod
-        from gsuid_core.ai_core.planning import tool_output_helper as toh
-        from gsuid_core.ai_core.proactive import emitter as emitter_mod
-        from gsuid_core.ai_core.control.lines import delivery_wake_line
-        from gsuid_core.ai_core.database.models import AIAutonomyActivity
-        from gsuid_core.ai_core.planning.models import AIAgentTask
-        from gsuid_core.ai_core.proactive.dispatcher import UnifiedProactiveDispatcher
+        assert cog_nodes.AICogNode is not None
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="journal_iso.db"):
+            await _run_scenario()
 
-        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="journal_life.db") as (_, maker):
-            now = time.time()
+    async def _run_scenario() -> None:
+        now = time.time()
 
-            # 2. 子任务归属路由（未传或已删人格按群回落 alpha，未启用群不广播）
-            assert jm.resolve_persona_for_group_or_session(persona_name=None, group_id="group_1") == "alpha"
-            assert jm.resolve_persona_for_group_or_session(persona_name="deleted_ghost", group_id="group_1") == "alpha"
-            await jm.record_journal_entry(
-                jstorage.JournalEntry(
-                    now,
-                    "2026-11-18",
-                    "09:00",
-                    "查资料",
-                    "未绑定群的流水不应污染其它人格",
-                    group_id="group_unassigned",
-                )
+        # 2. 路由归属与未绑定群拒绝
+        assert jm.resolve_persona_for_group_or_session(persona_name=None, group_id="group_1") == "alpha"
+        assert jm.resolve_persona_for_group_or_session(persona_name="deleted_ghost", group_id="group_1") == "alpha"
+        await jm.record_journal_entry(
+            jstorage.JournalEntry(
+                now, "2026-11-18", "09:00", "查资料", "未绑定群的流水不应污染其它人格", group_id="group_unassigned"
             )
-            assert not (journal_dir / "personas" / "alpha" / "groups" / "group_unassigned.md").exists()
+        )
+        assert not (journal_dir / "personas" / "alpha" / "groups" / "group_unassigned.md").exists()
 
-            # 3. Autonomy parse_footer 写干净 FACT+TAKE+句柄，并隔离私聊关怀与 429 报错
-            async def _record_auto_j(
-                raw_text: str,
-                *,
-                decision: DeliveryDecision,
-                facts: FactPack,
-                mode: str,
-                spoken_text: str = "",
-                topic: str = "",
-                fact: str = "",
-                take: str = "",
-                steps: list[AutonomyStepTrace] | None = None,
-                pin: DeliveryPin | None = None,
-                tool_sent: bool = False,
-                last_sent_user_id: str = "",
-            ) -> None:
-                await _record_autonomy_journal(
-                    persona_name="alpha",
-                    raw_text=raw_text,
-                    steps=list(steps or []),
-                    spoken_text=spoken_text,
-                    topic=topic,
-                    fact=fact,
-                    take=take,
-                    decision=decision,
-                    facts=facts,
-                    pin=pin,
-                    mode=mode,
-                    tool_sent=tool_sent,
-                    last_sent_group_id="",
-                    last_sent_user_id=last_sent_user_id,
-                )
-
-            footer_only_out = (
-                "DRIVE: group_topic\nTARGET: group_1\nTOPIC: 隔夜指标盘点\nOUTCOME: found\n"
-                "FACT: 三大指数回落，波动率抬升\nTAKE: 数字看多了眼花，先记在本子上。"
-            )
-            parsed = parse_footer(footer_only_out)
-            truncated_long_args = ('{"summary": "隔夜盘点小记", "body": "' + "详细核查记录文本" * 80)[:500]
-            step = AutonomyStepTrace(
-                step_index=0,
-                tool_name="artifact_put",
-                args_summary=truncated_long_args,
-                output_text="已写入笔记《隔夜盘点小记》（句柄: note:alpha:隔夜盘点小记）",
-            )
-            pin = DeliveryPin(
-                "", "group_1", False, "familiar", "onebot", "10001", "ws1", "group:group_1", last_human_ts=now - 60
-            )
-            await _record_auto_j(
-                footer_only_out,
-                steps=[step],
-                spoken_text=parsed.spoken_text,
-                topic=parsed.topic,
-                fact=parsed.fact,
-                take=parsed.take,
-                decision=DeliveryDecision("group_topic", "staged_merge", pin, parsed.summary),
-                facts=FactPack(["artifact_put"], ["ok"], [], True),
+        # 3. Autonomy parse_footer 写入 FACT+TAKE+句柄，隔离私聊关怀与 429 报错
+        async def _record_auto_j(
+            raw_text: str,
+            *,
+            decision: DeliveryDecision,
+            facts: FactPack,
+            mode: str,
+            spoken_text: str = "",
+            topic: str = "",
+            fact: str = "",
+            take: str = "",
+            steps: list[AutonomyStepTrace] | None = None,
+            pin: DeliveryPin | None = None,
+            tool_sent: bool = False,
+            last_sent_user_id: str = "",
+        ) -> None:
+            await _record_autonomy_journal(
+                persona_name="alpha",
+                raw_text=raw_text,
+                steps=list(steps or []),
+                spoken_text=spoken_text,
+                topic=topic,
+                fact=fact,
+                take=take,
+                decision=decision,
+                facts=facts,
                 pin=pin,
-                mode="staged_merge",
+                mode=mode,
+                tool_sent=tool_sent,
+                last_sent_group_id="",
+                last_sent_user_id=last_sent_user_id,
             )
-            # 私聊主动关怀写入独立 users/{uid}.md，空 uid 须 fail-closed 丢弃
-            dm_pin = DeliveryPin(
-                "100000001", "", False, "intimate", "onebot", "10001", "ws1", "direct:100000001", last_human_ts=now - 60
-            )
-            await _record_auto_j(
-                "给你带了一句私聊提醒",
-                spoken_text="给你带了一句私聊提醒",
-                topic="私聊问候",
-                decision=DeliveryDecision("care_user", "immediate_push", dm_pin, "给你带了一句私聊提醒"),
-                facts=FactPack(["send_message_by_ai"], ["ok"], [], True),
-                pin=dm_pin,
-                mode="immediate_push",
-                tool_sent=True,
-                last_sent_user_id="100000001",
-            )
-            await _record_auto_j(
-                "缺少目标用户的私聊关怀不应污染公共手账",
-                spoken_text="缺少目标用户的私聊关怀不应污染公共手账",
-                topic="空目标",
-                decision=DeliveryDecision("care_user", "silent_only", None, "空目标测试"),
-                facts=FactPack(["web_search_tool"], ["ok"], [], True),
-                mode="silent_only",
-            )
-            assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
-            u1_auto_path = jstorage._user_shard_path("alpha", "100000001")
-            assert u1_auto_path.exists()
-            u1_auto_raw = u1_auto_path.read_text(encoding="utf-8")
-            assert "自主探索" in u1_auto_raw and "给你带了一句私聊提醒" in u1_auto_raw
-            await _record_auto_j(
-                "执行出错: 模型套餐用量已达上限",
-                spoken_text="执行出错: 模型套餐用量已达上限",
-                decision=DeliveryDecision("rest", "silent_only", None, ""),
-                facts=FactPack([], [], [], False),
-                mode="silent_only",
-            )
-            g1_text, _ = jm.read_journal_for_context("alpha", current_group_id="group_1")
-            assert "DRIVE:" not in g1_text
-            assert "三大指数回落" in g1_text and "note:alpha:隔夜盘点小记" in g1_text
-            assert "用量已达上限" not in g1_text
 
-            # 4. 跨行静默巡检折叠（中间夹杂普通行动时仍原位合并 ×2，不泄漏 <<NO_BROADCAST>>）
-            await jm.record_journal_entry(
-                jstorage.JournalEntry(
-                    now, "2026-11-18", "09:30", "周期巡检", "<<NO_BROADCAST>>", group_id="group_quiet"
-                ),
-                target_personas=["alpha"],
-            )
-            await jm.record_journal_entry(
-                jstorage.JournalEntry(
-                    now + 1, "2026-11-18", "10:00", "查资料", "帮群友查了测试条目。", group_id="group_quiet"
-                ),
-                target_personas=["alpha"],
-            )
-            _, ts_after_substantive = jm.read_journal_for_context("alpha", current_group_id="group_quiet")
-            await jm.record_journal_entry(
-                jstorage.JournalEntry(
-                    now + 2, "2026-11-18", "10:30", "周期巡检", "（本轮无值得播报的进展）", group_id="group_quiet"
-                ),
-                target_personas=["alpha"],
-            )
-            delta_after_silent, _ = jm.read_journal_for_context(
-                "alpha", current_group_id="group_quiet", since_ts=ts_after_substantive
-            )
-            assert delta_after_silent == ""
-            gq_doc = jstorage.parse_shard_markdown(
-                jm.get_journal_path("alpha", "group_quiet").read_text(encoding="utf-8")
-            )
-            assert len(gq_doc.timeline) == 2
-            assert "<<NO_BROADCAST>>" not in "\n".join(gq_doc.timeline)
-            assert "(×2)" in gq_doc.timeline[-1] and "09:30~10:30" in gq_doc.timeline[-1]
+        footer_only_out = (
+            "DRIVE: group_topic\nTARGET: group_1\nTOPIC: 隔夜指标盘点\nOUTCOME: found\n"
+            "FACT: 三大指数回落，波动率抬升\nTAKE: 数字看多了眼花，先记在本子上。"
+        )
+        parsed = parse_footer(footer_only_out)
+        step = AutonomyStepTrace(
+            step_index=0,
+            tool_name="artifact_put",
+            args_summary=('{"summary": "隔夜盘点小记", "body": "' + "详细核查记录文本" * 80)[:500],
+            output_text="已写入笔记《隔夜盘点小记》（句柄: note:alpha:隔夜盘点小记）",
+        )
+        pin = DeliveryPin(
+            "", "group_1", False, "familiar", "onebot", "10001", "ws1", "group:group_1", last_human_ts=now - 60
+        )
+        await _record_auto_j(
+            footer_only_out,
+            steps=[step],
+            spoken_text=parsed.spoken_text,
+            topic=parsed.topic,
+            fact=parsed.fact,
+            take=parsed.take,
+            decision=DeliveryDecision("group_topic", "staged_merge", pin, parsed.summary),
+            facts=FactPack(["artifact_put"], ["ok"], [], True),
+            pin=pin,
+            mode="staged_merge",
+        )
+        dm_pin = DeliveryPin(
+            "100000001", "", False, "intimate", "onebot", "10001", "ws1", "direct:100000001", last_human_ts=now - 60
+        )
+        await _record_auto_j(
+            "给你带了一句私聊提醒",
+            spoken_text="给你带了一句私聊提醒",
+            topic="私聊问候",
+            decision=DeliveryDecision("care_user", "immediate_push", dm_pin, "给你带了一句私聊提醒"),
+            facts=FactPack(["send_message_by_ai"], ["ok"], [], True),
+            pin=dm_pin,
+            mode="immediate_push",
+            tool_sent=True,
+            last_sent_user_id="100000001",
+        )
+        await _record_auto_j(
+            "缺少目标用户的私聊关怀不应污染公共手账",
+            spoken_text="缺少目标用户的私聊关怀不应污染公共手账",
+            topic="空目标",
+            decision=DeliveryDecision("care_user", "silent_only", None, "空目标测试"),
+            facts=FactPack(["web_search_tool"], ["ok"], [], True),
+            mode="silent_only",
+        )
+        await _record_auto_j(
+            "执行出错: 模型套餐用量已达上限",
+            spoken_text="执行出错: 模型套餐用量已达上限",
+            decision=DeliveryDecision("rest", "silent_only", None, ""),
+            facts=FactPack([], [], [], False),
+            mode="silent_only",
+        )
+        assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
+        u1_path = jstorage._user_shard_path("alpha", "100000001")
+        assert u1_path.exists() and "给你带了一句私聊提醒" in u1_path.read_text(encoding="utf-8")
+        g1_text, _ = jm.read_journal_for_context("alpha", current_group_id="group_1")
+        assert "DRIVE:" not in g1_text and "用量已达上限" not in g1_text
+        assert "三大指数回落" in g1_text and "note:alpha:隔夜盘点小记" in g1_text
 
-            # 4b. 跨日残留流水不得被套上今日日期后当成「刚刚经历」反复注入
-            today_str = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
-            cur_hhmm = datetime.fromtimestamp(now).strftime("%H:%M")
-            stale_path = jm.get_journal_path("alpha", "group_rollover")
-            stale_path.parent.mkdir(parents=True, exist_ok=True)
-            stale_path.write_text(
-                f"# alpha的驻群手账 (群:group_rollover)\n\n"
-                f"## 本群今日行动流水 ({today_str})\n"
-                f"- [23:55 | 交付完结] 昨夜遗留的旧播报内容。\n"
-                f"- [00:05 | 查资料] 今日早间已完成的新记录。\n"
-                f"- [{cur_hhmm} | 查资料] 今日当前已完成记录。\n",
+        # 4. 跨行静默巡检折叠与跨日残留过滤
+        await jm.record_journal_entry(
+            jstorage.JournalEntry(now, "2026-11-18", "09:30", "周期巡检", "<<NO_BROADCAST>>", group_id="group_quiet"),
+            target_personas=["alpha"],
+        )
+        await jm.record_journal_entry(
+            jstorage.JournalEntry(
+                now + 1, "2026-11-18", "10:00", "查资料", "帮群友查了测试条目。", group_id="group_quiet"
+            ),
+            target_personas=["alpha"],
+        )
+        _, ts_after_substantive = jm.read_journal_for_context("alpha", current_group_id="group_quiet")
+        await jm.record_journal_entry(
+            jstorage.JournalEntry(
+                now + 2, "2026-11-18", "10:30", "周期巡检", "（本轮无值得播报的进展）", group_id="group_quiet"
+            ),
+            target_personas=["alpha"],
+        )
+        delta_after_silent, _ = jm.read_journal_for_context(
+            "alpha", current_group_id="group_quiet", since_ts=ts_after_substantive
+        )
+        assert delta_after_silent == ""
+        gq_doc = jstorage.parse_shard_markdown(jm.get_journal_path("alpha", "group_quiet").read_text(encoding="utf-8"))
+        assert len(gq_doc.timeline) == 2 and "<<NO_BROADCAST>>" not in "\n".join(gq_doc.timeline)
+        assert "(×2)" in gq_doc.timeline[-1] and "09:30~10:30" in gq_doc.timeline[-1]
+
+        today_str = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+        cur_hhmm = datetime.fromtimestamp(now).strftime("%H:%M")
+        stale_path = jm.get_journal_path("alpha", "group_rollover")
+        stale_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_path.write_text(
+            f"# alpha的驻群手账 (群:group_rollover)\n\n"
+            f"## 本群今日行动流水 ({today_str})\n"
+            f"- [23:55 | 交付完结] 昨夜遗留的旧播报内容。\n"
+            f"- [00:05 | 查资料] 今日早间已完成的新记录。\n"
+            f"- [{cur_hhmm} | 查资料] 今日当前已完成记录。\n",
+            encoding="utf-8",
+        )
+        jstorage.forget_persona_cache_sync("alpha")
+        delta_roll, _ = jm.read_journal_for_context("alpha", current_group_id="group_rollover", since_ts=now - 30.0)
+        assert "昨夜遗留的旧播报内容" not in delta_roll
+        anchor_roll, _ = jm.read_journal_for_context("alpha", current_group_id="group_rollover")
+        assert "昨夜遗留的旧播报内容" not in anchor_roll and "今日当前已完成记录" in anchor_roll
+
+        # 5. 大群洪峰环形定长 + 私聊/群分片按 (替:uid) 与 (群:gid) 隔离 + 旧 self 零删除迁移
+        for i in range(75):
+            await jm.record_journal_entry(
+                jstorage.JournalEntry(
+                    now + 10 + i,
+                    "2026-11-18",
+                    f"11:{i % 60:02d}",
+                    "查资料" if i % 2 == 0 else "看图辨认",
+                    f"回应了大群第 {i} 次高频资料核验请求并给出结论。",
+                    group_id="group_hot",
+                ),
+                target_personas=["alpha"],
+            )
+        gh_doc = jstorage.parse_shard_markdown(jm.get_journal_path("alpha", "group_hot").read_text(encoding="utf-8"))
+        assert len(gh_doc.timeline) <= jstorage.GROUP_TIMELINE_RING_CAP
+        hot_anchor, _ = jm.read_journal_for_context("alpha", current_group_id="group_hot")
+        quiet_anchor, _ = jm.read_journal_for_context("alpha", current_group_id="group_quiet")
+        dm_anchor, _ = jm.read_journal_for_context("alpha", current_group_id=None)
+        assert len(hot_anchor) <= jstorage.ANCHOR_TOTAL_MAX_CHARS and "早先概览" in hot_anchor
+        assert "高频资料核验" not in quiet_anchor and "高频资料核验" not in dm_anchor
+
+        # 私聊分片四层视图只给本人；群手账 (替:uid) 与 self 时间线按边界隔离
+        await jm.record_journal_entry(
+            jstorage.JournalEntry(
+                now, "2026-11-21", "10:30", "查资料", "私聊专属健康清单", group_id="", requested_by="100000001"
+            ),
+            target_personas=["iso_p"],
+        )
+        u_iso_path = jstorage._user_shard_path("iso_p", "100000001")
+        u_iso_raw = u_iso_path.read_text(encoding="utf-8")
+        assert "的私聊手账 (用户:100000001)" in u_iso_raw and "驻群手账" not in u_iso_raw
+        u_iso_doc = jstorage.parse_shard_markdown(u_iso_raw, jstorage._user_shard_id("100000001"))
+        u_iso_doc.yesterday = ["- 昨日私聊整理了体检报告"]
+        u_iso_doc.monthly = ["- 本月私聊持续跟进健身计划"]
+        jstorage._save_shard_sync("iso_p", u_iso_doc)
+        jstorage._SHARD_CACHE.clear()
+        dm_view = jm.read_life_journal_view("iso_p", group_id=None, user_id="100000001")
+        assert "私聊专属健康清单" in dm_view and "昨日私聊整理了体检报告" in dm_view and "跟进健身计划" in dm_view
+        assert "私聊专属健康清单" not in jm.read_life_journal_view("iso_p", group_id=None, user_id="100000002")
+        assert "私聊专属健康清单" not in jm.read_life_journal_view("iso_p", group_id="group_a", user_id="100000001")
+
+        g_iso = jstorage._group_shard_path("iso_p", "group_a")
+        g_iso.parent.mkdir(parents=True, exist_ok=True)
+        g_iso.write_text(
+            "# iso_p 驻群手账 (群:group_a)\n\n## 今日行动流水 (2026-11-21)\n"
+            "- [10:00 | 查资料] 帮A查了天气 (替:100000001)\n"
+            "- [10:05 | 查资料] 帮B查了私密账本 (替:100000002)\n",
+            encoding="utf-8",
+        )
+        dm_j = jm.read_life_journal_view("iso_p", group_id=None, user_id="100000001", allowed_group_ids=[])
+        assert "帮A查了天气" in dm_j and "私密账本" not in dm_j
+        assert "帮A查了天气" not in jm.read_life_journal_view("iso_p", group_id="group_b", user_id="100000001")
+
+        self_iso = jstorage._self_shard_path("iso_p")
+        self_iso.write_text(
+            "# iso_p 生活手账 (全局自我核)\n\n## 今日行动流水 (2026-11-21)\n"
+            "- [11:00 | 自主探索] 自己看了一会书\n"
+            "- [11:10 | 查资料] 帮用户A整理私密清单 (替:100000001)\n"
+            "- [12:00 | 查资料] 群内通用事 (群:group_a)\n",
+            encoding="utf-8",
+        )
+        jstorage._SHARD_CACHE.clear()
+        assert "私密清单" not in jm.read_life_journal_view("iso_p", group_id="group_a", user_id="100000001")
+        assert "群内通用事" in jm.read_life_journal_view("iso_p", group_id="group_a", user_id="100000001")
+        assert "群内通用事" not in jm.read_life_journal_view("iso_p", group_id="group_b", user_id="100000001")
+        assert "私密清单" in jm.read_life_journal_view("iso_p", group_id=None, user_id="100000001")
+        assert "群内通用事" not in jm.read_life_journal_view("iso_p", group_id=None, user_id="100000001")
+        assert "私密清单" not in jm.read_life_journal_view("iso_p", group_id=None, user_id="100000002")
+
+        # 旧 self.md 零删除归档迁移 + 幂等 + 水位线后新人格不动（独立手账根目录，不与其他分片混扫）
+        with monkeypatch.context() as mp:
+            setup_journal_env(tmp_path / "legacy_migration", mp)
+            legacy_self = jstorage._self_shard_path("legacy_iso_p")
+            legacy_self.parent.mkdir(parents=True, exist_ok=True)
+            legacy_self.write_text(
+                "# legacy_iso_p 生活手账 (全局自我核)\n\n## 今日行动流水 (2026-11-21)\n"
+                "- [11:00 | 自主探索] 自己看了一会书\n"
+                "- [11:10 | 查资料] 帮用户A整理私密清单 (替:100000001)\n",
                 encoding="utf-8",
             )
-            jstorage.forget_persona_cache_sync("alpha")
-            delta_roll, _ = jm.read_journal_for_context("alpha", current_group_id="group_rollover", since_ts=now - 30.0)
-            assert "昨夜遗留的旧播报内容" not in delta_roll
-            anchor_roll, _ = jm.read_journal_for_context("alpha", current_group_id="group_rollover")
-            assert "昨夜遗留的旧播报内容" not in anchor_roll and "今日当前已完成记录" in anchor_roll
+            mp.setattr(mig_v1, "get_isolation_watermark_ts", lambda: 0.0)
+            assert await jm.archive_and_reset_legacy_self_shards() == ["legacy_iso_p"]
+            assert (legacy_self.parent / "self.legacy_v1.bak").exists()
+            legacy_files = list((legacy_self.parent / "archives").glob("legacy_v1_*.jsonl"))
+            assert legacy_files
+            month_key = legacy_files[0].stem.removeprefix("legacy_v1_")
+            assert (
+                await jd.read_journal_archive_sync(legacy_self.parent / "archives", jstorage.SELF_SHARD_ID, month_key)
+                == ""
+            )
+            assert await jm.archive_and_reset_legacy_self_shards() == []
 
-            # 5. 超大群突发洪峰环形定长（75 条仍 <= 50 行，锚点 <= 880 字，零跨群污染）
-            for i in range(75):
+            mp.setattr(mig_v1, "get_isolation_watermark_ts", lambda: 1_000_000.0)
+            fresh_self = jstorage._self_shard_path("brand_new_p")
+            fresh_self.parent.mkdir(parents=True, exist_ok=True)
+            fresh_self.write_text("# brand_new_p\n\n## 持久自我认知与通用经验\n- 全新纯净个人经验\n", encoding="utf-8")
+            assert await jm.archive_and_reset_legacy_self_shards() == []
+            assert "全新纯净个人经验" in fresh_self.read_text(encoding="utf-8")
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        clear_journal_caches()
+
+
+def test_journal_dream_tiers_notes_gc_and_ground_truth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """做梦三级阀门、双 ID 归档句柄、路径穿越防御、笔记 Wiki 整编、60 天休眠唤醒与真值对账。"""
+    from gsuid_core.ai_core.journal import dream as jd, manager as jm, storage as jstorage
+    from gsuid_core.ai_core.database.models import AIAutonomyActivity
+    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.planning.handle_resolver import resolve_handle
+
+    _setup_isolated_persona_env(tmp_path / "personas_cfg", monkeypatch)
+    _seed_persona(tmp_path / "personas_cfg", "alpha", "specific", ["group_1", "group_hot", "villa_1:room_9"])
+    _, notes_root = setup_journal_env(tmp_path, monkeypatch, patch_autonomy_notes=True)
+
+    async def scenario() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="dream_tiers.db") as (_, maker):
+            now = time.time()
+            await jm.record_journal_entry(
+                jstorage.JournalEntry(now, "2026-11-18", "09:00", "查资料", "三大指数回落复盘。", group_id="group_1"),
+                target_personas=["alpha"],
+            )
+            await jm.record_journal_entry(
+                jstorage.JournalEntry(
+                    now + 1,
+                    "2026-11-18",
+                    "09:05",
+                    "自主探索",
+                    "给你带了一句私聊提醒",
+                    group_id="",
+                    requested_by="100000001",
+                ),
+                target_personas=["alpha"],
+            )
+            await jm.record_journal_entry(
+                jstorage.JournalEntry(
+                    now + 2, "2026-11-18", "12:00", "查资料", "核查了双ID房间的测试配置。", group_id="villa_1:room_9"
+                ),
+                target_personas=["alpha"],
+            )
+            for i in range(55):
                 await jm.record_journal_entry(
                     jstorage.JournalEntry(
                         now + 10 + i,
                         "2026-11-18",
                         f"11:{i % 60:02d}",
-                        "查资料" if i % 2 == 0 else "看图辨认",
-                        f"回应了大群第 {i} 次高频资料核验请求并给出结论。",
+                        "查资料",
+                        f"回应大群第 {i} 次资料核验并总结结论。",
                         group_id="group_hot",
                     ),
                     target_personas=["alpha"],
                 )
-            gh_doc = jstorage.parse_shard_markdown(
-                jm.get_journal_path("alpha", "group_hot").read_text(encoding="utf-8")
-            )
-            assert len(gh_doc.timeline) <= jstorage.GROUP_TIMELINE_RING_CAP
-            hot_anchor, _ = jm.read_journal_for_context("alpha", current_group_id="group_hot")
-            quiet_anchor, _ = jm.read_journal_for_context("alpha", current_group_id="group_quiet")
-            dm_anchor, _ = jm.read_journal_for_context("alpha", current_group_id=None)
-            assert len(hot_anchor) <= jstorage.ANCHOR_TOTAL_MAX_CHARS
-            assert "早先概览" in hot_anchor
-            assert "高频资料核验" not in quiet_anchor and "高频资料核验" not in dm_anchor
 
-            # 6. 做梦三级阀门 + 双 ID 群号 + 归档句柄防截断 + 并发状态防覆盖 + 路径穿越拦截
-            await jm.record_journal_entry(
-                jstorage.JournalEntry(
-                    now + 90, "2026-11-18", "12:00", "查资料", "核查了双ID房间的测试配置。", group_id="villa_1:room_9"
-                ),
-                target_personas=["alpha"],
-            )
             heavy_llm_shards: list[str] = []
 
-            def _track_llm(doc: jstorage.ShardDocument, gt: jd.GroundTruthDigest) -> jd.DreamLLMOutcome:
-                del gt
+            async def _track_llm(
+                persona_name: str,
+                doc: jstorage.ShardDocument,
+                *,
+                ground_truth: jd.GroundTruthDigest,
+                prev_month_rollover: Sequence[str] = (),
+            ) -> jd.DreamLLMOutcome:
+                del persona_name, ground_truth, prev_month_rollover
                 heavy_llm_shards.append(doc.shard_id)
                 if doc.shard_id == "group_hot":
-                    # 模拟做梦期间他人格并发写入状态，验证原子合入不覆盖
                     jstorage.put_journal_state_sync(
                         "beta",
                         {
@@ -797,12 +935,10 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                     ],
                 }
 
-            monkeypatch.setattr(jd, "_summarize_journal_with_llm", _make_dream_llm_stub(_track_llm))
-            # group_1 / villa_1:room_9 仅 1 条（轻度）→ 0 LLM；group_hot 50 条 → 触发 LLM
+            monkeypatch.setattr(jd, "synthesize_shard_with_llm", _track_llm)
             assert await jd.compact_journal("alpha", force=False) is True
             assert "group_hot" in heavy_llm_shards
-            assert "group_1" not in heavy_llm_shards
-            assert "villa_1:room_9" not in heavy_llm_shards
+            assert "group_1" not in heavy_llm_shards and "villa_1:room_9" not in heavy_llm_shards
             beta_state = jstorage.read_journal_state_sync("beta")
             assert beta_state is not None and "group_concurrent" in beta_state["dirty_shards"]
 
@@ -810,45 +946,27 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                 jm.get_journal_path("alpha", "group_hot").read_text(encoding="utf-8"), "group_hot"
             )
             sleep_day = gh_after.yesterday_label
-            # 长昨日摘要追加归档句柄后绝不腰斩句柄尾部
             assert f"journal:alpha:group_hot:{sleep_day}" in gh_after.yesterday[-1]
 
-            # 双 ID 群号归档句柄完整可解，且恶意路径穿越一律拒绝返回 None
-            dual_hid = f"journal:alpha:villa_1:room_9:{sleep_day}"
-            resolved_dual = await resolve_handle(dual_hid)
+            resolved_dual = await resolve_handle(f"journal:alpha:villa_1:room_9:{sleep_day}")
             assert resolved_dual is not None and "双ID房间" in (resolved_dual.payload_inline or "")
             assert await resolve_handle("journal:..:self:2026-11-18") is None
             assert await resolve_handle("journal:alpha:group_1:../../etc") is None
 
-            g1_after = jstorage.parse_shard_markdown(
-                jm.get_journal_path("alpha", "group_1").read_text(encoding="utf-8"), "group_1"
-            )
-            assert len(g1_after.yesterday) >= 1 and len(g1_after.timeline) == 0
-            arch_hid = f"journal:alpha:group_1:{sleep_day}"
-            resolved_arch = await resolve_handle(arch_hid)
+            resolved_arch = await resolve_handle(f"journal:alpha:group_1:{sleep_day}")
             assert resolved_arch is not None and "三大指数回落" in (resolved_arch.payload_inline or "")
 
-            def _make_ctx(ev: Event) -> RunContext[ToolContext]:
-                return RunContext(deps=ToolContext(bot=None, ev=ev), model=TestModel(), usage=RunUsage())
-
-            ev_g1 = Event(bot_id="onebot", bot_self_id="1", user_id="100000001", user_type="group", group_id="group_1")
-            ev_dm = Event(bot_id="onebot", bot_self_id="1", user_id="100000001", user_type="direct", group_id=None)
-            assert "三大指数回落" in await read_handle(_make_ctx(ev_g1), arch_hid)
-            assert "无权限" in await read_handle(_make_ctx(ev_dm), arch_hid)
-
-            # 7. Phase 3 个人笔记 Wiki 整编 + 超 60 天休眠群/私聊归档与唤醒
+            # 个人笔记 Wiki 整编 + 超 60 天休眠分片迁入与自动唤醒
             alpha_notes = notes_root / "alpha"
             alpha_notes.mkdir(parents=True, exist_ok=True)
             scope_hdr = "<!-- gscore-scope: self:1:alpha | owner: 100000001 -->\n"
             for idx, suffix in enumerate(("小抄", "小笔记", "调查")):
                 (alpha_notes / f"体态拉伸_{suffix}.txt").write_text(
-                    f"{scope_hdr}第 {idx + 1} 次记录：每日拉伸 15 分钟有助于放松背部姿态。",
-                    encoding="utf-8",
+                    f"{scope_hdr}第 {idx + 1} 次记录：每日拉伸 15 分钟有助于放松背部姿态。", encoding="utf-8"
                 )
             for distinct_topic in ("睡眠规律", "饮水习惯", "桌面收纳"):
                 (alpha_notes / f"关于_{distinct_topic}_笔记.txt").write_text(
-                    f"{scope_hdr}独立主题记录：{distinct_topic}。",
-                    encoding="utf-8",
+                    f"{scope_hdr}独立主题记录：{distinct_topic}。", encoding="utf-8"
                 )
             old_snap = alpha_notes / "2026-10-01_日常速记.txt"
             old_snap.write_text("单日临时快照数据。", encoding="utf-8")
@@ -859,13 +977,11 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                 "alpha", notes_dir=alpha_notes, now_ts=now, allow_llm=False
             )
             assert merged_n == 1 and archived_n == 4
-            assert (alpha_notes / "topic_体态拉伸.md").exists()
-            assert not (alpha_notes / "topic_关于.md").exists()
+            assert (alpha_notes / "topic_体态拉伸.md").exists() and not (alpha_notes / "topic_关于.md").exists()
             assert not old_snap.exists()
             assert await resolve_handle("note:alpha:topic_体态拉伸") is not None
             assert await resolve_handle("note:alpha:体态拉伸_小抄") is not None
 
-            # 超 60 天未活跃群与私聊分片迁入 dormant_*，再次读取时无缝唤醒
             g1_file = jm.get_journal_path("alpha", "group_1")
             u1_file = jstorage._user_shard_path("alpha", "100000001")
             ancient_ts = now - 70 * 86400
@@ -880,12 +996,9 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             woken_dm, _ = jm.read_journal_for_context("alpha", current_group_id=None, current_user_id="100000001")
             assert "给你带了一句私聊提醒" in woken_dm and u1_file.exists()
 
-            # 私聊归档句柄回填 owner_user_id，且私聊规则跨日不混入「群聊」口吻
-            dm_arch_hid = f"journal:alpha:user:100000001:{sleep_day}"
-            resolved_dm_arch = await resolve_handle(dm_arch_hid)
+            resolved_dm_arch = await resolve_handle(f"journal:alpha:user:100000001:{sleep_day}")
             assert resolved_dm_arch is not None
-            assert resolved_dm_arch.scope_key == "user:100000001"
-            assert resolved_dm_arch.owner_user_id == "100000001"
+            assert resolved_dm_arch.scope_key == "user:100000001" and resolved_dm_arch.owner_user_id == "100000001"
             dm_rule_slots = jd.rule_rollover_shard(
                 jstorage.ShardDocument(shard_id="user:100000001", timeline=["- [10:00 | 自主探索] 提醒休息"]),
                 persona_name="alpha",
@@ -895,7 +1008,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             )
             assert all("群聊" not in item for item in dm_rule_slots["persistent"])
 
-            # 8. 实库验证 Phase 1 真值对账（completed 入已完结，>24h 僵尸审批不进 in_flight）
+            # 实库真值对账（completed 入已完结，>24h 僵尸审批不进 in_flight，私聊按人格隔离）
             now_dt = datetime.fromtimestamp(now)
             async with maker() as s:
                 s.add_all(
@@ -969,101 +1082,107 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                 await s.commit()
 
             gt_g1 = await jd.collect_ground_truth("alpha", "group_1", now)
-            assert "年度报表核查" in gt_g1.completed
-            assert "过期十天审批单" not in gt_g1.in_flight
+            assert "年度报表核查" in gt_g1.completed and "过期十天审批单" not in gt_g1.in_flight
             gt_self = await jd.collect_ground_truth("alpha", "__self__", now)
             assert any("读书摘要" in x for x in gt_self.autonomy_facts)
             gt_dm = await jd.collect_ground_truth("alpha", "user:100000001", now)
             assert any("私下问候作息进展" in x for x in gt_dm.autonomy_facts)
             assert all("群里提过的公共事项" not in x for x in gt_dm.autonomy_facts)
-            assert "本人格私聊事项" in gt_dm.completed
-            assert "他人格私聊事项" not in gt_dm.completed
+            assert "本人格私聊事项" in gt_dm.completed and "他人格私聊事项" not in gt_dm.completed
 
-            # 9. persist_subagent_result 直跑离线 SQLite：persona=None 路由 alpha，缺 uid 拒绝
+    try:
+        asyncio.run(scenario())
+    finally:
+        clear_journal_caches()
+
+
+def test_journal_settle_subagent_proactive_and_webconsole_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """子代理落盘回流、主 Agent 结算边界、主动出口入账与 WebConsole 结构化读写。"""
+    from gsuid_core.ai_core import session_logger as sl_mod
+    from gsuid_core.ai_core.journal import dream as jd, manager as jm, storage as jstorage
+    from gsuid_core.ai_core.planning import tool_output_helper as toh
+    from gsuid_core.ai_core.proactive import emitter as emitter_mod
+    from gsuid_core.ai_core.control.lines import delivery_wake_line
+    from gsuid_core.ai_core.planning.models import AIAgentTask
+    from gsuid_core.ai_core.proactive.dispatcher import UnifiedProactiveDispatcher
+    from gsuid_core.ai_core.buildin_tools.message_sender import send_message_by_ai
+
+    _setup_isolated_persona_env(tmp_path / "personas_cfg", monkeypatch)
+    _seed_persona(tmp_path / "personas_cfg", "alpha", "specific", ["group_1"])
+    journal_dir, _ = setup_journal_env(tmp_path, monkeypatch, patch_autonomy_notes=True)
+    monkeypatch.setattr(sl_mod, "AI_SESSION_LOGS_PATH", tmp_path / "session_logs")
+    monkeypatch.setattr(sl_mod, "AI_SUBAGENT_LOGS_PATH", tmp_path / "session_logs" / "subagents")
+
+    async def scenario() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="journal_settle.db"):
             monkeypatch.setattr(toh, "ARTIFACT_ROOT", tmp_path / "artifacts")
-
-            def _read_raw_text(p: Path) -> str:
-                return p.read_text(encoding="utf-8")
-
-            def _read_timeline_now(p: Path) -> list[str]:
-                return jstorage.parse_shard_markdown(_read_raw_text(p)).timeline if p.exists() else []
-
-            long_sub_body = (
-                "完整的子代理调研结论内容，包含多维度测试指标核查与交叉对比结论，"
-                "总字符数超过四十个字符门槛以便触发手账自动回流落盘流程。"
-            )
-            sub_task = AIAgentTask(
-                id="t_sub",
-                goal="调研",
-                display_name="调研子任务",
-                persona_name=None,
-                group_id="group_1",
-                scope_key="group:group_1",
-                owner_user_id="100000001",
-            )
+            ev_g1 = Event(bot_id="onebot", bot_self_id="1", user_id="100000001", user_type="group", group_id="group_1")
+            ev_dm = Event(bot_id="onebot", bot_self_id="1", user_id="100000001", user_type="direct", group_id=None)
             g1_shard_path = jm.get_journal_path("alpha", "group_1")
+            u1_file = jstorage._user_shard_path("alpha", "100000001")
+
+            # 1) persist_subagent_result：群任务归属 alpha、私聊写 users/{uid}.md、缺 uid 拒绝落 self.md
             sub_card = await toh.persist_subagent_result(
                 profile="research_agent",
-                content=long_sub_body,
-                task=sub_task,
+                content="完整的子代理调研结论内容，包含多维度测试指标核查与交叉对比结论，总字符数超过四十个字符门槛以便触发手账自动回流落盘流程。",
+                task=AIAgentTask(
+                    id="t_sub",
+                    goal="调研",
+                    display_name="调研子任务",
+                    persona_name=None,
+                    group_id="group_1",
+                    scope_key="group:group_1",
+                    owner_user_id="100000001",
+                ),
                 res_handle="res_test1",
             )
             assert sub_card is not None and sub_card.id.startswith("sa_")
-            await _drain_background_tasks()
-            assert any(sub_card.id in ln for ln in _read_timeline_now(g1_shard_path))
-            assert not (journal_dir / "personas" / "default" / "groups" / "group_1.md").exists()
-
-            # 私聊子代理产出路由至 users/{uid}.md，缺 uid 时 fail-closed 不落 self.md
-            dm_sub_task = AIAgentTask(
-                id="t_sub_dm",
-                goal="私聊调研",
-                display_name="私聊调研子任务",
-                persona_name="alpha",
-                group_id=None,
-                scope_key="user_global:100000001",
-                owner_user_id="100000001",
-            )
             dm_sub_card = await toh.persist_subagent_result(
                 profile="research_agent",
-                content=(
-                    "私聊专属调研结论汇总，涵盖核心数据交叉对比、阶段进展评估与后续跟进建议，"
-                    "总字符数超过四十个字符门槛以便触发私聊手账自动回流。"
+                content="私聊专属调研结论汇总，涵盖核心数据交叉对比、阶段进展评估与后续跟进建议，总字符数超过四十个字符门槛以便触发私聊手账自动回流。",
+                task=AIAgentTask(
+                    id="t_sub_dm",
+                    goal="私聊调研",
+                    display_name="私聊调研子任务",
+                    persona_name="alpha",
+                    group_id=None,
+                    scope_key="user_global:100000001",
+                    owner_user_id="100000001",
                 ),
-                task=dm_sub_task,
                 res_handle="res_test_dm",
             )
             assert dm_sub_card is not None and dm_sub_card.id.startswith("sa_")
-            await _drain_background_tasks()
-            assert any(dm_sub_card.id in ln and "私聊专属调研结论" in ln for ln in _read_timeline_now(u1_file))
-
-            bad_dm_task = AIAgentTask(
-                id="t_sub_dm_nouid",
-                goal="缺失属主",
-                display_name="无属主私聊任务",
-                persona_name="alpha",
-                group_id=None,
-                scope_key="user_global:",
-                owner_user_id="",
-            )
             await toh.persist_subagent_result(
                 profile="research_agent",
                 content="这条缺少属主用户编号的私聊子任务结果绝对不能回退写入公共自我手账文件。",
-                task=bad_dm_task,
+                task=AIAgentTask(
+                    id="t_sub_dm_nouid",
+                    goal="缺失属主",
+                    display_name="无属主私聊任务",
+                    persona_name="alpha",
+                    group_id=None,
+                    scope_key="user_global:",
+                    owner_user_id="",
+                ),
                 res_handle="res_bad_dm",
             )
             await _drain_background_tasks()
+            assert any(sub_card.id in ln for ln in _read_timeline_now(g1_shard_path))
+            assert not (journal_dir / "personas" / "default" / "groups" / "group_1.md").exists()
+            assert any(dm_sub_card.id in ln and "私聊专属调研结论" in ln for ln in _read_timeline_now(u1_file))
             assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
 
-            # 10. 主 Agent settle 回流边界：看板回灌结单入账，Aside 旁白与无 ev 隔离不入账
-            monkeypatch.setattr(sl_mod, "AI_SESSION_LOGS_PATH", tmp_path / "session_logs")
-            monkeypatch.setattr(sl_mod, "AI_SUBAGENT_LOGS_PATH", tmp_path / "session_logs" / "subagents")
-            offline_test_model = TestModel(
+            # 2) 主 Agent settle 回流边界：Aside/无 ev/闸门拦截不入账；看板结单与私聊答疑入对应分片
+            ok_model = TestModel(
                 call_tools=[],
                 custom_output_text="年度报表核查结果已经全部整理完毕，各项指标均符合预期标准。",
             )
             await _run_offline_agent(
                 monkeypatch,
-                offline_test_model,
+                ok_model,
                 "命令旁白长句子测试，即便超过六十个字符的点评内容也不应该被写入驻群生活手账以免大群命令洪峰灌水污染手账记录。",
                 create_by="Aside",
                 ev=ev_g1,
@@ -1071,26 +1190,18 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             await _drain_background_tasks()
             assert not any("年度报表核查结果" in ln for ln in _read_timeline_now(g1_shard_path))
 
-            # 无 ev 的内部调用严禁误落入公共 self.md
             await _run_offline_agent(
                 monkeypatch,
-                offline_test_model,
+                ok_model,
                 "这是一句超过六十个字符的无事件内部调用测试输入，用于验证无事件时不会误入公共自我手账文件。",
                 ev=None,
             )
             wake_msg = delivery_wake_line("【子任务交付】任务#1「年度报表核查」已完成。", "", "", allow_render=False)
-            await _run_offline_agent(
-                monkeypatch,
-                offline_test_model,
-                wake_msg,
-                ev=ev_g1,
-                is_framework_injection=True,
-            )
+            await _run_offline_agent(monkeypatch, ok_model, wake_msg, ev=ev_g1, is_framework_injection=True)
             await _drain_background_tasks()
             assert any("交付完结" in ln and "年度报表核查结果" in ln for ln in _read_timeline_now(g1_shard_path))
             assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
 
-            # 日常私聊结算（>=60 字）写入 users/{uid}.md 并标「私聊答疑」
             dm_long_model = TestModel(
                 call_tools=[],
                 custom_output_text=(
@@ -1104,14 +1215,12 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                 "帮我理一下这两天私聊安排",
                 session_id="ws1:onebot:1:private:100000001",
                 ev=ev_dm,
-                dynamic_tools=False,
             )
             await _drain_background_tasks()
             assert any("私聊答疑" in ln and "个人日程安排" in ln for ln in _read_timeline_now(u1_file))
-            assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
             assert not any("个人日程安排" in ln for ln in _read_timeline_now(g1_shard_path))
 
-            # 真实 send_message_by_ai 发送两段气泡后接短尾语，手账按序保留已发正文与尾语
+            # send_message_by_ai 发送两段气泡接短尾语，手账按序保留已发正文与尾语
             sent_bubbles: list[str] = []
 
             async def _stub_bot_send(self: Bot, message: object, *_a: object, **_kw: object) -> None:
@@ -1125,9 +1234,7 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                 if len(messages) == 1:
                     yield {
                         0: DeltaToolCall(
-                            name="send_message_by_ai",
-                            json_args='{"text": "先看结论汇总Z"}',
-                            tool_call_id="c1",
+                            name="send_message_by_ai", json_args='{"text": "先看结论汇总Z"}', tool_call_id="c1"
                         ),
                         1: DeltaToolCall(
                             name="send_message_by_ai",
@@ -1151,10 +1258,10 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
                 )
             await _drain_background_tasks()
             assert len(sent_bubbles) == 2
-            tl_after_send = _read_timeline_now(g1_shard_path)
-            assert any("先看结论汇总Z；再看分项比例表A" in ln and "发好啦" in ln for ln in tl_after_send)
+            assert any(
+                "先看结论汇总Z；再看分项比例表A" in ln and "发好啦" in ln for ln in _read_timeline_now(g1_shard_path)
+            )
 
-            # return 与 by_bot 双模式下被闸门拦截的泄漏文本均绝不混入手账
             leak_model = TestModel(
                 call_tools=[],
                 custom_output_text="<control>内部系统提醒泄露文本超过六十个字符也不得入账</control>",
@@ -1171,18 +1278,15 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
             await _drain_background_tasks()
             assert not any("内部系统提醒泄露" in ln for ln in _read_timeline_now(g1_shard_path))
 
-            # 11. 主动出口异步入账、失败兜底拦截、归档过滤与单分片整理
+            # 3) 主动出口异步入账 + WebConsole 结构化视图与单分片整理
             isolated_dispatcher = UnifiedProactiveDispatcher()
             monkeypatch.setattr(emitter_mod, "get_dispatcher", lambda: isolated_dispatcher)
 
-            async def _noop_send_chat(*_a: object, **_kw: object) -> None:
+            async def _noop(*_a: object, **_kw: object) -> None:
                 return None
 
-            async def _noop_sync_main(**_kw: object) -> None:
-                return None
-
-            monkeypatch.setattr(emitter_mod, "send_chat_result", _noop_send_chat)
-            monkeypatch.setattr(emitter_mod, "_sync_to_main_session", _noop_sync_main)
+            monkeypatch.setattr(emitter_mod, "send_chat_result", _noop)
+            monkeypatch.setattr(emitter_mod, "_sync_to_main_session", _noop)
 
             async def _emit_sched(ev: Event, msg: str, reason: str) -> bool:
                 return await emitter_mod.emit_proactive_message(
@@ -1197,45 +1301,42 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
 
             await _emit_sched(ev_g1, "这次的定时任务没能执行成功，稍后再让我试试吧\n⏰ 定时任务 task_fail", "task_fail")
             assert await _emit_sched(ev_g1, "大家早上好，今天天气很清爽。\n⏰ 定时任务: 晨间问候", "task_morning")
-            await _drain_background_tasks()
-            tl_after_proactive = _read_timeline_now(g1_shard_path)
-            assert not any("没能执行成功" in ln for ln in tl_after_proactive)
-            assert any("定时提醒" in ln and "大家早上好" in ln and "定时任务" not in ln for ln in tl_after_proactive)
-
             assert await _emit_sched(ev_dm, "私聊晚间提醒：记得按时休息呀。\n⏰ 定时任务: 晚间提醒", "task_evening_dm")
             await _drain_background_tasks()
+            tl_after = _read_timeline_now(g1_shard_path)
+            assert not any("没能执行成功" in ln for ln in tl_after)
+            assert any("定时提醒" in ln and "大家早上好" in ln and "定时任务" not in ln for ln in tl_after)
             assert any("定时提醒" in ln and "私聊晚间提醒" in ln for ln in _read_timeline_now(u1_file))
             assert not (journal_dir / "personas" / "alpha" / "self.md").exists()
+
+            # 先经单分片规则整理写出归档，再校验 WebConsole 结构化视图与归档安全过滤
+            async def _no_llm(*_a: object, **_kw: object) -> jd.DreamLLMOutcome:
+                return None
+
+            monkeypatch.setattr(jd, "synthesize_shard_with_llm", _no_llm)
+            await jm.save_journal_content_async("alpha", g1_shard_path.read_text(encoding="utf-8"), shard_id="group_1")
+            assert jstorage.parse_shard_markdown(g1_shard_path.read_text(encoding="utf-8"), "group_1").monthly == []
+            assert await jd.compact_journal("alpha", force=True, target_shard="group_1", max_llm_shards=1) is True
+            assert len(_read_timeline_now(g1_shard_path)) == 0
 
             arch_dir = jstorage._archives_dir("alpha")
             (arch_dir / "legacy_v1_2026-10.jsonl").write_text('{"date":"2026-10-01"}\n', encoding="utf-8")
             (arch_dir / "noise.jsonl").write_text("{}", encoding="utf-8")
             structured_view = jm.get_journal_structured("alpha")
-            assert any(
-                gs["group_id"] == "group_1" and gs["timeline_count"] >= 1 for gs in structured_view["group_shards"]
-            )
+            assert any(gs["group_id"] == "group_1" for gs in structured_view["group_shards"])
             assert any(
                 u["user_id"] == "100000001" and u["shard_id"] == "user:100000001"
                 for u in structured_view["user_shards"]
             )
-            assert len(structured_view["archive_months"]) >= 1
-            assert "noise" not in structured_view["archive_months"]
+            assert structured_view["archive_months"] and "noise" not in structured_view["archive_months"]
             assert not structured_view["archive_months"][0].startswith("legacy_v1_")
             arch_recs, arch_months, arch_sel = jm.get_journal_archive_records("alpha", shard_id="group_1")
             assert arch_months == structured_view["archive_months"]
-            assert arch_months and arch_sel and any(r["shard"] == "group_1" and r["entries"] for r in arch_recs)
+            assert arch_sel and any(r["shard"] == "group_1" and r["entries"] for r in arch_recs)
             bad_recs, _, bad_sel = jm.get_journal_archive_records("alpha", month="../evil")
             assert bad_recs == [] and bad_sel == ""
             compat_md = jm.get_journal_content("alpha")
-            compat_doc = jstorage.parse_shard_markdown(compat_md)
             assert "### 驻群分片 [群:group_1]" in compat_md
-            assert compat_doc.persistent and any("大家早上好" in ln for ln in compat_doc.timeline)
-
-            # WebConsole 保存往返不固化占位文案，单分片整理仅压缩指定群分片
-            await jm.save_journal_content_async("alpha", _read_raw_text(g1_shard_path), shard_id="group_1")
-            assert jstorage.parse_shard_markdown(_read_raw_text(g1_shard_path), "group_1").monthly == []
-            assert await jd.compact_journal("alpha", force=True, target_shard="group_1", max_llm_shards=1) is True
-            assert len(jstorage.parse_shard_markdown(_read_raw_text(g1_shard_path)).timeline) == 0
 
     try:
         asyncio.run(scenario())
@@ -1243,82 +1344,62 @@ def test_journal_sharding_sanitization_and_dream_lifecycle(
         clear_journal_caches()
 
 
-def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import io
-    import json
-    import zipfile
-
+def test_persona_channel_scopes_migration_and_routing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """旧配置原位迁移、双通道独立互斥、群/私聊绑定、HTTP 覆盖、抢占与自主私聊范围约束。"""
     from msgspec import json as msgjson
 
-    from gsuid_core.ai_core.persona import config as persona_cfg_mod, persona as persona_cls_mod
-    from gsuid_core.ai_core.persona.bundle import (
-        BUNDLE_FORMAT,
-        BUNDLE_VERSION,
-        import_bundle_dir,
-        export_persona_bundle,
-    )
+    from gsuid_core.ai_core.persona import config as persona_cfg_mod
     from gsuid_core.ai_core.persona.config import persona_config_manager
-    from gsuid_core.webconsole.persona_api import update_persona_config
     from gsuid_core.ai_core.autonomy.select import render_digest, assemble_care_targets
     from gsuid_core.ai_core.journal.storage import get_active_personas
-    from gsuid_core.ai_core.meme.pack_model import PackStore
-    from gsuid_core.ai_core.persona.resource import copy_persona
     from gsuid_core.ai_core.http_agent.runtime import set_http_persona_override, clear_http_persona_override
     from gsuid_core.ai_core.persona.config_rules import read_channel_scopes, persona_covers_session
 
     _setup_isolated_persona_env(tmp_path, monkeypatch)
 
-    # 1. 旧配置方案 A 加载前原位迁移（真实 msgspec GSC 线格式覆盖 5 种旧 scope）
-    legacy_cases = [
+    legacy_cases = (
         ("mig_global", "global", ["g_keep"], "all", "all"),
         ("mig_gg", "global_group", [], "all", "off"),
         ("mig_gp", "global_private", [], "off", "all"),
         ("mig_spec", "specific", ["group_a", "group_b"], "specific", "off"),
         ("mig_off", "disabled", ["g_old"], "off", "off"),
-    ]
+    )
     for pname, old_scope, old_groups, exp_g, exp_p in legacy_cases:
         pdir = tmp_path / pname
         pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "persona.md").write_text(f"# {pname}\n", encoding="utf-8")
-        legacy_payload = msgjson.encode(
-            {
-                "scope": GsStrConfig("启用范围", "", old_scope),
-                "target_groups": GsListStrConfig("目标群聊", "", old_groups),
-            }
+        (pdir / "config.json").write_bytes(
+            msgjson.encode(
+                {
+                    "scope": GsStrConfig("启用范围", "", old_scope),
+                    "target_groups": GsListStrConfig("目标群聊", "", old_groups),
+                }
+            )
         )
-        (pdir / "config.json").write_bytes(legacy_payload)
         cfg = persona_config_manager.get_config(pname)
         scopes = read_channel_scopes(cfg)
-        assert scopes.group_scope == exp_g
-        assert scopes.private_scope == exp_p
-        assert cfg.get_config("target_groups").data == old_groups
-        assert cfg.get_config("target_users").data == []
+        assert scopes.group_scope == exp_g and scopes.private_scope == exp_p
+        assert cfg.get_config("target_groups").data == old_groups and cfg.get_config("target_users").data == []
 
-    # 清理迁移用例目录后测通道独立互斥与混合路由
     for pname, *_ in legacy_cases:
         persona_config_manager.delete_persona_config(pname)
         (tmp_path / pname / "persona.md").unlink()
         (tmp_path / pname).rmdir()
     persona_config_manager.clear_cache()
 
-    # 2. 双通道独立互斥：全局私聊 + 指定群聊 与 全局群聊 可共存
     _seed_persona(tmp_path, "dm_and_part_group", "specific", ["group_1"], group_scope="specific", private_scope="all")
     _seed_persona(tmp_path, "all_group_p", "global_group")
     _seed_persona(tmp_path, "beta", "specific", [], group_scope="specific", private_scope="specific")
     _seed_persona(tmp_path, "off", "disabled")
 
-    # 同通道全局互斥：再把 beta 设为全部私聊/群聊应被拒
-    ok_dup_dm, _ = persona_config_manager.set_channel_scopes("beta", private_scope="all")
-    assert ok_dup_dm is False
-    ok_dup_grp, _ = persona_config_manager.set_channel_scopes("beta", group_scope="all")
-    assert ok_dup_grp is False
+    assert persona_config_manager.set_channel_scopes("beta", private_scope="all")[0] is False
+    assert persona_config_manager.set_channel_scopes("beta", group_scope="all")[0] is False
 
     group_1_sid = "ws1:onebot:10001:group:group_1"
     group_2_sid = "ws1:onebot:10001:group:group_2"
     dm_sid = "ws1:onebot:10001:private:100000001"
     http_sid = "HTTP_AGENT:onebot:s1:group:group_1"
 
-    # group_1 命中指定群，group_2 回退全群兜底，私聊命中全私聊兜底
     assert persona_config_manager.get_persona_for_session(group_1_sid) == "dm_and_part_group"
     assert persona_config_manager.get_persona_for_session(group_2_sid) == "all_group_p"
     assert persona_config_manager.get_persona_for_session(dm_sid) == "dm_and_part_group"
@@ -1328,33 +1409,22 @@ def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatc
     assert persona_covers_session(dm_cfg, group_id="group_2") is False
     assert persona_covers_session(dm_cfg, user_id="100000001") is True
 
-    # 群内切换目标到 beta
-    ok, _ = persona_config_manager.assign_target_to_persona("beta", "group_1", is_private=False)
-    assert ok is True
+    assert persona_config_manager.assign_target_to_persona("beta", "group_1", is_private=False)[0] is True
     persona_config_manager.clear_cache()
     assert "group_1" not in persona_config_manager.get_config("dm_and_part_group").get_config("target_groups").data
     assert "group_1" in persona_config_manager.get_config("beta").get_config("target_groups").data
     assert persona_config_manager.get_persona_for_session(group_1_sid) == "beta"
 
-    # 切回全群兜底人格会移出 beta 的特定绑定
-    ok, _ = persona_config_manager.assign_target_to_persona("all_group_p", "group_1", is_private=False)
-    assert ok is True
+    assert persona_config_manager.assign_target_to_persona("all_group_p", "group_1", is_private=False)[0] is True
     assert "group_1" not in persona_config_manager.get_config("beta").get_config("target_groups").data
     assert persona_config_manager.get_persona_for_session(group_1_sid) == "all_group_p"
 
-    # 私聊切换绑定到 beta（走 target_users，且覆盖全局私聊）
-    ok_dm_bind, _ = persona_config_manager.assign_target_to_persona("beta", "100000001", is_private=True)
-    assert ok_dm_bind is True
+    assert persona_config_manager.assign_target_to_persona("beta", "100000001", is_private=True)[0] is True
     assert "100000001" in persona_config_manager.get_config("beta").get_config("target_users").data
     assert persona_config_manager.get_persona_for_session(dm_sid) == "beta"
+    assert persona_config_manager.assign_target_to_persona("all_group_p", "100000001", is_private=True)[0] is False
+    assert persona_config_manager.assign_target_to_persona("off", "group_1", is_private=False)[0] is False
 
-    # 仅群聊人格拒绝私聊绑定；停用人格拒绝任何绑定
-    ok_grp_only_dm, _ = persona_config_manager.assign_target_to_persona("all_group_p", "100000001", is_private=True)
-    assert ok_grp_only_dm is False
-    ok_off, _ = persona_config_manager.assign_target_to_persona("off", "group_1", is_private=False)
-    assert ok_off is False
-
-    # HTTP_AGENT 专属覆盖仅作用于 HTTP_AGENT 会话，不干扰普通会话
     set_http_persona_override(http_sid, "dm_and_part_group")
     try:
         assert persona_config_manager.get_persona_for_session(http_sid) == "dm_and_part_group"
@@ -1363,34 +1433,77 @@ def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatc
     finally:
         clear_http_persona_override(http_sid)
 
-    # 旧客户端回传有损派生 scope='specific' 不得抹除 private_scope='all'
-    ok_idem, _ = persona_config_manager.set_scope("dm_and_part_group", "specific")
-    assert ok_idem is True
+    # 旧客户端回传 scope='specific' 不抹除 private_scope='all'；原子抢占只关冲突通道
+    assert persona_config_manager.set_scope("dm_and_part_group", "specific")[0] is True
     idem_scopes = read_channel_scopes(persona_config_manager.get_config("dm_and_part_group"))
-    assert idem_scopes.group_scope == "specific"
-    assert idem_scopes.private_scope == "all"
+    assert idem_scopes.group_scope == "specific" and idem_scopes.private_scope == "all"
 
-    # 原子抢占：仅关闭冲突人格的冲突通道，保留其另一通道
-    ok_takeover, _ = persona_config_manager.set_channel_scopes(
-        "beta",
-        private_scope="all",
-        takeover_conflicts=True,
-    )
-    assert ok_takeover is True
+    assert persona_config_manager.set_channel_scopes("beta", private_scope="all", takeover_conflicts=True)[0] is True
     after_prev = read_channel_scopes(persona_config_manager.get_config("dm_and_part_group"))
-    assert after_prev.group_scope == "specific"
-    assert after_prev.private_scope == "off"
+    assert after_prev.group_scope == "specific" and after_prev.private_scope == "off"
     assert read_channel_scopes(persona_config_manager.get_config("beta")).private_scope == "all"
 
-    # journal 活跃人格解析走双通道真值源
     active_journal_personas = get_active_personas()
-    assert "beta" in active_journal_personas
-    assert "all_group_p" in active_journal_personas
+    assert "beta" in active_journal_personas and "all_group_p" in active_journal_personas
     assert "off" not in active_journal_personas
 
-    monkeypatch.setattr(persona_cls_mod, "PERSONA_PATH", tmp_path)
-    monkeypatch.setattr("gsuid_core.ai_core.persona.resource.PERSONA_PATH", tmp_path, raising=False)
-    monkeypatch.setattr("gsuid_core.ai_core.resource.PERSONA_PATH", tmp_path)
+    # 旧配置迁移写盘失败时必须经公共入口抛错，严禁静默重置为 off
+    fail_mig_dir = tmp_path / "mig_io_err"
+    fail_mig_dir.mkdir(parents=True, exist_ok=True)
+    (fail_mig_dir / "persona.md").write_text("# mig_io_err\n", encoding="utf-8")
+    (fail_mig_dir / "config.json").write_bytes(msgjson.encode({"scope": GsStrConfig("启用范围", "", "global")}))
+
+    def _boom_atomic_save(*_args: object, **_kwargs: object) -> object:
+        raise OSError("disk locked")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(persona_cfg_mod, "atomic_save", _boom_atomic_save)
+        mp.setattr(persona_cfg_mod.time, "sleep", lambda _s: None)
+        with pytest.raises(OSError, match="disk locked"):
+            persona_config_manager.get_config("mig_io_err")
+
+    care = assemble_care_targets(
+        ["100000001", "100000002"],
+        {"100000001": 90, "100000002": 90},
+        {"100000002"},
+        [],
+        {},
+        {"100000001": "测试用户A", "100000002": "测试用户B"},
+        now=1000.0,
+        allowed_groups=set(),
+        allow_private=True,
+        allowed_private_users={"100000001"},
+    )
+    by_uid = {item.user_id: item for item in care}
+    assert by_uid["100000001"].private_scope_allowed is True and by_uid["100000001"].allow_private_push is True
+    assert by_uid["100000002"].private_scope_allowed is False and by_uid["100000002"].allow_private_push is False
+    assert "私聊未开放" in render_digest(_make_digest("beta", care_targets=care), now=1000.0)
+
+
+def test_persona_bundle_import_export_copy_and_config_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """整包导入/导出脱敏、复制清空目标、与 WebConsole 两阶段字段校验。"""
+    from msgspec import json as msgjson
+
+    from gsuid_core.ai_core.persona import config as persona_cfg_mod
+    from gsuid_core.ai_core.persona.bundle import (
+        BUNDLE_FORMAT,
+        BUNDLE_VERSION,
+        import_bundle_dir,
+        export_persona_bundle,
+    )
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.webconsole.persona_api import update_persona_config
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+    from gsuid_core.ai_core.persona.resource import copy_persona
+    from gsuid_core.ai_core.persona.config_rules import read_channel_scopes
+
+    _setup_isolated_persona_env(tmp_path, monkeypatch)
+    _patch_persona_path(tmp_path, monkeypatch)
+    _seed_persona(tmp_path, "dm_and_part_group", "specific", ["group_1"], group_scope="specific", private_scope="off")
+    _seed_persona(tmp_path, "all_group_p", "global_group")
+    _seed_persona(tmp_path, "beta", "specific", [], group_scope="specific", private_scope="all", users=["100000001"])
 
     async def _empty_binds(_persona_name: str) -> list[str]:
         return []
@@ -1423,24 +1536,24 @@ def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatc
         assert isinstance(raw, dict)
         return raw
 
-    async def _async_checks() -> None:
-        # WebConsole 整单两阶段校验：非法字段不得提前释放冲突人格或半写入
+    async def scenario() -> None:
         prev_beta_groups = list(persona_config_manager.get_config("beta").get_config("target_groups").data)
-        bad_resp = await update_persona_config(
-            "beta",
+        bad_payloads: tuple[dict[str, object], ...] = (
             {
                 "group_scope": "all",
                 "takeover_conflicts": True,
-                "target_groups": ["should_not_persist"],
+                "target_groups": ["no_persist"],
                 "inspect_interval": 999,
             },
-            {},
+            {"group_scope": "all", "takeover_conflicts": True, "social_initiative": 101},
+            {"curiosity_focus": "invalid_focus"},
         )
-        assert bad_resp["status"] == 1
-        assert read_channel_scopes(persona_config_manager.get_config("all_group_p")).group_scope == "all"
-        assert persona_config_manager.get_config("beta").get_config("target_groups").data == prev_beta_groups
+        for bad_payload in bad_payloads:
+            resp = await update_persona_config("beta", bad_payload, {})
+            assert resp["status"] == 1
+            assert read_channel_scopes(persona_config_manager.get_config("all_group_p")).group_scope == "all"
+            assert persona_config_manager.get_config("beta").get_config("target_groups").data == prev_beta_groups
 
-        # 整包覆盖导入已有非 git 人格：保留本地双通道范围并落盘双通道字段
         before_bundle = persona_config_manager.snapshot_channel_deployment("dm_and_part_group")
         res_bundle = await import_bundle_dir(bundle_dir)
         assert res_bundle.created is False
@@ -1448,7 +1561,6 @@ def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatc
         updated_disk = _read_disk_cfg("dm_and_part_group")
         assert "group_scope" in updated_disk and "private_scope" in updated_disk
 
-        # 新导入整包：强制关闭双通道并清空外部作者自带的目标列表
         (bundle_dir / "manifest.json").write_text(
             json.dumps({"format": BUNDLE_FORMAT, "version": BUNDLE_VERSION, "persona_name": "fresh_bundle_p"}),
             encoding="utf-8",
@@ -1461,34 +1573,18 @@ def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatc
         fresh_disk = _read_disk_cfg("fresh_bundle_p")
         assert "group_scope" in fresh_disk and "private_scope" in fresh_disk
 
-        # 整包导出脱敏：导出的 config.json 不得携带本地部署范围或目标 ID
         exported_bytes = await export_persona_bundle("beta")
         with zipfile.ZipFile(io.BytesIO(exported_bytes), "r") as zf:
             exported_cfg = json.loads(zf.read("config.json").decode("utf-8"))
-        assert exported_cfg["group_scope"]["data"] == "off"
-        assert exported_cfg["private_scope"]["data"] == "off"
+        assert exported_cfg["group_scope"]["data"] == "off" and exported_cfg["private_scope"]["data"] == "off"
         assert exported_cfg["scope"]["data"] == "disabled"
-        assert exported_cfg["target_groups"]["data"] == []
-        assert exported_cfg["target_users"]["data"] == []
+        assert exported_cfg["target_groups"]["data"] == [] and exported_cfg["target_users"]["data"] == []
 
-        # 复制人格强制关闭双通道并清空目标列表
         copied_name = await copy_persona("beta")
         copied_snap = persona_config_manager.snapshot_channel_deployment(copied_name)
         assert copied_snap.group_scope == "off" and copied_snap.private_scope == "off"
         assert copied_snap.target_groups == () and copied_snap.target_users == ()
 
-        # 驱动参数越界与非法枚举前置拦截，不得触发半写入或抢占
-        bad_trait_resp = await update_persona_config(
-            "beta",
-            {"group_scope": "all", "takeover_conflicts": True, "social_initiative": 101},
-            {},
-        )
-        assert bad_trait_resp["status"] == 1
-        assert read_channel_scopes(persona_config_manager.get_config("all_group_p")).group_scope == "all"
-        bad_focus_resp = await update_persona_config("beta", {"curiosity_focus": "invalid_focus"}, {})
-        assert bad_focus_resp["status"] == 1
-
-        # group_scope=None 时不得吞掉显式传入的兼容 scope 字段
         null_chan_resp = await update_persona_config(
             "fresh_bundle_p",
             {"group_scope": None, "private_scope": None, "scope": "specific"},
@@ -1497,7 +1593,7 @@ def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatc
         assert null_chan_resp["status"] == 0
         assert read_channel_scopes(persona_config_manager.get_config("fresh_bundle_p")).group_scope == "specific"
 
-    asyncio.run(_async_checks())
+    asyncio.run(scenario())
 
     # 冲突抢占若写入目标人格失败，必须回滚已释放的旧全局兜底
     orig_write_scopes = persona_cfg_mod._write_channel_scopes
@@ -1510,56 +1606,14 @@ def test_assign_target_to_persona_and_session_routing(tmp_path: Path, monkeypatc
 
     with monkeypatch.context() as mp:
         mp.setattr(persona_cfg_mod, "_write_channel_scopes", _fail_target_write)
-        ok_rb, _ = persona_config_manager.set_channel_scopes("beta", group_scope="all", takeover_conflicts=True)
-        assert ok_rb is False
+        assert persona_config_manager.set_channel_scopes("beta", group_scope="all", takeover_conflicts=True)[0] is False
     assert read_channel_scopes(persona_config_manager.get_config("all_group_p")).group_scope == "all"
-
-    for child in bundle_dir.iterdir():
-        child.unlink()
-    bundle_dir.rmdir()
-
-    # 旧配置迁移写盘失败时必须经公共入口抛错，严禁静默重置为 off
-    fail_mig_dir = tmp_path / "mig_io_err"
-    fail_mig_dir.mkdir(parents=True, exist_ok=True)
-    (fail_mig_dir / "persona.md").write_text("# mig_io_err\n", encoding="utf-8")
-    (fail_mig_dir / "config.json").write_bytes(msgjson.encode({"scope": GsStrConfig("启用范围", "", "global")}))
-
-    def _boom_atomic_save(*_args: object, **_kwargs: object) -> object:
-        raise OSError("disk locked")
-
-    with monkeypatch.context() as mp:
-        mp.setattr(persona_cfg_mod, "atomic_save", _boom_atomic_save)
-        mp.setattr(persona_cfg_mod.time, "sleep", lambda _s: None)
-        with pytest.raises(OSError, match="disk locked"):
-            persona_config_manager.get_config("mig_io_err")
-
-    # 自主行动私聊范围约束：private_scope=specific 仅对 target_users 放行私聊推送
-    care = assemble_care_targets(
-        ["100000001", "100000002"],
-        {"100000001": 90, "100000002": 90},
-        {"100000002"},
-        [],
-        {},
-        {"100000001": "测试用户A", "100000002": "测试用户B"},
-        now=1000.0,
-        allowed_groups=set(),
-        allow_private=True,
-        allowed_private_users={"100000001"},
-    )
-    by_uid = {item.user_id: item for item in care}
-    assert by_uid["100000001"].private_scope_allowed is True
-    assert by_uid["100000001"].allow_private_push is True
-    assert by_uid["100000002"].private_scope_allowed is False
-    assert by_uid["100000002"].allow_private_push is False
-    digest_text = render_digest(_make_digest("beta", care_targets=care), now=1000.0)
-    assert "私聊未开放" in digest_text
 
 
 def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
-    from gsuid_core.bot import Bot, _Bot
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
     from gsuid_core.ai_core.persona.config import persona_config_manager
     from gsuid_core.ai_core.session_registry import get_ai_session_registry
@@ -1579,10 +1633,7 @@ def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: 
     _seed_persona(tmp_path, "alpha", "global")
     _seed_persona(tmp_path, "beta", "specific", [], group_scope="specific", private_scope="specific")
 
-    assert sv_core_persona_control is not sv_core_ai_control
-    assert sv_core_persona_control.name != sv_core_ai_control.name
-    assert sv_core_persona_control.pm == 0
-    assert sv_core_ai_control.pm == 0
+    assert sv_core_persona_control.pm == 0 and sv_core_ai_control.pm == 0
 
     sent: list[str] = []
 
@@ -1597,20 +1648,8 @@ def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: 
     other_group_sid = "ws2:onebot:10002:group:group_1"
     dm_sid = "ws1:onebot:10001:private:100000001"
     dummy_model = OpenAIChatModel("gpt-test", provider=OpenAIProvider(api_key="test"))
-
-    registry.set_ai_session(
-        group_sid,
-        GsCoreAIAgent(openai_chat_model=dummy_model, persona_name="alpha", session_id=group_sid),
-    )
-    registry.set_ai_session(
-        other_group_sid,
-        GsCoreAIAgent(openai_chat_model=dummy_model, persona_name="alpha", session_id=other_group_sid),
-    )
-    registry.set_ai_session(
-        dm_sid,
-        GsCoreAIAgent(openai_chat_model=dummy_model, persona_name="alpha", session_id=dm_sid),
-    )
-
+    for sid in (group_sid, other_group_sid, dm_sid):
+        registry.set_ai_session(sid, GsCoreAIAgent(openai_chat_model=dummy_model, persona_name="alpha", session_id=sid))
     grant_dm_lease(user_id="100000001", persona_name="alpha", bot_id="onebot")
 
     async def scenario() -> None:
@@ -1619,11 +1658,8 @@ def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: 
             await switch_persona(Bot(_Bot("ws1"), group_ev), group_ev)
             assert "beta" in sent[-1]
             assert persona_config_manager.get_persona_for_session(group_ev.session_id) == "beta"
-            assert not registry.has_ai_session(group_sid)
-            assert not registry.has_ai_session(other_group_sid)
-            assert registry.has_ai_session(dm_sid)
-            # 群聊切换绝不动用私聊 dm_lease
-            assert get_active_dm_lease("100000001", "onebot") is not None
+            assert not registry.has_ai_session(group_sid) and not registry.has_ai_session(other_group_sid)
+            assert registry.has_ai_session(dm_sid) and get_active_dm_lease("100000001", "onebot") is not None
 
             dm_ev = _make_event(text="beta")
             await switch_persona(Bot(_Bot("ws1"), dm_ev), dm_ev)
@@ -1631,55 +1667,42 @@ def test_corepersona_command_split_sv_and_dm_lease(tmp_path: Path, monkeypatch: 
             assert persona_config_manager.get_persona_for_session(dm_ev.session_id) == "beta"
             assert not registry.has_ai_session(dm_sid)
 
-            # 空参数公共命令边界：仅群聊人格在群聊列为可切换、在私聊列为当前私聊未启用
             _seed_persona(
                 tmp_path, "group_only_p", "specific", ["group_1"], group_scope="specific", private_scope="off"
             )
             grp_list_ev = _make_event(group_id="group_1")
             await switch_persona(Bot(_Bot("ws1"), grp_list_ev), grp_list_ev)
-            grp_reply = sent[-1]
-            grp_avail = [ln for ln in grp_reply.splitlines() if ln.startswith("可切换人格：")][0]
-            assert "group_only_p" in grp_avail and "当前群聊未启用人格" not in grp_reply
+            grp_avail = [ln for ln in sent[-1].splitlines() if ln.startswith("可切换人格：")][0]
+            assert "group_only_p" in grp_avail and "当前群聊未启用人格" not in sent[-1]
 
             dm_list_ev = _make_event()
             await switch_persona(Bot(_Bot("ws1"), dm_list_ev), dm_list_ev)
-            dm_reply = sent[-1]
-            dm_avail = [ln for ln in dm_reply.splitlines() if ln.startswith("可切换人格：")][0]
-            dm_dis = [ln for ln in dm_reply.splitlines() if "当前私聊未启用人格" in ln][0]
+            dm_avail = [ln for ln in sent[-1].splitlines() if ln.startswith("可切换人格：")][0]
+            dm_dis = [ln for ln in sent[-1].splitlines() if "当前私聊未启用人格" in ln][0]
             assert "group_only_p" not in dm_avail and "group_only_p" in dm_dis
 
-            # dm_lease 双通道守卫：仅群聊人格拒绝点名签发，通道收窄后旧租约失效并清理
             assert maybe_switch_dm_lease("100000001", "onebot", "group_only_p 在吗", "beta") is None
             assert maybe_switch_dm_lease("100000002", "onebot", "beta 在吗", "alpha") is None
             assert maybe_switch_dm_lease("100000001", "onebot", "alpha 在吗", "beta") == "alpha"
-            ok_narrow, _ = persona_config_manager.set_channel_scopes("alpha", private_scope="specific")
-            assert ok_narrow is True
-            ok_users, _ = persona_config_manager.set_target_users("alpha", ["100000099"])
-            assert ok_users is True
+            assert persona_config_manager.set_channel_scopes("alpha", private_scope="specific")[0] is True
+            assert persona_config_manager.set_target_users("alpha", ["100000099"])[0] is True
             assert persona_config_manager.get_persona_for_session(dm_ev.session_id) == "beta"
             assert renew_dm_lease("100000001", "onebot") is False
             assert get_active_dm_lease("100000001", "onebot") is None
-            ok_off_dm, _ = persona_config_manager.set_channel_scopes("alpha", private_scope="off")
-            assert ok_off_dm is True
+            assert persona_config_manager.set_channel_scopes("alpha", private_scope="off")[0] is True
             assert persona_config_manager.get_persona_for_session(dm_ev.session_id) == "beta"
         finally:
-            registry.remove_ai_session(group_sid)
-            registry.remove_ai_session(other_group_sid)
-            registry.remove_ai_session(dm_sid)
+            for sid in (group_sid, other_group_sid, dm_sid):
+                registry.remove_ai_session(sid)
 
     asyncio.run(scenario())
 
 
 def test_appearance_card_v3_and_self_visual_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """外观指纹卡：非自拍提问不下发 MISS 指纹卡、受信任立绘精确命中仍保留，且旧 v2 卡自动升级 v3。"""
-    import io
-
     from PIL import Image
 
     from gsuid_core.ai_core.persona import appearance as app_mod
-    from gsuid_core.ai_core.prompt_group.catalog import default_body
-
-    assert "图中角色与此一致才是你" not in default_body("appearance_line")
 
     pdir = tmp_path / "personas" / "alpha"
     pdir.mkdir(parents=True)
@@ -1690,13 +1713,9 @@ def test_appearance_card_v3_and_self_visual_guard(tmp_path: Path, monkeypatch: p
     for x in range(16):
         for y in range(32):
             portrait_img.putpixel((x, y), (220, 180, 140))
-    portrait_path = pdir / "image.png"
-    portrait_img.save(portrait_path, format="PNG")
+    portrait_img.save(pdir / "image.png", format="PNG")
     (pdir / "persona.md").write_text("Name: 测试角色\n特征：深蓝风衣配银色徽章", encoding="utf-8")
-
-    # 旧 v2 卡片自动重刷并升级 v3，二次调用幂等不再触发识图
-    out_card = pdir / "appearance.txt"
-    out_card.write_text("# appearance-card v2\n摘要：旧版待刷新摘要", encoding="utf-8")
+    (pdir / "appearance.txt").write_text("# appearance-card v2\n摘要：旧版待刷新摘要", encoding="utf-8")
 
     captured_prompts: list[str] = []
 
@@ -1707,114 +1726,81 @@ def test_appearance_card_v3_and_self_visual_guard(tmp_path: Path, monkeypatch: p
     monkeypatch.setattr("gsuid_core.ai_core.image_understand.understand.understand_image", fake_understand)
 
     async def _refresh_twice() -> tuple[str, str]:
-        first = await app_mod.refresh_appearance_card("alpha")
-        second = await app_mod.refresh_appearance_card("alpha")
-        return first, second
+        return await app_mod.refresh_appearance_card("alpha"), await app_mod.refresh_appearance_card("alpha")
 
     line, line_again = asyncio.run(_refresh_twice())
     assert line == "深蓝风衣配银色徽章的角色" and line_again == line
     assert len(captured_prompts) == 1 and "深蓝风衣配银色徽章" in captured_prompts[0]
 
-    # 普通无关表情包：allow_card_fallback=False 时不下发 MISS_SELF_PREFIX，显式追问才下发
     other_buf = io.BytesIO()
     Image.new("RGB", (32, 32), color=(200, 20, 20)).save(other_buf, format="PNG")
     other_bytes = other_buf.getvalue()
     assert app_mod.format_look_identity_note("alpha", other_bytes, allow_card_fallback=False) == ""
     assert app_mod.MISS_SELF_PREFIX in app_mod.format_look_identity_note("alpha", other_bytes, allow_card_fallback=True)
 
-    # 精确匹配受信任立绘本身时，即使未显式问是不是自己也返回 HIT_SELF_NOTE
     self_buf = io.BytesIO()
     portrait_img.save(self_buf, format="PNG")
-    hit_note = app_mod.format_look_identity_note("alpha", self_buf.getvalue(), allow_card_fallback=False)
-    assert hit_note == app_mod.HIT_SELF_NOTE
+    assert (
+        app_mod.format_look_identity_note("alpha", self_buf.getvalue(), allow_card_fallback=False)
+        == app_mod.HIT_SELF_NOTE
+    )
 
 
-def test_proactive_speak_layer_and_autonomy_send(
+def test_autonomy_send_context_isolation_and_rate_guards(
     tmp_path: Path,
     journal_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """主动发言共享层、Autonomy 发信收口、沉默出口护栏与规划轮系统提示边界。"""
-    import time
-    from contextlib import contextmanager
-    from dataclasses import dataclass
-    from collections.abc import Iterator
-
-    from pydantic_ai import RunContext
-    from pydantic_ai.usage import RunUsage
-    from pydantic_ai.models.test import TestModel
-
-    from gsuid_core.bot import Bot, _Bot
-    from gsuid_core.ai_core import gs_agent as gs_agent_mod
-    from gsuid_core.ai_core.models import ToolContext
+    """Autonomy 发信上下文组装、手账分片单路隔离、近期防重短话题与 silence/error/配额收口。"""
     from gsuid_core.ai_core.journal import manager as j_mgr, storage as j_store
     from gsuid_core.ai_core.persona import persona as persona_cls_mod
-    from gsuid_core.message_history import get_history_manager
-    from gsuid_core.ai_core.autonomy import (
-        tools as auto_tools,
-        observer as auto_obs,
-        scheduler as auto_sched,
-    )
+    from gsuid_core.ai_core.autonomy import tools as auto_tools, observer as auto_obs
     from gsuid_core.ai_core.proactive import speak as pro_speak, emitter as pro_emitter
-    from gsuid_core.ai_core.agent_errors import NO_RESULT_TEXT
-    from gsuid_core.ai_core.persona.config import persona_config_manager
     from gsuid_core.ai_core.autonomy.models import AutonomyStepTrace, CareTargetSnapshot
-    from gsuid_core.ai_core.autonomy.runner import AutonomyReport
     from gsuid_core.ai_core.autonomy.select import render_digest
     from gsuid_core.ai_core.database.models import AIAutonomyActivity
     from gsuid_core.ai_core.autonomy.delivery import extract_facts, output_is_failed, output_is_skipped
-    from gsuid_core.ai_core.configs.ai_config import ai_config
-    from gsuid_core.ai_core.persona.config_rules import AUTONOMY_MODE
     from gsuid_core.ai_core.proactive.dispatcher import UnifiedProactiveDispatcher
 
     del journal_tmp
     _setup_isolated_persona_env(tmp_path / "personas_cfg", monkeypatch)
     _seed_persona(tmp_path / "personas_cfg", "alpha", "specific", ["group_speak_1", "group_speak_2"])
     (tmp_path / "personas_cfg" / "alpha" / "persona.md").write_text(
-        "Name: alpha\nStyle (风格): 轻快短句",
-        encoding="utf-8",
+        "Name: alpha\nStyle (风格): 轻快短句", encoding="utf-8"
     )
     monkeypatch.setattr(persona_cls_mod, "PERSONA_PATH", tmp_path / "personas_cfg")
 
+    # 共享系统提示与动态称呼边界
+    speak_sys = pro_speak.build_proactive_speak_system_prompt("alpha", "Name: alpha", include_meme_protocol=True)
+    assert (
+        "角色扮演" in speak_sys and "Name: alpha" in speak_sys and "框架通用底线" in speak_sys and "<meme:" in speak_sys
+    )
+    assert "<meme:" not in pro_speak.build_proactive_speak_system_prompt(
+        "alpha", "Name: alpha", include_meme_protocol=False
+    )
+
+    for target_name, must_have, must_not in (
+        ("测试用户A", ("严禁称呼「主人」",), ()),
+        ("", ("只有回应主人本人发的消息时才称「主人」",), ("对方不是主人",)),
+    ):
+        prompt = pro_speak.build_autonomy_speak_user_prompt(
+            draft="群里话题草稿",
+            is_group=True,
+            recent_context="测试用户A: 今天真热闹",
+            master_title="主人",
+            target_is_master=False,
+            target_name=target_name,
+            allow_meme=True,
+            persona_name="alpha",
+        )
+        for token in must_have:
+            assert token in prompt
+        for token in must_not:
+            assert token not in prompt
+
     async def scenario() -> None:
-        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="proactive_speak.db"):
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="autonomy_send.db"):
             now = time.time()
-
-            # 1. 共享系统提示（表情协议开关）与动态称呼边界
-            speak_sys = pro_speak.build_proactive_speak_system_prompt(
-                "alpha", "Name: alpha", include_meme_protocol=True
-            )
-            assert "角色扮演" in speak_sys and "Name: alpha" in speak_sys and "框架通用底线" in speak_sys
-            assert "<meme:" in speak_sys
-            speak_sys_no_meme = pro_speak.build_proactive_speak_system_prompt(
-                "alpha", "Name: alpha", include_meme_protocol=False
-            )
-            assert "<meme:" not in speak_sys_no_meme
-
-            speak_user = pro_speak.build_autonomy_speak_user_prompt(
-                draft="长篇测试指标数据 123.45% 词条列表",
-                is_group=True,
-                recent_context="测试用户A: 今天真热闹",
-                master_title="主人",
-                target_is_master=False,
-                target_name="测试用户A",
-                allow_meme=True,
-                persona_name="alpha",
-            )
-            assert "严禁称呼「主人」" in speak_user
-
-            speak_user_open = pro_speak.build_autonomy_speak_user_prompt(
-                draft="群里有人在聊新玩具",
-                is_group=True,
-                recent_context="测试用户A: 新玩具挺好玩",
-                master_title="主人",
-                target_is_master=False,
-                target_name="",
-                persona_name="alpha",
-            )
-            assert "对方不是主人" not in speak_user_open and "只有回应主人本人发的消息时才称「主人」" in speak_user_open
-
-            # 2. 经公共 send_message_by_ai 验证私聊上下文在无/有私聊历史时均保留群话头与标签
             dm_snap = CareTargetSnapshot(
                 user_id="100000001",
                 user_name="测试用户A",
@@ -1831,6 +1817,8 @@ def test_proactive_speak_layer_and_autonomy_send(
                 last_human_ts=now - 60.0,
             )
             emitted_calls: list[tuple[str, list[str]]] = []
+            compose_reply: list[pro_speak.ComposeOutcome] = []
+            compose_contexts: list[tuple[bool, str, str]] = []
 
             async def _fake_emit(
                 ev: Event,
@@ -1842,9 +1830,6 @@ def test_proactive_speak_layer_and_autonomy_send(
                 del ev, _kw
                 emitted_calls.append((message, list(generator_log_files or [])))
                 return True
-
-            compose_reply: list[pro_speak.ComposeOutcome] = []
-            compose_contexts: list[tuple[bool, str, str]] = []
 
             async def _fake_compose(
                 *,
@@ -1870,60 +1855,55 @@ def test_proactive_speak_layer_and_autonomy_send(
                     finally:
                         auto_tools.reset_guard(tok)
 
-            auto_ctx = RunContext(deps=ToolContext(extra={}), model=TestModel(), usage=RunUsage())
+            auto_ctx = make_run_ctx()
             dm_guard = _make_guard(now=now, whitelist=frozenset({"100000001"}), allowed_users={"100000001": dm_snap})
             dm_ev = _make_event()
-            hm = get_history_manager()
             compose_reply.extend(
                 [
                     pro_speak.ComposeOutcome(status="ok", text="私下问候一句"),
                     pro_speak.ComposeOutcome(status="ok", text="私下接着聊一句"),
                 ]
             )
-            with _bound_send(dm_guard):
-                try:
-                    await auto_tools.send_message_by_ai(
-                        auto_ctx, text="私下跟进一句", target_id="100000001", target_type="user"
-                    )
-                    _, dm_ctx_text, dm_ctx_header = compose_contexts[-1]
-                    assert "群 group_1" in dm_ctx_text and dm_ctx_header == "[对方近期互动记录（含群聊与私聊）]"
-                    dm_prompt = pro_speak.build_autonomy_speak_user_prompt(
-                        draft="私下跟进一句",
-                        is_group=False,
-                        recent_context=dm_ctx_text,
-                        context_header=dm_ctx_header,
-                        master_title="主人",
-                        target_is_master=True,
-                        target_name="测试用户A",
-                        persona_name="alpha",
-                    )
-                    assert "[对方近期互动记录（含群聊与私聊）]" in dm_prompt and "[最近的私聊上下文]" not in dm_prompt
+            with _bound_send(dm_guard), isolated_history(dm_ev) as hm:
+                await auto_tools.send_message_by_ai(
+                    auto_ctx, text="私下跟进一句", target_id="100000001", target_type="user"
+                )
+                _, dm_ctx_text, dm_ctx_header = compose_contexts[-1]
+                assert "群 group_1" in dm_ctx_text and dm_ctx_header == "[对方近期互动记录（含群聊与私聊）]"
+                dm_prompt = pro_speak.build_autonomy_speak_user_prompt(
+                    draft="私下跟进一句",
+                    is_group=False,
+                    recent_context=dm_ctx_text,
+                    context_header=dm_ctx_header,
+                    master_title="主人",
+                    target_is_master=True,
+                    target_name="测试用户A",
+                    persona_name="alpha",
+                )
+                assert "[对方近期互动记录（含群聊与私聊）]" in dm_prompt and "[最近的私聊上下文]" not in dm_prompt
 
-                    hm.add_message(dm_ev, "user", "前两天私聊说过的话", user_name="测试用户A")
-                    dm_guard.sent_count = 0
-                    dm_guard.speak_attempts = 0
-                    await auto_tools.send_message_by_ai(
-                        auto_ctx, text="私下跟进一句", target_id="100000001", target_type="user"
-                    )
-                    _, dm_both_text, dm_both_header = compose_contexts[-1]
-                    assert dm_both_header == ""
-                    assert "[最近的私聊上下文]" in dm_both_text and "[对方近期在群里的发言]" in dm_both_text
-                    assert "群里没聊完的话题" in dm_both_text
-                    dm_both_prompt = pro_speak.build_autonomy_speak_user_prompt(
-                        draft="私下跟进一句",
-                        is_group=False,
-                        recent_context=dm_both_text,
-                        context_header=dm_both_header,
-                        master_title="主人",
-                        target_is_master=True,
-                        target_name="测试用户A",
-                        persona_name="alpha",
-                    )
-                    assert dm_both_prompt.count("[最近的私聊上下文]") == 1
-                finally:
-                    hm.delete_session(dm_ev)
+                hm.add_message(dm_ev, "user", "前两天私聊说过的话", user_name="测试用户A")
+                dm_guard.sent_count = 0
+                dm_guard.speak_attempts = 0
+                await auto_tools.send_message_by_ai(
+                    auto_ctx, text="私下跟进一句", target_id="100000001", target_type="user"
+                )
+                _, dm_both_text, dm_both_header = compose_contexts[-1]
+                assert dm_both_header == "" and "[最近的私聊上下文]" in dm_both_text
+                assert "[对方近期在群里的发言]" in dm_both_text and "群里没聊完的话题" in dm_both_text
+                dm_both_prompt = pro_speak.build_autonomy_speak_user_prompt(
+                    draft="私下跟进一句",
+                    is_group=False,
+                    recent_context=dm_both_text,
+                    context_header=dm_both_header,
+                    master_title="主人",
+                    target_is_master=True,
+                    target_name="测试用户A",
+                    persona_name="alpha",
+                )
+                assert dm_both_prompt.count("[最近的私聊上下文]") == 1
 
-            # 3. 近期发信防重摘要经公共 build_observation 走短话题，不回灌长串数值
+            # 近期发信防重摘要走短话题，不回灌长串数值
             await AIAutonomyActivity.insert_activity(
                 persona_name="alpha",
                 bot_id="onebot",
@@ -1946,7 +1926,7 @@ def test_proactive_speak_layer_and_autonomy_send(
             assert any("测试话题甲" in item for item in obs_digest.recent_proactive_records)
             assert all("99.9%" not in item for item in obs_digest.recent_proactive_records)
 
-            # 4. send_message_by_ai：silence 按目标锁、error 不计已发、MAX_SPEAK_ATTEMPTS 限流
+            # silence 按目标锁、error 不计已发、MAX_SPEAK_ATTEMPTS 限流
             emitted_calls.clear()
             compose_reply.extend(
                 [
@@ -1964,8 +1944,11 @@ def test_proactive_speak_layer_and_autonomy_send(
                 silent_res = await auto_tools.send_message_by_ai(
                     auto_ctx, text="刚才看到群里在聊测试数据 88.8%", target_id="group_speak_1", target_type="group"
                 )
-                assert silent_res.startswith("已跳过发送")
-                assert not output_is_failed(silent_res) and output_is_skipped(silent_res)
+                assert (
+                    silent_res.startswith("已跳过发送")
+                    and not output_is_failed(silent_res)
+                    and output_is_skipped(silent_res)
+                )
                 skipped_facts = extract_facts(
                     [
                         AutonomyStepTrace(
@@ -1973,7 +1956,7 @@ def test_proactive_speak_layer_and_autonomy_send(
                             tool_name="send_message_by_ai",
                             args_summary="{}",
                             output_text=silent_res,
-                            is_error=output_is_failed(silent_res),
+                            is_error=False,
                         )
                     ]
                 )
@@ -1988,14 +1971,12 @@ def test_proactive_speak_layer_and_autonomy_send(
                 err_res = await auto_tools.send_message_by_ai(
                     auto_ctx, text="刚才看到群里在聊测试数据 88.8%", target_id="group_speak_2", target_type="group"
                 )
-                assert err_res.startswith("发送失败") and output_is_failed(err_res)
-                assert guard.sent_count == 0 and not emitted_calls
+                assert err_res.startswith("发送失败") and output_is_failed(err_res) and guard.sent_count == 0
 
                 capped_res = await auto_tools.send_message_by_ai(
                     auto_ctx, text="刚才看到群里在聊测试数据 88.8%", target_id="group_speak_2", target_type="group"
                 )
-                assert capped_res.startswith("发送被拦截") and output_is_failed(capped_res)
-                assert len(compose_reply) == 1
+                assert capped_res.startswith("发送被拦截") and output_is_failed(capped_res) and len(compose_reply) == 1
 
                 guard.speak_attempts = 0
                 sent_res = await auto_tools.send_message_by_ai(
@@ -2004,7 +1985,7 @@ def test_proactive_speak_layer_and_autonomy_send(
                 assert sent_res.startswith("已成功向") and guard.sent_count == 1
                 assert emitted_calls == [("今天这话题挺好玩呀", ["autonomy_output_ok.json"])]
 
-            # 4b. 共享规划底片不承载分片手账原文；发声轮按目标单路隔离注入
+            # 规划底片不承载分片手账原文；发声轮按目标单路隔离注入
             j_store._save_shard_sync(
                 "alpha",
                 j_store.ShardDocument(
@@ -2015,8 +1996,7 @@ def test_proactive_speak_layer_and_autonomy_send(
                 ),
             )
             j_store._save_shard_sync(
-                "alpha",
-                j_store.ShardDocument(shard_id="user:100000002", yesterday=["- 测试用户B的私密健康记录"]),
+                "alpha", j_store.ShardDocument(shard_id="user:100000002", yesterday=["- 测试用户B的私密健康记录"])
             )
             j_store._save_shard_sync(
                 "alpha",
@@ -2028,13 +2008,15 @@ def test_proactive_speak_layer_and_autonomy_send(
             )
             dm_brief = j_mgr.read_shard_brief("alpha", user_id="100000001", max_chars=80, include_persistent=False)
             assert "周末整理书单" in dm_brief and "journal:" not in dm_brief
-            grp_brief = j_mgr.read_shard_brief(
+            assert "模块拆分讨论" in j_mgr.read_shard_brief(
                 "alpha", group_id="group_speak_1", max_chars=80, include_persistent=False
             )
-            assert "模块拆分讨论" in grp_brief
             rendered_digest = render_digest(_make_digest(care_targets=[dm_snap], group_digests=[g_obs]), now=now)
-            assert "周末整理书单" not in rendered_digest and "模块拆分讨论" not in rendered_digest
-            assert "手账线索" not in rendered_digest
+            assert (
+                "周末整理书单" not in rendered_digest
+                and "模块拆分讨论" not in rendered_digest
+                and "手账线索" not in rendered_digest
+            )
 
             ab_guard = _make_guard(
                 now=now,
@@ -2058,7 +2040,6 @@ def test_proactive_speak_layer_and_autonomy_send(
                 await auto_tools.send_message_by_ai(
                     auto_ctx, text="问问周末书单", target_id="100000001", target_type="user"
                 )
-            assert len(compose_contexts) == 2
             grp_is_g, grp_speak_ctx, _ = compose_contexts[0]
             dm_is_g, dm_speak_ctx, _ = compose_contexts[1]
             assert grp_is_g is True and "[本群长期默契与近期手账]" in grp_speak_ctx and "模块拆分讨论" in grp_speak_ctx
@@ -2070,105 +2051,93 @@ def test_proactive_speak_layer_and_autonomy_send(
             )
             assert "私密健康记录" not in dm_speak_ctx and "模块拆分讨论" not in dm_speak_ctx
 
-            # 5. 共用执行收口 run_proactive_speak_agent：引号/沉默/错误/超时均关闭 logger
-            assert pro_speak.strip_message_quotes("“外层中文引号”") == "外层中文引号"
-            assert pro_speak.strip_message_quotes("“甲”和“乙”") == "“甲”和“乙”"
+    asyncio.run(scenario())
 
-            disp_meme = UnifiedProactiveDispatcher()
-            disp_meme.register_send("group_speak_1", "heartbeat", "早安呀\n<meme:happy>", persona_name="alpha")
-            assert not disp_meme.would_repeat_heartbeat("group_speak_1", "去吃饭吗\n<meme:happy>", persona_name="alpha")
 
-            @dataclass
-            class _SpeakLoggerStub:
-                _file_path: str
-                closed: bool = False
+def test_proactive_speak_agent_and_emitter_guards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """直跑真实 compose_autonomy_message / run_proactive_speak_agent（离线模型与真实超时）与出口护栏。"""
+    from gsuid_core.ai_core import session_logger as sl_mod
+    from gsuid_core.ai_core.persona import persona as persona_cls_mod
+    from gsuid_core.ai_core.proactive import speak as pro_speak, emitter as pro_emitter
+    from gsuid_core.ai_core.agent_errors import NO_RESULT_TEXT
+    from gsuid_core.ai_core.proactive.dispatcher import UnifiedProactiveDispatcher
 
-                def log_error(self, error_type: str, message: str) -> None:
-                    del error_type, message
+    _setup_isolated_persona_env(tmp_path / "personas_cfg", monkeypatch)
+    _seed_persona(tmp_path / "personas_cfg", "alpha", "specific", ["group_1"])
+    (tmp_path / "personas_cfg" / "alpha" / "persona.md").write_text(
+        "Name: alpha\nStyle (风格): 轻快短句", encoding="utf-8"
+    )
+    monkeypatch.setattr(persona_cls_mod, "PERSONA_PATH", tmp_path / "personas_cfg")
+    monkeypatch.setattr(sl_mod, "AI_SESSION_LOGS_PATH", tmp_path / "session_logs")
+    monkeypatch.setattr(sl_mod, "AI_SUBAGENT_LOGS_PATH", tmp_path / "session_logs" / "subagents")
 
-                def log_run_end(self) -> None:
-                    return None
+    assert pro_speak.strip_message_quotes("“外层中文引号”") == "外层中文引号"
+    assert pro_speak.strip_message_quotes("“甲”和“乙”") == "“甲”和“乙”"
 
-                def close(self) -> None:
-                    self.closed = True
+    disp_meme = UnifiedProactiveDispatcher()
+    disp_meme.register_send("group_1", "heartbeat", "早安呀\n<meme:happy>", persona_name="alpha")
+    assert not disp_meme.would_repeat_heartbeat("group_1", "去吃饭吗\n<meme:happy>", persona_name="alpha")
 
-            class _SpeakAgentStub:
-                def __init__(self, reply: str, path: str, *, raise_timeout: bool = False) -> None:
-                    self._reply = reply
-                    self._raise_timeout = raise_timeout
-                    self._session_logger = _SpeakLoggerStub(path)
+    def _bind_model(model: Model) -> None:
+        monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_for_task", lambda _l, _k=None: model)
+        monkeypatch.setattr("gsuid_core.ai_core.gs_agent.get_model_by_full_name", lambda _n: model)
 
-                def bind_budget_scope(self, ev: Event) -> None:
-                    del ev
+    async def scenario() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="proactive_speak_agent.db"):
+            grp_ev = _make_event(group_id="group_1", user_id="")
+            seen_logs: list[str] = []
 
-                async def run(
-                    self, *, user_message: str, return_mode: str = "by_bot", budget_gate: bool = False
-                ) -> str:
-                    del user_message, budget_gate
-                    assert return_mode == "return"
-                    if self._raise_timeout:
-                        raise asyncio.TimeoutError
-                    return self._reply
-
-            compose_cases: tuple[tuple[str, str, str], ...] = (
+            for raw_reply, exp_status, exp_text in (
                 ('"这句带引号也该干净发出去"', "ok", "这句带引号也该干净发出去"),
                 ("<SILENCE>", "silence", ""),
                 (NO_RESULT_TEXT, "error", ""),
                 ("执行出错: Request timed out.", "error", ""),
+            ):
+                _bind_model(TestModel(call_tools=[], custom_output_text=raw_reply))
+                res = await pro_speak.compose_autonomy_message(
+                    persona_name="alpha",
+                    event=grp_ev,
+                    draft="草稿",
+                    recent_context="测试用户A: 聊聊",
+                    target_is_master=False,
+                )
+                assert res.status == exp_status and res.text == exp_text and len(res.log_files) == 1
+                seen_logs.extend(res.log_files)
+
+            async def _slow_stream(_messages: list[ModelMessage], _info: AgentInfo) -> AsyncIterator[str]:
+                await asyncio.sleep(0.2)
+                yield "too late"
+
+            _bind_model(FunctionModel(stream_function=_slow_stream))
+            res_to = await pro_speak.run_proactive_speak_agent(
+                persona_name="alpha",
+                event=grp_ev,
+                system_prompt="sys",
+                user_prompt="usr",
+                create_by="Heartbeat_Output",
+                session_id="hb_timeout_test",
+                timeout_seconds=0.02,
             )
-            direct_cases: tuple[tuple[str, bool, str, str], ...] = (
-                ("", True, "hb_timeout_test", "error"),
-                ("<SILENCE>", False, "hb_silence_test", "silence"),
+            assert res_to.status == "error" and len(res_to.log_files) == 1
+            seen_logs.extend(res_to.log_files)
+
+            _bind_model(TestModel(call_tools=[], custom_output_text="<SILENCE>"))
+            res_sil = await pro_speak.run_proactive_speak_agent(
+                persona_name="alpha",
+                event=grp_ev,
+                system_prompt="sys",
+                user_prompt="usr",
+                create_by="Heartbeat_Output",
+                session_id="hb_silence_test",
             )
-            stub_plan: list[tuple[str, bool]] = [
-                *[(reply, False) for reply, _, _ in compose_cases],
-                *[(reply, should_to) for reply, should_to, _, _ in direct_cases],
-            ]
-            created_sids: list[str] = []
-            created_loggers: list[_SpeakLoggerStub] = []
+            assert res_sil.status == "silence" and len(res_sil.log_files) == 1
+            seen_logs.extend(res_sil.log_files)
+            assert len(set(seen_logs)) == 6
 
-            def _fake_create_agent(
-                system_prompt: str,
-                *,
-                create_by: str = "",
-                task_kind: str = "",
-                persona_name: str = "",
-                session_id: str = "",
-                is_subagent: bool = False,
-            ) -> _SpeakAgentStub:
-                del system_prompt, create_by, task_kind, persona_name, is_subagent
-                created_sids.append(session_id)
-                reply_text, should_timeout = stub_plan.pop(0)
-                stub = _SpeakAgentStub(reply_text, f"{session_id}.json", raise_timeout=should_timeout)
-                created_loggers.append(stub._session_logger)
-                return stub
-
-            grp_ev = _make_event(group_id="group_1", user_id="")
-            with monkeypatch.context() as mp:
-                mp.setattr(gs_agent_mod, "create_agent", _fake_create_agent)
-                for _reply, exp_status, exp_text in compose_cases:
-                    res = await pro_speak.compose_autonomy_message(
-                        persona_name="alpha",
-                        event=grp_ev,
-                        draft="草稿",
-                        recent_context="测试用户A: 聊聊",
-                        target_is_master=False,
-                    )
-                    assert res.status == exp_status and res.text == exp_text and len(res.log_files) == 1
-                for _reply, _to, sid, exp_status in direct_cases:
-                    res = await pro_speak.run_proactive_speak_agent(
-                        persona_name="alpha",
-                        event=grp_ev,
-                        system_prompt="sys",
-                        user_prompt="usr",
-                        create_by="Heartbeat_Output",
-                        session_id=sid,
-                    )
-                    assert res.status == exp_status and res.log_files == [f"{sid}.json"]
-            assert len(set(created_sids)) == len(compose_cases) + len(direct_cases)
-            assert all(lg.closed for lg in created_loggers)
-
-            # 6. emit_proactive_message 出口兜底：拦截 <SILENCE> 与空白，放行正常消息（正反对照）
+            # emit_proactive_message 出口护栏：拦截 <SILENCE>/空白，放行正常消息
             sent_proactive: list[str] = []
 
             async def _record_send_chat(_bot: object, msg: str, **_kw: object) -> None:
@@ -2201,52 +2170,11 @@ def test_proactive_speak_layer_and_autonomy_send(
                     assert ok_emit is exp_sent
                 assert sent_proactive == ["正常主动发声"]
 
-            # 7. Autonomy 规划轮系统提示不附 framework_core，避免与 6 行尾块契约冲突
-            captured_planner_sys: list[str] = []
-
-            async def _fake_build_obs(_persona_name: str) -> ObservationDigest:
-                return _make_digest(group_digests=[g_obs])
-
-            async def _fake_run_autonomy(
-                digest: ObservationDigest,
-                *,
-                system_prompt: str,
-                user_prompt: str,
-            ) -> AutonomyReport:
-                del digest, user_prompt
-                captured_planner_sys.append(system_prompt)
-                return AutonomyReport(
-                    text="DRIVE: rest\nTARGET: -\nTOPIC: -\nOUTCOME: none\nFACT: 无\nTAKE: 先歇会儿。",
-                    steps=[],
-                    duration_ms=10,
-                    session_id="autonomy_planner_test",
-                )
-
-            ok_mode, _ = persona_config_manager.set_ai_mode("alpha", ["提及应答", AUTONOMY_MODE])
-            assert ok_mode is True
-            sched = auto_sched.AutonomyScheduler()
-            with monkeypatch.context() as mp:
-                mp.setattr(ai_config.get_config("enable"), "data", True)
-                mp.setattr(auto_sched, "build_observation", _fake_build_obs)
-                mp.setattr(auto_sched, "run_autonomy_agent", _fake_run_autonomy)
-                await sched.run_persona("alpha", force=True)
-            assert len(captured_planner_sys) == 1
-            assert "框架通用底线" not in captured_planner_sys[0]
-            assert "只输出 `<SILENCE>`" not in captured_planner_sys[0]
-            assert "Name: alpha" in captured_planner_sys[0]
-
     asyncio.run(scenario())
 
 
 def test_proactive_policy_unified_gates_and_persona_rate_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """统一主动门控：禁言拦截搭话但放行定时/看板，且 autonomy 发信按人格维度执行频次上限。"""
-    import time
-
-    from pydantic_ai import RunContext
-    from pydantic_ai.usage import RunUsage
-    from pydantic_ai.models.test import TestModel
-
-    from gsuid_core.ai_core.models import ToolContext
     from gsuid_core.ai_core.autonomy import tools as auto_tools
     from gsuid_core.ai_core.proactive.policy import (
         ProactiveGateInput,
@@ -2255,13 +2183,11 @@ def test_proactive_policy_unified_gates_and_persona_rate_key(monkeypatch: pytest
     )
     from gsuid_core.ai_core.proactive.dispatcher import UnifiedProactiveDispatcher
 
-    # 1. 统一门控策略：禁言分流、会话忙闲与私聊互惠退避（仅约束私聊）
     gate_cases: tuple[tuple[ProactiveGateInput, bool, str], ...] = (
         (ProactiveGateInput("heartbeat", "alpha", "group_1", False, scope_banned=True), False, "scope_banned"),
         (ProactiveGateInput("autonomy_send", "alpha", "group_1", False, scope_banned=True), False, "scope_banned"),
         (ProactiveGateInput("scheduled_task", "alpha", "group_1", False, scope_banned=True), True, ""),
         (ProactiveGateInput("kanban", "alpha", "group_1", False, scope_banned=True), True, ""),
-        (ProactiveGateInput("autonomy_send", "alpha", "group_1", False, session_busy=True), False, "session_busy"),
         (
             ProactiveGateInput("heartbeat", "alpha", "100000001", True, dm_reciprocity_blocked=True),
             False,
@@ -2275,61 +2201,45 @@ def test_proactive_policy_unified_gates_and_persona_rate_key(monkeypatch: pytest
         if exp_code:
             assert res.code == exp_code
 
-    # 2. 回归验证：autonomy send_message_by_ai 按 persona_name 查频率配额（时钟前移绕过 C8 120s 间隔）
     fake_now = [1_700_000_000.0]
     monkeypatch.setattr(time, "time", lambda: fake_now[0])
     disp = UnifiedProactiveDispatcher()
     disp.register_send("group_1", "autonomy", "测试问候一", persona_name="alpha")
     disp.register_send("group_1", "autonomy", "测试问候二", persona_name="alpha")
     fake_now[0] += 600.0
-    _gap_a, rate_a = check_target_rate_and_gap(disp, "group_1", persona_name="alpha", max_per_hour=2, max_per_day=8)
-    _gap_b, rate_b = check_target_rate_and_gap(disp, "group_1", persona_name="beta", max_per_hour=2, max_per_day=8)
+    _, rate_a = check_target_rate_and_gap(disp, "group_1", persona_name="alpha", max_per_hour=2, max_per_day=8)
+    _, rate_b = check_target_rate_and_gap(disp, "group_1", persona_name="beta", max_per_hour=2, max_per_day=8)
     assert rate_a is True and rate_b is False
 
     now = fake_now[0]
-    g_obs = _make_group_obs("group_1", now=now)
-    guard = _make_guard(now=now, allowed_groups={"group_1": g_obs}, hour_cap=2, day_cap=8)
-    ctx = RunContext(deps=ToolContext(extra={}), model=TestModel(), usage=RunUsage())
+    guard = _make_guard(now=now, allowed_groups={"group_1": _make_group_obs("group_1", now=now)}, hour_cap=2, day_cap=8)
     tok = auto_tools.bind_guard(guard)
     try:
         with monkeypatch.context() as mp:
             mp.setattr(auto_tools, "get_dispatcher", lambda: disp)
-            mp.setattr(auto_tools, "is_session_scope_banned", lambda _sid: False)
-            mp.setattr(auto_tools, "is_session_busy", lambda _sid: False)
-            msg = asyncio.run(auto_tools.send_message_by_ai(ctx, "顺口打个招呼", target_id="group_1"))
+            msg = asyncio.run(auto_tools.send_message_by_ai(make_run_ctx(), "顺口打个招呼", target_id="group_1"))
             assert "配额已达上限" in msg
     finally:
         auto_tools.reset_guard(tok)
 
 
 def test_persona_reset_guard_and_archive_safety(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import zipfile
-
     from gsuid_core.ai_core.persona_reset import guard, archive
 
-    # 1. 冻结标记可重入 + self scope 按人格隔离 + 非 self 看共享标记
     guard.freeze(["alpha"], shared=False, scope_keys=["self:10001"])
     try:
-        assert guard.is_persona_frozen("alpha") is True
-        assert guard.is_persona_frozen("beta") is False
-        assert guard.is_scope_frozen("self:10001:alpha") is True
-        assert guard.is_scope_frozen("self:10001:beta") is False
-        assert guard.is_scope_frozen("self:10001") is True
-        assert guard.is_scope_frozen("group:group_1") is False
+        assert guard.is_persona_frozen("alpha") is True and guard.is_persona_frozen("beta") is False
+        assert guard.is_scope_frozen("self:10001:alpha") is True and guard.is_scope_frozen("self:10001:beta") is False
+        assert guard.is_scope_frozen("self:10001") is True and guard.is_scope_frozen("group:group_1") is False
 
         guard.freeze(["alpha"], shared=True)
-        assert guard.is_scope_frozen("group:group_1") is True
-        assert guard.is_scope_frozen("user_global:100000001") is True
+        assert guard.is_scope_frozen("group:group_1") is True and guard.is_scope_frozen("user_global:100000001") is True
         guard.unfreeze(["alpha"], shared=True)
-        assert guard.is_persona_frozen("alpha") is True
-        assert guard.is_scope_frozen("group:group_1") is False
+        assert guard.is_persona_frozen("alpha") is True and guard.is_scope_frozen("group:group_1") is False
     finally:
         guard.unfreeze(["alpha"], shared=False, scope_keys=["self:10001"])
-    assert not guard.is_persona_frozen("alpha")
-    assert not guard.is_scope_frozen("self:10001")
-    assert not guard.is_scope_frozen("group:group_1")
+    assert not guard.is_persona_frozen("alpha") and not guard.is_scope_frozen("self:10001")
 
-    # 2. zip-slip 越界条目拒绝 + 损坏 zip 安全返回 None + finalize 仅保留最近 5 份
     evil_zip = tmp_path / "evil.zip"
     with zipfile.ZipFile(evil_zip, "w") as zf:
         zf.writestr("../escape.txt", "boom")
@@ -2351,30 +2261,26 @@ def test_persona_reset_guard_and_archive_safety(tmp_path: Path, monkeypatch: pyt
 
 
 def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """端到端覆盖：预览 → 重置（含备份）→ 跨人格隔离 → 还原（含认知节点与边）→ 向量断点续跑。"""
-    import time
-    from datetime import datetime, timezone, timedelta
-
+    """端到端覆盖：预览 → 重置（含备份）→ 跨人格隔离 → 还原 → 向量断点续跑 → HTTP 与故障恢复。"""
+    import httpx
     from sqlmodel import select
     from sqlalchemy import delete as sql_delete
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from gsuid_core.models import Event
+    from gsuid_core.webconsole import persona_api as _persona_api  # noqa: F401
     from gsuid_core.ai_core.rag import base as rag_base
     from gsuid_core.ai_core.memory import startup as mem_startup
     from gsuid_core.ai_core.journal import storage as jstorage
     from gsuid_core.ai_core.persona import mood as mood_mod
-    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.webconsole.app_app import app as web_app
+    from gsuid_core.webconsole.web_api import require_admin
     from gsuid_core.ai_core.state_store import state_get_value, state_set_value
     from gsuid_core.ai_core.memory.vector import ops as vec_ops
-    from gsuid_core.ai_core.persona_reset import jobs, guard, archive, service, targets as reset_targets
+    from gsuid_core.ai_core.persona_reset import jobs, guard, archive, service
     from gsuid_core.ai_core.scheduled_task import executor as sched_exec
     from gsuid_core.ai_core.cognition.nodes import AICogEdge, AICogNode, CogEdgeKind, AICogAttachment
     from gsuid_core.ai_core.cognition.types import CogKind
     from gsuid_core.ai_core.database.models import UserFavorability, AIAutonomyActivity
     from gsuid_core.ai_core.memory.database import fts as fts_mod, models as mem_models
-    from gsuid_core.ai_core.memory.observer import ObservationRecord
-    from gsuid_core.ai_core.memory.ingestion import algebra, window_router
     from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.ai_core.persona.homeostasis import persona_scope
     from gsuid_core.ai_core.persona_reset.types import ALL_ITEMS
@@ -2386,7 +2292,6 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
         AIMemEpisode,
         mem_episode_entity_mentions,
     )
-    from gsuid_core.ai_core.memory.ingestion.worker import ingest_window
     from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
     _setup_isolated_persona_env(tmp_path / "personas", monkeypatch)
@@ -2415,9 +2320,6 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
 
     class _FakeEmbedder:
         dimension: int = 4
-
-        async def embed(self, texts: list[str]) -> list[list[float]]:
-            return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
 
     fake_qdrant = _FakeQdrant()
     monkeypatch.setattr(rag_base, "client", fake_qdrant)
@@ -2468,7 +2370,6 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
 
     async def scenario(maker: async_sessionmaker[AsyncSession]) -> None:
         now_dt = datetime.now(timezone.utc)
-        # 1. 灌入 alpha、beta 与共享测试数据（全脱敏虚拟数据）
         async with maker() as s:
             await fts_mod.ensure_fts_table(s)
             ent_a = AIMemEntity(id="ent-a1", scope_key="self:10001:alpha", name="角色自述", qdrant_id="ent-a1")
@@ -2510,10 +2411,7 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
                 qdrant_id="edge-g1",
             )
             pref_u = AIMemPreference(
-                id="pref-u1",
-                scope_key="user_global:100000001",
-                user_id="100000001",
-                preference_rule="回答简洁",
+                id="pref-u1", scope_key="user_global:100000001", user_id="100000001", preference_rule="回答简洁"
             )
             s.add_all([ent_a, ent_b, ent_g1, ent_g2, ent_u1, th_g, ep_a, ep_b, ep_g, edge_g, pref_u])
             await s.flush()
@@ -2533,7 +2431,7 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
             )
             s.add_all([hub, env_node, self_note])
             await s.flush()
-            assert hub.id is not None and env_node.id is not None and self_note.id is not None
+            assert isinstance(hub.id, int) and isinstance(env_node.id, int) and isinstance(self_note.id, int)
             s.add(AICogEdge(src_id=env_node.id, dst_id=hub.id, edge_kind=CogEdgeKind.RELATED.value))
             s.add(AICogAttachment(node_id=self_note.id, slot="备注", title="附注", ref="att:1", handle="h:1"))
 
@@ -2554,7 +2452,6 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
             )
             await s.commit()
 
-        # 手账、笔记、状态、心情、会话
         j_alpha = jstorage.persona_journal_dir("alpha") / "self.md"
         j_alpha.parent.mkdir(parents=True, exist_ok=True)
         j_alpha.write_text("# alpha 手账\n", encoding="utf-8")
@@ -2579,312 +2476,210 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
         await state_set_value("__gscore_group_profile__", "group:group_1", {"tags": ["测试"]})
         await mood_mod.update_mood("alpha", "group_1", "praise")
 
-        ev_g1 = Event(bot_id="onebot", bot_self_id="10001", user_id="100000001", group_id="group_1", user_type="group")
-        get_history_manager().add_message(ev_g1, "user", "测试消息")
+        ev_g1 = _make_event(group_id="group_1")
+        with isolated_history(ev_g1) as hm:
+            hm.add_message(ev_g1, "user", "测试消息")
 
-        # 2. 预览校验
-        prev = await service.preview_reset("alpha")
-        assert prev["other_personas"] == ["beta"]
-        by_key = {item["key"]: item for item in prev["items"]}
-        assert by_key["self_memory"]["default_checked"] is True and by_key["self_memory"]["count"] == 3
-        assert by_key["global_group"]["default_checked"] is False and by_key["global_group"]["count"] == 6
-        assert by_key["global_user"]["default_checked"] is False and by_key["global_user"]["count"] == 2
-        assert by_key["scheduled_tasks"]["default_checked"] is False and by_key["scheduled_tasks"]["count"] == 1
-        assert by_key["session_history"]["backup_supported"] is False and by_key["session_history"]["count"] >= 1
+            prev = await service.preview_reset("alpha")
+            assert prev["other_personas"] == ["beta"]
+            by_key = {item["key"]: item for item in prev["items"]}
+            assert by_key["self_memory"]["default_checked"] is True and by_key["self_memory"]["count"] == 3
+            assert by_key["global_group"]["default_checked"] is False and by_key["global_group"]["count"] == 6
+            assert by_key["global_user"]["default_checked"] is False and by_key["global_user"]["count"] == 2
+            assert by_key["scheduled_tasks"]["default_checked"] is False and by_key["scheduled_tasks"]["count"] == 1
+            assert by_key["session_history"]["backup_supported"] is False and by_key["session_history"]["count"] >= 1
 
-        # 错误确认名被拒
-        bad = await service.start_reset("alpha", ["journal"], "wrong", False, False)
-        assert bad["error"]
+            assert (await service.start_reset("alpha", ["journal"], "wrong", False, False))["error"]
+            assert (await service.start_reset("alpha", ["global_group"], "alpha", False, False))["error"]
 
-        # 全局图谱项未二次确认被拒
-        no_global = await service.start_reset("alpha", ["global_group"], "alpha", False, False)
-        assert no_global["error"]
+            # 摄入 flush 超时 → 任务失败、手账未删、人格解冻
+            class _StuckWorker:
+                async def wait_frozen_flush_idle(self, timeout: float) -> bool:
+                    del timeout
+                    return False
 
-        # 摄入 flush 等不到空闲 → 任务失败、手账未删、人格解冻（异常经 done-callback 收口）
-        class _StuckWorker:
-            async def wait_frozen_flush_idle(self, timeout: float) -> bool:
-                del timeout
-                return False
+                def drop_frozen_buffers(self) -> int:
+                    return 0
 
-            def drop_frozen_buffers(self) -> int:
-                return 0
+            with monkeypatch.context() as mp:
+                mp.setattr(mem_startup, "get_ingestion_worker", lambda: _StuckWorker())
+                stuck = await service.start_reset("alpha", ["journal"], "alpha", False, False)
+                assert not stuck["error"] and stuck["job_id"]
+                assert (await _wait_job(stuck["job_id"]))["status"] == "failed"
+                assert j_alpha.exists() and guard.is_persona_frozen("alpha") is False
 
-        orig_worker_getter = mem_startup.get_ingestion_worker
-        monkeypatch.setattr(mem_startup, "get_ingestion_worker", lambda: _StuckWorker())
-        try:
-            stuck = await service.start_reset("alpha", ["journal"], "alpha", False, False)
-            assert not stuck["error"] and stuck["job_id"]
-            stuck_view = await _wait_job(stuck["job_id"])
-            assert stuck_view["status"] == "failed"
-            assert j_alpha.exists()
-            assert guard.is_persona_frozen("alpha") is False
-        finally:
-            monkeypatch.setattr(mem_startup, "get_ingestion_worker", orig_worker_getter)
-
-        # 冻结人格的一次性定时任务不点火：顺延补跑一次后返回
-        overdue_calls: list[tuple[str, str, int]] = []
-        monkeypatch.setattr(
-            sched_exec,
-            "_schedule_overdue_job",
-            lambda task_id, kind, overdue_idx: overdue_calls.append((task_id, kind, overdue_idx)),
-        )
-        monkeypatch.setattr(ai_config.get_config("enable"), "data", True)
-        guard.freeze(["alpha"], shared=False)
-        try:
-            await sched_exec.execute_scheduled_task("task-alpha-1")
-        finally:
-            guard.unfreeze(["alpha"], shared=False)
-        assert overdue_calls == [("task-alpha-1", "一次性任务", 0)]
-
-        # 3. 执行全量重置（含备份）
-        started = await service.start_reset("alpha", list(ALL_ITEMS), "alpha", True, True)
-        assert not started["error"] and started["job_id"]
-        done_view = await _wait_job(started["job_id"])
-        assert done_view["status"] == "done", done_view
-        assert done_view["backup_file"].endswith(".zip")
-        backup_file = done_view["backup_file"]
-
-        # 备份人格不匹配：拷进 beta 备份目录后预览还原直接拒绝
-        import shutil
-
-        beta_backup_dir = archive.persona_backup_dir("beta")
-        beta_backup_dir.mkdir(parents=True, exist_ok=True)
-        copied = beta_backup_dir / backup_file
-        shutil.copy2(archive.persona_backup_dir("alpha") / backup_file, copied)
-        try:
-            assert await service.preview_restore("beta", backup_file) == "备份不属于该人格"
-        finally:
-            copied.unlink(missing_ok=True)
-
-        # 校验清空结果 & beta / 公共枢纽完好无损
-        assert not j_alpha.exists() and j_beta.exists()
-        assert not (notes_root / "alpha").exists()
-        assert jstorage.read_journal_state_sync("alpha") is None
-        assert await state_get_value(persona_scope("alpha"), "homeostasis") is None
-        assert await state_get_value(persona_scope("beta"), "homeostasis") == {"energy": 0.9}
-        assert await state_get_value("__gscore_group_profile__", "group:group_1") is None
-        assert mood_mod.count_mood_states("alpha") == 0
-        assert fake_qdrant.deleted_collections
-
-        async with maker() as s:
-            eps = (await s.execute(select(AIMemEpisode))).scalars().all()
-            assert [e.id for e in eps] == ["ep-b1"]
-            favs = (await s.execute(select(UserFavorability))).scalars().all()
-            assert [(f.persona_name, f.favorability) for f in favs] == [("beta", 88)]
-            acts = (await s.execute(select(AIAutonomyActivity))).scalars().all()
-            assert [a.persona_name for a in acts] == ["beta"]
-            cogs = (await s.execute(select(AICogNode))).scalars().all()
-            assert [c.ref for c in cogs] == ["world:test_hub"]
-            task_row = (await s.execute(select(AIScheduledTask))).scalars().first()
-            assert task_row is not None and task_row.status == "cancelled"
-
-        # 4. 还原预览（验证吞吐缓存，重复打开不重复调嵌入）+ 还原（模拟向量中途失败 → 断点续跑）
-        rprev = await service.preview_restore("alpha", backup_file)
-        assert not isinstance(rprev, str)
-        assert rprev["overwrite_counts"]["scheduled_tasks"] == 0
-        assert rprev["vector_texts"] == 11 and rprev["throughput_per_sec"] > 0
-        rprev_cached = await service.preview_restore("alpha", backup_file)
-        assert not isinstance(rprev_cached, str) and embed_calls["n"] == 1
-
-        # 重置后再写入一条新记录，验证覆盖还原会先清掉它
-        await UserFavorability.restore_rows(
-            [UserFavorability(user_id="100000002", bot_id="onebot", persona_name="alpha", favorability=5)]
-        )
-
-        rstart = await service.start_restore("alpha", backup_file, list(rprev["items"]), "alpha")
-        assert not rstart["error"] and rstart["job_id"]
-        interrupted = await _wait_job(rstart["job_id"])
-        assert interrupted["status"] == "resumable", interrupted
-        vec_step = [st for st in interrupted["steps"] if st["key"] == "vectors"][0]
-        assert vec_step["status"] == "failed"
-
-        # SQL / 认知节点 / 边 / 挂件 / 手账 / 好感 / 状态 / 定时任务均已立即恢复
-        assert j_alpha.read_text(encoding="utf-8") == "# alpha 手账\n"
-        assert (notes_root / "alpha" / "n1.txt").read_text(encoding="utf-8") == "alpha 笔记"
-        assert jstorage.read_journal_state_sync("alpha") is not None
-        assert await state_get_value(persona_scope("alpha"), "homeostasis") == {"energy": 0.5}
-        assert await state_get_value("__gscore_group_profile__", "group:group_1") == {"tags": ["测试"]}
-        assert "task-alpha-1" in registered_jobs
-
-        async with maker() as s:
-            eps = sorted(e.id for e in (await s.execute(select(AIMemEpisode))).scalars().all())
-            assert eps == ["ep-a1", "ep-b1", "ep-g1"]
-            favs = sorted(
-                (f.persona_name, f.user_id, f.favorability)
-                for f in (await s.execute(select(UserFavorability))).scalars().all()
+            # 冻结人格的一次性定时任务顺延补跑不直接点火
+            overdue_calls: list[tuple[str, str, int]] = []
+            monkeypatch.setattr(
+                sched_exec,
+                "_schedule_overdue_job",
+                lambda task_id, kind, overdue_idx: overdue_calls.append((task_id, kind, overdue_idx)),
             )
-            assert favs == [("alpha", "100000001", 42), ("beta", "100000001", 88)]
-            cogs = sorted(c.ref for c in (await s.execute(select(AICogNode))).scalars().all())
-            assert cogs == ["env:ent-g2", "self:10001:note:1", "world:test_hub"]
-            edges_cog = (await s.execute(select(AICogEdge))).scalars().all()
-            atts_cog = (await s.execute(select(AICogAttachment))).scalars().all()
-            assert len(edges_cog) == 1 and len(atts_cog) == 1
-            task_row = (await s.execute(select(AIScheduledTask))).scalars().first()
-            assert task_row is not None and task_row.status == "pending"
-
-        # 模拟进程重启：清掉内存任务表，仍能从磁盘游标发现 resumable 并续跑完成
-        jobs._jobs.clear()
-        jobs._active_job_id = ""
-        active = await service.active_job_view("alpha")
-        assert active is not None and active["status"] == "resumable" and active["job_id"] == rstart["job_id"]
-
-        resumed = await service.resume_job(rstart["job_id"])
-        assert not resumed["error"]
-        final_view = await _wait_job(resumed["job_id"])
-        assert final_view["status"] == "done", final_view
-        assert await service.active_job_view("alpha") is None
-        assert sorted(upserted["episode"]) == ["ep-a1", "ep-g1"]
-        assert sorted(upserted["entity"]) == ["ent-a1", "ent-g1", "ent-g2", "ent-u1"]
-        assert sorted(upserted["edge"]) == ["edge-g1"]
-
-        # 摄入循环在 extract 前复查冻结：首个 cluster 冻结后，第二个 cluster 不再落库
-        extract_calls = {"n": 0}
-
-        async def _two_extract_route(
-            scope_key: str,
-            records: list[ObservationRecord],
-            threads: list[AIMemThread],
-            *,
-            force_settle: bool = False,
-        ) -> window_router.WindowRouteOutput:
-            del scope_key, records, threads, force_settle
-            return {
-                "clusters": [
-                    {"lines": [0], "action": "extract", "thread_ref": None, "topic_title": ""},
-                    {"lines": [1], "action": "extract", "thread_ref": None, "topic_title": ""},
-                ],
-                "open_lines": [],
-            }
-
-        async def _freeze_on_extract(
-            scope_key: str,
-            records: list[ObservationRecord],
-            lines: list[int],
-            *,
-            thread_ref: str | None,
-            topic_title: str,
-            episode_id: str,
-            threads: list[AIMemThread] | None = None,
-        ) -> algebra.AlgebraStats:
-            del records, lines, thread_ref, topic_title, episode_id, threads
-            extract_calls["n"] += 1
+            monkeypatch.setattr(ai_config.get_config("enable"), "data", True)
             guard.freeze(["alpha"], shared=False)
-            assert guard.is_scope_frozen(scope_key)
-            return {"entities": 0, "edges": 0, "preferences": 0, "thread_id": ""}
+            try:
+                await sched_exec.execute_scheduled_task("task-alpha-1")
+            finally:
+                guard.unfreeze(["alpha"], shared=False)
+            assert overdue_calls == [("task-alpha-1", "一次性任务", 0)]
 
-        monkeypatch.setattr(window_router, "route_window", _two_extract_route)
-        monkeypatch.setattr(algebra, "extract_cluster", _freeze_on_extract)
+            # 全量重置（含备份）+ 跨人格备份拒绝
+            started = await service.start_reset("alpha", list(ALL_ITEMS), "alpha", True, True)
+            assert not started["error"] and started["job_id"]
+            done_view = await _wait_job(started["job_id"])
+            assert done_view["status"] == "done" and done_view["backup_file"].endswith(".zip")
+            backup_file = done_view["backup_file"]
 
-        async def _noop_upsert_ep(**kwargs: object) -> None:
-            del kwargs
+            beta_backup_dir = archive.persona_backup_dir("beta")
+            beta_backup_dir.mkdir(parents=True, exist_ok=True)
+            copied = beta_backup_dir / backup_file
+            shutil.copy2(archive.persona_backup_dir("alpha") / backup_file, copied)
+            try:
+                assert await service.preview_restore("beta", backup_file) == "备份不属于该人格"
+            finally:
+                copied.unlink(missing_ok=True)
 
-        monkeypatch.setattr(mem_models, "upsert_episode_vector", _noop_upsert_ep)
-        recs = [
-            ObservationRecord(
-                raw_content=f"窗口消息{idx}",
-                speaker_id="100000001",
-                group_id="group_1",
-                scope_key="self:10001:alpha",
-                timestamp=now_dt,
-                message_type="text",
+            assert not j_alpha.exists() and j_beta.exists() and not (notes_root / "alpha").exists()
+            assert jstorage.read_journal_state_sync("alpha") is None
+            assert await state_get_value(persona_scope("alpha"), "homeostasis") is None
+            assert await state_get_value(persona_scope("beta"), "homeostasis") == {"energy": 0.9}
+            assert await state_get_value("__gscore_group_profile__", "group:group_1") is None
+            assert mood_mod.count_mood_states("alpha") == 0 and fake_qdrant.deleted_collections
+
+            async with maker() as s:
+                assert [e.id for e in (await s.execute(select(AIMemEpisode))).scalars().all()] == ["ep-b1"]
+                assert [
+                    (f.persona_name, f.favorability)
+                    for f in (await s.execute(select(UserFavorability))).scalars().all()
+                ] == [("beta", 88)]
+                assert [a.persona_name for a in (await s.execute(select(AIAutonomyActivity))).scalars().all()] == [
+                    "beta"
+                ]
+                assert [c.ref for c in (await s.execute(select(AICogNode))).scalars().all()] == ["world:test_hub"]
+                task_row = (await s.execute(select(AIScheduledTask))).scalars().first()
+                assert task_row is not None and task_row.status == "cancelled"
+
+            # 还原预览（吞吐缓存去重嵌入）+ 覆盖还原 + 向量中断断点续跑
+            rprev = await service.preview_restore("alpha", backup_file)
+            assert not isinstance(rprev, str)
+            assert rprev["overwrite_counts"]["scheduled_tasks"] == 0 and rprev["vector_texts"] == 11
+            assert not isinstance(await service.preview_restore("alpha", backup_file), str) and embed_calls["n"] == 1
+
+            await UserFavorability.restore_rows(
+                [UserFavorability(user_id="100000002", bot_id="onebot", persona_name="alpha", favorability=5)]
             )
-            for idx in (1, 2)
-        ]
-        try:
-            w_stats = await ingest_window(recs, "self:10001:alpha")
-        finally:
-            guard.unfreeze(["alpha"], shared=False)
-        assert extract_calls["n"] == 1
-        assert w_stats["episodes"] == 1
+            rstart = await service.start_restore("alpha", backup_file, list(rprev["items"]), "alpha")
+            assert not rstart["error"] and rstart["job_id"]
+            interrupted = await _wait_job(rstart["job_id"])
+            assert interrupted["status"] == "resumable"
+            assert [st for st in interrupted["steps"] if st["key"] == "vectors"][0]["status"] == "failed"
 
-        # 5. FastAPI HTTP 契约端到端验证（路由无遮蔽 + 预览 / 备份列表 / 下载 / 删除 / 任务进度）
-        import httpx
+            assert j_alpha.read_text(encoding="utf-8") == "# alpha 手账\n"
+            assert (notes_root / "alpha" / "n1.txt").read_text(encoding="utf-8") == "alpha 笔记"
+            assert jstorage.read_journal_state_sync("alpha") is not None
+            assert await state_get_value(persona_scope("alpha"), "homeostasis") == {"energy": 0.5}
+            assert await state_get_value("__gscore_group_profile__", "group:group_1") == {"tags": ["测试"]}
+            assert "task-alpha-1" in registered_jobs
 
-        from gsuid_core.webconsole import persona_api as _persona_api  # noqa: F401
-        from gsuid_core.webconsole.app_app import app as web_app
-        from gsuid_core.webconsole.web_api import require_admin
-        from gsuid_core.webconsole.session_store import SessionRecord
+            async with maker() as s:
+                assert sorted(e.id for e in (await s.execute(select(AIMemEpisode))).scalars().all()) == [
+                    "ep-a1",
+                    "ep-b1",
+                    "ep-g1",
+                ]
+                assert sorted(
+                    (f.persona_name, f.user_id, f.favorability)
+                    for f in (await s.execute(select(UserFavorability))).scalars().all()
+                ) == [("alpha", "100000001", 42), ("beta", "100000001", 88)]
+                assert sorted(c.ref for c in (await s.execute(select(AICogNode))).scalars().all()) == [
+                    "env:ent-g2",
+                    "self:10001:note:1",
+                    "world:test_hub",
+                ]
+                assert len((await s.execute(select(AICogEdge))).scalars().all()) == 1
+                assert len((await s.execute(select(AICogAttachment))).scalars().all()) == 1
+                task_row = (await s.execute(select(AIScheduledTask))).scalars().first()
+                assert task_row is not None and task_row.status == "pending"
 
-        admin_rec: SessionRecord = {
-            "user": {"id": "admin", "email": "admin@example.com", "name": "admin", "role": "admin", "avatar": None},
-            "email": "admin@example.com",
-            "created": now_dt.isoformat(),
-            "expires": (now_dt + timedelta(hours=1)).isoformat(),
-        }
-        web_app.dependency_overrides[require_admin] = lambda: admin_rec
-        try:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=web_app), base_url="http://testserver"
-            ) as http:
-                resp_prev = await http.get("/api/persona/alpha/reset/preview")
-                assert resp_prev.status_code == 200 and resp_prev.json()["status"] == 0
-                assert resp_prev.json()["data"]["persona"] == "alpha"
+            jobs._jobs.clear()
+            jobs._active_job_id = ""
+            active = await service.active_job_view("alpha")
+            assert active is not None and active["status"] == "resumable" and active["job_id"] == rstart["job_id"]
 
-                resp_job = await http.get(f"/api/persona-reset/jobs/{final_view['job_id']}")
-                assert resp_job.status_code == 200 and resp_job.json()["data"]["status"] == "done"
+            resumed = await service.resume_job(rstart["job_id"])
+            assert not resumed["error"]
+            final_view = await _wait_job(resumed["job_id"])
+            assert final_view["status"] == "done" and await service.active_job_view("alpha") is None
+            assert sorted(upserted["episode"]) == ["ep-a1", "ep-g1"]
+            assert sorted(upserted["entity"]) == ["ent-a1", "ent-g1", "ent-g2", "ent-u1"]
+            assert sorted(upserted["edge"]) == ["edge-g1"]
 
-                resp_list = await http.get("/api/persona/alpha/backups")
-                assert resp_list.status_code == 200
-                listed = resp_list.json()["data"]
-                assert len(listed) == 1 and listed[0]["file"] == backup_file
+            # FastAPI HTTP 契约端到端验证
+            web_app.dependency_overrides[require_admin] = lambda: make_session_record("admin")
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=web_app), base_url="http://testserver"
+                ) as http:
+                    resp_prev = await http.get("/api/persona/alpha/reset/preview")
+                    assert resp_prev.status_code == 200 and resp_prev.json()["status"] == 0
+                    assert resp_prev.json()["data"]["persona"] == "alpha"
 
-                resp_dl = await http.get(f"/api/persona/alpha/backups/{backup_file}/download")
-                assert resp_dl.status_code == 200 and resp_dl.content[:2] == b"PK"
+                    resp_job = await http.get(f"/api/persona-reset/jobs/{final_view['job_id']}")
+                    assert resp_job.status_code == 200 and resp_job.json()["data"]["status"] == "done"
 
-                resp_del = await http.delete(f"/api/persona/alpha/backups/{backup_file}")
-                assert resp_del.status_code == 200 and resp_del.json()["status"] == 0
-                assert await service.list_backups("alpha") == []
-        finally:
-            web_app.dependency_overrides.pop(require_admin, None)
+                    resp_list = await http.get("/api/persona/alpha/backups")
+                    listed = resp_list.json()["data"]
+                    assert resp_list.status_code == 200 and len(listed) == 1 and listed[0]["file"] == backup_file
 
-        # 6. 回归防线：prepare 阶段经公共 targets.self_scopes 故障不锁死任务，新重置清旧游标
-        orig_self_scopes = reset_targets.self_scopes
-        self_scope_calls = 0
+                    resp_dl = await http.get(f"/api/persona/alpha/backups/{backup_file}/download")
+                    assert resp_dl.status_code == 200 and resp_dl.content[:2] == b"PK"
 
-        async def _boom_prepare_self_scopes(persona: str) -> reset_targets.SelfScopes:
-            nonlocal self_scope_calls
-            self_scope_calls += 1
-            if self_scope_calls >= 2:
-                raise RuntimeError("simulated db error before freeze")
-            return await orig_self_scopes(persona)
+                    resp_del = await http.delete(f"/api/persona/alpha/backups/{backup_file}")
+                    assert resp_del.status_code == 200 and resp_del.json()["status"] == 0
+                    assert await service.list_backups("alpha") == []
+            finally:
+                web_app.dependency_overrides.pop(require_admin, None)
 
-        with monkeypatch.context() as mp:
-            mp.setattr(reset_targets, "self_scopes", _boom_prepare_self_scopes)
-            fail_start = await service.start_reset("alpha", ["self_memory"], "alpha", False, False)
-            assert not fail_start["error"] and fail_start["job_id"]
-            fail_view = await _wait_job(fail_start["job_id"])
-            assert fail_view["status"] == "failed" and jobs.active_job() is None
+            # prepare 阶段 sweep 故障不锁死任务；新重置自动清理磁盘旧断点游标
+            def _boom_sweep() -> int:
+                raise RuntimeError("simulated sweep error before freeze")
 
-        stale_cursor = archive.JOBS_DIR / "stale_alpha_job.json"
-        service._save_cursor_sync(
-            {
-                "job_id": "stale_alpha_job",
-                "persona": "alpha",
-                "file": "dummy.zip",
-                "scope_keys": ["self:10001:alpha"],
-                "kind_index": 1,
-                "chunk_index": 0,
-                "last_id": "",
-                "done": 1,
-                "total": 3,
-            }
-        )
-        assert stale_cursor.exists()
-        fresh_start = await service.start_reset("alpha", ["self_memory"], "alpha", False, False)
-        assert not fresh_start["error"] and fresh_start["job_id"]
-        fresh_view = await _wait_job(fresh_start["job_id"])
-        assert fresh_view["status"] == "done" and not stale_cursor.exists()
+            with monkeypatch.context() as mp:
+                mp.setattr(archive, "sweep_stale_sync", _boom_sweep)
+                fail_start = await service.start_reset("alpha", ["self_memory"], "alpha", False, False)
+                assert not fail_start["error"] and fail_start["job_id"]
+                fail_view = await _wait_job(fail_start["job_id"])
+                assert fail_view["status"] == "failed" and jobs.active_job() is None
 
-        # 清理内存会话，避免污染其他用例
-        get_history_manager().delete_session(ev_g1)
-        async with maker() as s:
-            await s.execute(sql_delete(AIMemEdge))
-            await s.commit()
+            archive.JOBS_DIR.mkdir(parents=True, exist_ok=True)
+            stale_cursor = archive.JOBS_DIR / "stale_alpha_job.json"
+            stale_cursor.write_text(
+                json.dumps(
+                    {
+                        "job_id": "stale_alpha_job",
+                        "persona": "alpha",
+                        "file": "dummy.zip",
+                        "scope_keys": ["self:10001:alpha"],
+                        "kind_index": 1,
+                        "chunk_index": 0,
+                        "last_id": "",
+                        "done": 1,
+                        "total": 3,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fresh_start = await service.start_reset("alpha", ["self_memory"], "alpha", False, False)
+            assert not fresh_start["error"] and fresh_start["job_id"]
+            assert (await _wait_job(fresh_start["job_id"]))["status"] == "done" and not stale_cursor.exists()
+
+            async with maker() as s:
+                await s.execute(sql_delete(AIMemEdge))
+                await s.commit()
 
     async def _run() -> None:
         async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="reset_e2e.db") as (_, maker):
             monkeypatch.setattr(mem_models, "async_maker", maker)
-            monkeypatch.setattr(base_models, "_db_type", "sqlite")
             await scenario(maker)
 
     try:

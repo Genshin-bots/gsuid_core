@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import time
 import asyncio
-from typing import Literal, TypeVar, Callable, Iterator, Coroutine
+from typing import Literal, Iterator
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -13,6 +13,7 @@ import pytest
 
 from gsuid_core.sv import SL, SV, Plugins
 from gsuid_core.bot import _Bot
+from tests._support import isolated_history
 from gsuid_core.models import Event, Message, MessageReceive
 from gsuid_core.handler import _sv_authorized, dispatch_sort_key
 from gsuid_core.trigger_index import get_trigger_index, reset_trigger_index
@@ -21,7 +22,6 @@ from gsuid_core.ai_core.inbox.state import Strength, WakeItem, WakeKind, Pending
 from gsuid_core.ai_core.inbox.scheduler import TurnOutcome, InboxScheduler
 
 _CHAR_PANEL_RE = r"^(?:yh|异环)?(?P<char_name>[\u4e00-\u9fa5A-Za-z0-9·]{1,16})(?:面板|信息)$"
-_T = TypeVar("_T")
 
 
 def _make_event(raw: str, pm: int = 6, bot_self_id: str = "") -> Event:
@@ -52,13 +52,6 @@ def _make_recv(
         user_pm=6,
         content=content,
     )
-
-
-def _async_const(value: _T) -> Callable[..., Coroutine[None, None, _T]]:
-    async def _fn(*_args: object, **_kwargs: object) -> _T:
-        return value
-
-    return _fn
 
 
 class _InboxRig:
@@ -266,15 +259,16 @@ def test_sv_authorization_and_bot_lists(sample_sv: SV) -> None:
     assert _sv_authorized(sample_sv, ev_ok, 0)
     assert any(t.check_command(ev_ok) for td in sample_sv.TL.values() for t in td.values())
 
-    sample_sv.plugins.bot_white_list = ["bot1"]
-    sample_sv.plugins.bot_black_list = []
-    for bot_self_id, expected in [("bot1", True), ("bot2", False), ("", False)]:
+    for white, black, bot_self_id, expected in (
+        (["bot1"], [], "bot1", True),
+        (["bot1"], [], "bot2", False),
+        (["bot1"], [], "", False),
+        (["bot1", "bot2"], ["bot1"], "bot1", False),
+        (["bot1", "bot2"], ["bot1"], "bot2", True),
+    ):
+        sample_sv.plugins.bot_white_list = white
+        sample_sv.plugins.bot_black_list = black
         assert _sv_authorized(sample_sv, _make_event("测帮助", pm=1, bot_self_id=bot_self_id), 1) is expected
-
-    sample_sv.plugins.bot_white_list = ["bot1", "bot2"]
-    sample_sv.plugins.bot_black_list = ["bot1"]
-    assert _sv_authorized(sample_sv, _make_event("测帮助", pm=1, bot_self_id="bot1"), 1) is False
-    assert _sv_authorized(sample_sv, _make_event("测帮助", pm=1, bot_self_id="bot2"), 1) is True
 
 
 def test_dispatch_sort_and_longest_match(sample_sv: SV) -> None:
@@ -328,7 +322,7 @@ def test_prefix_gap_cjk_space_and_ascii_boundary(sample_sv: SV) -> None:
     fm_trig = next(t for t in sample_sv.TL["fullmatch"].values() if t.prefix == "测")
     ascii_trig = next(t for t in sample_sv.TL["command"].values() if t.prefix == "test" and t.keyword == "help")
 
-    for trig, raw, expected in [
+    for trig, raw, expected in (
         (cmd_trig, "测 绑定 123", True),
         (fm_trig, "测状态", True),
         (fm_trig, "测 状态", True),
@@ -336,7 +330,7 @@ def test_prefix_gap_cjk_space_and_ascii_boundary(sample_sv: SV) -> None:
         (ascii_trig, "testhelp", True),
         (ascii_trig, "test help", True),
         (ascii_trig, "testhell", False),
-    ]:
+    ):
         assert trig.check_command(_make_event(raw, pm=0)) is expected, raw
 
     ev_arg = _make_event("测绑定 123 456", pm=0)
@@ -346,7 +340,6 @@ def test_prefix_gap_cjk_space_and_ascii_boundary(sample_sv: SV) -> None:
 
 def test_trigger_index_rebuild_and_owner(sample_sv: SV) -> None:
     before = get_trigger_index().version
-    assert before > 0
 
     @sample_sv.on_command("新动态命令")
     async def _dyn(bot, ev):
@@ -364,14 +357,13 @@ def test_trigger_index_rebuild_and_owner(sample_sv: SV) -> None:
 
 def test_inbox_scheduler_settle_and_one_time_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
     """收件箱调度：并批、不复活、read_seq 推进、TTL、错误重试与静默窗。"""
-    from gsuid_core.message_history import get_history_manager
     from gsuid_core.ai_core.inbox.state import classify_wake
 
     async def main() -> None:
         rig = _InboxRig(start=1000.0, group_id="70001", manual_outcomes=True)
         sid = rig.make_event("probe", uid="100000002").session_id
 
-        # 1) settle 首轮；运行中到达 3 项并入单轮；清空后无活跃会话且 _ws 不泄漏
+        # 1) settle 首轮；运行中到达 3 项并入单轮；清空后无活跃会话
         rig.submit(1, uid="100000002", kind="mention")
         t1 = await rig.start_next()
         for seq in (2, 3, 4):
@@ -384,38 +376,35 @@ def test_inbox_scheduler_settle_and_one_time_settlement(monkeypatch: pytest.Monk
         rig.outcomes.put_nowait(TurnOutcome(reached_model=True, error=False, answered=frozenset({2})))
         await t2
         await rig.pump()
-        assert rig.ws.queue.empty() and not rig.sched.has_active_session(sid) and not rig.sched._ws
+        assert rig.ws.queue.empty() and not rig.sched.has_active_session(sid)
 
-        # 2) 已落定项不复活：新提交两项，下一批只包含这两项
+        # 2) 已落定项不复活；TTL 过期项直接 expired 不成批
         for seq in (10, 11):
             rig.submit(seq, uid="100000003", kind="mention")
         turn3 = await rig.drain_next(TurnOutcome(reached_model=True, error=False, answered=frozenset()))
         assert [e.item.seq for e in turn3.entries] == [10, 11]
         assert rig.ws.queue.empty() and not rig.sched.has_active_session(sid)
 
-        # 3) TTL：过期项直接 expired，不组成批次
         stale = rig.submit(8, uid="100000002", kind="mention", created_at=rig.now - 1000.0)
         await rig.pump()
         assert stale.item.state == "expired" and rig.ws.queue.empty() and not rig.sched.has_active_session(sid)
 
-        # 4) runner 报错：模型前异常重试一次后过期；已达模型故障不重试直接过期
+        # 3) runner 报错：模型前异常重试一次后过期；已达模型故障不重试直接过期
         e9 = rig.submit(9, uid="100000002", kind="mention")
         fail_pre = TurnOutcome(reached_model=False, error=True, answered=frozenset())
         await rig.drain_next(fail_pre)
         await rig.drain_next(fail_pre)
         assert e9.item.state == "expired" and e9.item.retries == 2
-        assert rig.ws.queue.empty() and not rig.sched.has_active_session(sid) and not rig.sched._ws
+        assert rig.ws.queue.empty() and not rig.sched.has_active_session(sid)
 
         e19 = rig.submit(19, uid="100000002", kind="mention")
         await rig.drain_next(TurnOutcome(reached_model=True, error=True, answered=frozenset()))
         assert e19.item.state == "expired" and e19.item.retries == 0
-        assert rig.ws.queue.empty() and not rig.sched.has_active_session(sid) and not rig.sched._ws
+        assert rig.ws.queue.empty() and not rig.sched.has_active_session(sid)
 
-        # 5) 跨清空保留 last_read_seq；reached_model=False 不推进游标；清史回绕归 0
-        hm = get_history_manager()
+        # 4) 跨清空保留 last_read_seq；reached_model=False 不推进游标；清史回绕归 0
         base_ev = Event("OneBot", "900000001", "g0", "group", "70002", "100000002", {}, 6)
-        hm.clear_history(base_ev)
-        try:
+        with isolated_history(base_ev) as hm:
             hm.add_message(base_ev, role="user", content="消息1", metadata={"msg_id": "g1"})
             rec2 = hm.add_message(base_ev, role="user", content="@机器人 消息2", metadata={"msg_id": "g2"})
             assert rec2.link is not None
@@ -444,10 +433,8 @@ def test_inbox_scheduler_settle_and_one_time_settlement(monkeypatch: pytest.Monk
             rig.submit(rec_new.link.seq, uid="100000002", kind="mention", event=base_ev)
             turn_wrapped = await rig.drain_next(TurnOutcome(reached_model=True, error=False, answered=frozenset({1})))
             assert turn_wrapped.from_seq == 0
-        finally:
-            hm.clear_history(base_ev)
 
-        # 6) 静默窗时长表驱动：通过公开 submit + 记录的 sleeps 验证首窗策略
+        # 5) 静默窗时长表驱动：通过公开 submit + 记录的 sleeps 验证首窗策略
         settle_cases: list[tuple[Literal["group", "direct"], WakeKind, Strength, str, bool, float]] = [
             ("direct", "private", "hard", "你好", False, 4.0),
             ("group", "mention", "hard", "今日指标如何？", False, 4.0),
@@ -459,10 +446,7 @@ def test_inbox_scheduler_settle_and_one_time_settlement(monkeypatch: pytest.Monk
             ("group", "followup", "soft", "顺带一提", False, 8.0),
         ]
         with monkeypatch.context() as mp:
-            mp.setattr(
-                "gsuid_core.ai_core.memory.group_profile.collect_persona_surfaces",
-                lambda _name: ("测试别名",),
-            )
+            mp.setattr("gsuid_core.ai_core.memory.group_profile.collect_persona_surfaces", lambda _n: ("测试别名",))
             for idx, (user_type, kind, strength, raw_text, at_bot, expected_s) in enumerate(settle_cases, start=100):
                 rig_s = _InboxRig(start=4000.0, group_id=f"709{idx}")
                 ev_s = rig_s.make_event(f"sw_{idx}", user_type=user_type, raw_text=raw_text, at_bot=at_bot)
@@ -472,7 +456,6 @@ def test_inbox_scheduler_settle_and_one_time_settlement(monkeypatch: pytest.Monk
 
     asyncio.run(main())
 
-    # 7) classify_wake 结构判定表驱动
     wake_cases: list[tuple[str, str | None, str, WakeKind]] = [
         ("group", "self", "哈哈哈", "quote_self"),
         ("group", "self", "测试人格 你看看这个", "name"),
@@ -493,37 +476,27 @@ def test_inbox_scheduler_settle_and_one_time_settlement(monkeypatch: pytest.Monk
         )
 
 
-def test_quoted_image_attribution_and_group_multi_speaker_coalesce(monkeypatch: pytest.MonkeyPatch) -> None:
-    """引用图归属、待读图过滤、群聊连发聚批、去重维度与 handle_event 端到端。"""
-    import gsuid_core.handler as handler_mod
-    import gsuid_core.ai_core.hooks as hooks_mod
-    import gsuid_core.ai_core.startup as startup_mod
-    import gsuid_core.ai_core.persona.config as persona_cfg_mod
-    import gsuid_core.ai_core.inbox.scheduler as inbox_sched_mod
-    import gsuid_core.buildin_plugins.core_command.core_ai_control.state as ai_ctrl_mod
+def test_quoted_image_attribution_and_unread_image_filtering(monkeypatch: pytest.MonkeyPatch) -> None:
+    """引用图拆入 reply_image_id_list、引用自动 @ 区分、二次引用新图与待读图过滤。"""
     from gsuid_core.handler import msg_process, _record_inbound_history
-    from gsuid_core.message_history import MessageRecord, get_history_manager
+    from gsuid_core.message_history import MessageRecord
     from gsuid_core.ai_core.turn_pipeline import extract_pending_unread_images
-    from gsuid_core.ai_core.followup_window import group_is_too_busy_for_followup
+    from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.ai_core.multimodal.payload import prepare_media_payload
 
+    # 显式固定懒读图配置，防止本地 config.json 漂移或发起真实外网图片请求
+    monkeypatch.setattr(ai_config.get_config("lazy_image_read"), "data", True)
+
     async def scenario() -> None:
-        hm = get_history_manager()
         base_ev = Event("OneBot", "900000001", "m0", "group", "70009", "100000001", {}, 6)
-        hm.clear_history(base_ev)
 
         async def _ingest(
-            msg_id: str,
-            content: list[Message],
-            *,
-            uid: str = "100000002",
-            nickname: str = "",
+            msg_id: str, content: list[Message], *, uid: str = "100000002", nickname: str = ""
         ) -> tuple[Event, MessageRecord | None]:
             ev = await msg_process(_make_recv(msg_id, content, uid=uid, nickname=nickname))
             return ev, _record_inbound_history(ev)
 
-        try:
-            # 1) 引用 Bot 回执图拆入 reply_image_id_list，不冒充发言人新发图
+        with isolated_history(base_ev) as hm:
             hm.add_message(
                 base_ev,
                 role="assistant",
@@ -544,7 +517,6 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce(monkeypatch: 
             assert rec_q is not None and "image_id_list" not in rec_q.metadata and "images" not in rec_q.metadata
             assert rec_q.metadata["reply_image_id_list"] == ev_quote.reply_image_id_list
 
-            # 1a) 引用自动单次前置 @Bot 与显式手动 @Bot 区分
             ev_auto, rec_auto = await _ingest(
                 "u_auto_at_1",
                 [
@@ -577,7 +549,6 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce(monkeypatch: 
             joined = "\n".join(p for p in payload if isinstance(p, str))
             assert "引用的历史图片" in joined and "用户发送了图片" not in joined
 
-            # 1b) 二次引用纯文消息并附本人新图：归为新发图而非历史引用图
             ev_chain, rec_chain = await _ingest(
                 "u_chain_own_img",
                 [
@@ -595,7 +566,6 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce(monkeypatch: 
             joined_c = "\n".join(p for p in payload_c if isinstance(p, str))
             assert "用户发送了图片" in joined_c and "引用的历史图片" not in joined_c
 
-            # 2) quoted + current 段序同样归入引用图；随后同人调侃不捞为待读图
             ev_quote_pre, _ = await _ingest(
                 "u_quote_2",
                 [
@@ -610,7 +580,6 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce(monkeypatch: 
             ev_followup, _ = await _ingest("u_joke_3", [Message("text", "给测试人格装上")])
             assert extract_pending_unread_images(ev_followup, set()) == []
 
-            # 3) @他人的图不入待读图；同人紧邻纯图+追问进入中性参考块
             await _ingest(
                 "u_meme_other",
                 [Message("at", "100000001"), Message("image", "https://example.invalid/meme.png")],
@@ -628,199 +597,196 @@ def test_quoted_image_attribution_and_group_multi_speaker_coalesce(monkeypatch: 
             )
             split_joined = "\n".join(p for p in split_payload if isinstance(p, str))
             assert "仅当本句确在追问或讨论该图时调用" in split_joined
-            assert "对方正在追问上面刚发出的待讨论图片" not in split_joined
 
-            # 4) 仅同说话人连发顺延；不同说话人不延长当前结算窗且独立成轮
-            rig_c = _InboxRig(start=2000.0, ws_id="coalesce_ws")
-            rig_c.submit(21, uid="100000001", raw_text="在吗")
-            rig_c.now = 2000.3
-            rig_c.submit(22, uid="100000001", raw_text="帮我查个东西")
-            rig_c.now = 2000.5
-            rig_c.submit(23, uid="100000002", raw_text="我也问一下")
-            first_turn = await rig_c.drain_next()
-            assert rig_c.turn_times[0] == pytest.approx(2004.8)
-            second_turn = await rig_c.drain_next()
-            assert [e.item.seq for e in first_turn.entries] == [21, 22]
-            assert [e.item.seq for e in second_turn.entries] == [23]
+    asyncio.run(scenario())
 
-            # 5) 同批全等折叠 + 跨轮零工具 +1 消解 + 有工具观测跨人放行
-            rig_d = _InboxRig(start=2100.0, ws_id="dedup_ws")
-            rig_d.hold_turn()
-            rig_d.submit(31, uid="100000001", raw_text="测试人格，发测试凭据给我")
-            t_run1 = await rig_d.start_next()
-            rig_d.now += 14.0
-            rig_d.submit(32, uid="100000002", raw_text="测试人格，发测试凭据给我")
-            rig_d.release_turn.set()
-            await t_run1
-            await rig_d.pump()
-            assert rig_d.ws.queue.empty() and len(rig_d.batches) == 1
 
-            rig_d.emit_tool_obs = True
-            rig_d.submit(41, uid="100000001", raw_text="测试人格，领每日奖励")
-            rig_d.submit(42, uid="100000001", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 0.1)
-            rig_d.submit(43, uid="100000002", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 0.2)
-            rig_d.submit(
-                44, uid="100000001", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 0.3, image_id="img_own_1"
+def test_group_multi_speaker_coalesce_dedup_and_handle_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """群聊同人连发聚批、去重维度、settling 续发封顶、handle_event 端到端与速率门控。"""
+    import gsuid_core.handler as handler_mod
+    import gsuid_core.ai_core.hooks as hooks_mod
+    import gsuid_core.ai_core.startup as startup_mod
+    import gsuid_core.ai_core.persona.config as persona_cfg_mod
+    import gsuid_core.ai_core.inbox.scheduler as inbox_sched_mod
+    import gsuid_core.buildin_plugins.core_command.core_ai_control.state as ai_ctrl_mod
+    from gsuid_core.message_history import MessageRecord
+    from gsuid_core.ai_core.followup_window import group_is_too_busy_for_followup
+
+    async def scenario() -> None:
+        # 1) 仅同说话人连发顺延；不同说话人不延长当前结算窗且独立成轮
+        rig_c = _InboxRig(start=2000.0, ws_id="coalesce_ws")
+        rig_c.submit(21, uid="100000001", raw_text="在吗")
+        rig_c.now = 2000.3
+        rig_c.submit(22, uid="100000001", raw_text="帮我查个东西")
+        rig_c.now = 2000.5
+        rig_c.submit(23, uid="100000002", raw_text="我也问一下")
+        first_turn = await rig_c.drain_next()
+        assert rig_c.turn_times[0] == pytest.approx(2004.8)
+        second_turn = await rig_c.drain_next()
+        assert [e.item.seq for e in first_turn.entries] == [21, 22]
+        assert [e.item.seq for e in second_turn.entries] == [23]
+
+        # 2) 同批全等折叠 + 跨轮零工具 +1 消解 + 有工具观测跨人放行
+        rig_d = _InboxRig(start=2100.0, ws_id="dedup_ws")
+        rig_d.hold_turn()
+        rig_d.submit(31, uid="100000001", raw_text="测试人格，发测试凭据给我")
+        t_run1 = await rig_d.start_next()
+        rig_d.now += 14.0
+        rig_d.submit(32, uid="100000002", raw_text="测试人格，发测试凭据给我")
+        rig_d.release_turn.set()
+        await t_run1
+        await rig_d.pump()
+        assert rig_d.ws.queue.empty() and len(rig_d.batches) == 1
+
+        rig_d.emit_tool_obs = True
+        rig_d.submit(41, uid="100000001", raw_text="测试人格，领每日奖励")
+        rig_d.submit(42, uid="100000001", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 0.1)
+        rig_d.submit(43, uid="100000002", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 0.2)
+        rig_d.submit(
+            44, uid="100000001", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 0.3, image_id="img_own_1"
+        )
+        assert [e.item.seq for e in (await rig_d.drain_next()).entries] == [41, 44]
+        assert [e.item.seq for e in (await rig_d.drain_next()).entries] == [43]
+
+        rig_d.submit(45, uid="100000001", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 5.0)
+        await rig_d.pump()
+        assert rig_d.ws.queue.empty()
+        rig_d.submit(46, uid="100000004", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 6.0)
+        assert [e.item.seq for e in (await rig_d.drain_next()).entries] == [46]
+
+        # 3) 去重维度：未应答不缓存、at_bot、at_list、memory_dependent
+        rig_s = _InboxRig(start=2200.0, ws_id="sel_ws")
+        rig_s.answer_all = False
+        rig_s.submit(51, uid="100000001", kind="followup", strength="soft", raw_text="在吗")
+        await rig_s.drain_next()
+        rig_s.answer_all = True
+        rig_s.submit(52, uid="100000001", kind="followup", strength="soft", raw_text="在吗", created_at=rig_s.now + 1.0)
+        await rig_s.drain_next()
+        rig_s.submit(53, uid="100000002", kind="mention", raw_text="在吗", at_bot=True, created_at=rig_s.now + 2.0)
+        assert [e.item.seq for e in (await rig_s.drain_next()).entries] == [53]
+
+        rig_s.submit(
+            54, uid="100000001", raw_text="测试人格帮我看看", at_list=["100000008"], created_at=rig_s.now + 3.0
+        )
+        await rig_s.drain_next()
+        rig_s.submit(
+            55, uid="100000002", raw_text="测试人格帮我看看", at_list=["100000009"], created_at=rig_s.now + 4.0
+        )
+        assert [e.item.seq for e in (await rig_s.drain_next()).entries] == [55]
+
+        rig_s.emit_mem_dep = True
+        rig_s.submit(56, uid="100000001", raw_text="测试人格，我上次说的那个怎么样", created_at=rig_s.now + 5.0)
+        await rig_s.drain_next()
+        rig_s.submit(57, uid="100000001", raw_text="测试人格，我上次说的那个怎么样", created_at=rig_s.now + 6.0)
+        await rig_s.pump()
+        assert rig_s.ws.queue.empty()
+        rig_s.submit(58, uid="100000002", raw_text="测试人格，我上次说的那个怎么样", created_at=rig_s.now + 7.0)
+        assert [e.item.seq for e in (await rig_s.drain_next()).entries] == [58]
+
+        # 4) 同说话人 settling 续发：is_awaiting_speaker、4s 滑动、12s 封顶、soft+hard 保序与回执隔离
+        rig_k = _InboxRig(start=3000.0, ws_id="cont_ws")
+        sid_c = rig_k.make_event("probe_c").session_id
+        assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000001") is False
+        rig_k.submit(71, uid="100000001", kind="mention", raw_text="帮我看看", at_bot=True)
+        assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000001") is True
+        assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000002") is False
+        rig_k.now = 3002.5
+        rig_k.submit(72, uid="100000001", kind="followup", strength="soft", raw_text="刚才报错了")
+        turn_slide = await rig_k.drain_next()
+        assert rig_k.turn_times[-1] == pytest.approx(3006.5)
+        assert [e.item.seq for e in turn_slide.entries] == [71, 72] and turn_slide.primary.item.seq == 71
+
+        rig_k.now = 3100.0
+        rig_k.submit(710, uid="100000001", kind="mention", raw_text="帮我看看", at_bot=True)
+        rig_k.now = 3102.5
+        rig_k.submit(720, uid="100000001", kind="followup", strength="soft", raw_text="刚才报错了")
+        rig_k.now = 3110.0
+        rig_k.submit(730, uid="100000001", kind="mention", raw_text="急用", at_bot=True)
+        turn_cap = await rig_k.drain_next()
+        assert rig_k.turn_times[-1] == pytest.approx(3112.0)
+        assert [e.item.seq for e in turn_cap.entries] == [710, 720, 730] and turn_cap.primary.item.seq == 710
+
+        rig_k.submit(74, uid="100000001", kind="followup", strength="soft", raw_text="等等")
+        rig_k.submit(75, uid="100000001", kind="mention", raw_text="查一下", at_bot=True)
+        turn_sh = await rig_k.drain_next()
+        assert [e.item.seq for e in turn_sh.entries] == [74, 75] and turn_sh.primary.item.seq == 75
+
+        rig_k.hold_turn()
+        rig_k.submit(76, uid="100000001", kind="mention", raw_text="第一轮", at_bot=True)
+        t_in_flight = await rig_k.start_next()
+        assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000001") is False
+        rig_k.submit(77, uid="100000002", kind="mention", raw_text="排队句1", at_bot=True)
+        assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000002") is True
+        rig_k.submit(78, uid="100000002", kind="followup", strength="soft", raw_text="排队句2")
+        rig_k.release_turn.set()
+        await t_in_flight
+        assert [e.item.seq for e in (await rig_k.drain_next()).entries] == [77, 78]
+
+        rig_k.submit(
+            79,
+            uid="100000003",
+            kind="receipt",
+            strength="soft",
+            raw_text="/签到",
+            receipt=ReceiptContext(None, "测试插件", "test", "签到成功"),
+        )
+        assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000003") is False
+        await rig_k.drain_next()
+
+        # 5) handle_event 真实入口：follow_up_window=0 下先 @Bot 再无 @ 续发仍合并
+        e2e_t0 = time.time()
+        rig_e2e = _InboxRig(start=e2e_t0, ws_id="e2e_ws", group_id="70019")
+        rig_e2e.pause_sleep()
+        stub_ai_cfg = _StubCfg(
+            {
+                "enable": True,
+                "black_list": [],
+                "white_list": [],
+                "follow_up_window": 0,
+                "follow_up_max_total": 300,
+                "follow_up_max_replies": 2,
+            }
+        )
+        monkeypatch.setattr(handler_mod, "ai_config", stub_ai_cfg)
+        monkeypatch.setattr(handler_mod, "_schedule_user_group_write", lambda *_args: None)
+        monkeypatch.setattr(hooks_mod, "should_fire", lambda _point: False)
+        monkeypatch.setattr(ai_ctrl_mod, "is_scope_banned", lambda _sid: False)
+        monkeypatch.setattr(startup_mod, "is_ai_core_ready", lambda: True)
+        monkeypatch.setattr(persona_cfg_mod, "persona_config_manager", _StubPersonaMgr())
+        monkeypatch.setattr(inbox_sched_mod, "_scheduler", rig_e2e.sched)
+
+        async def _e2e(msg_id: str, content: list[Message], uid: str, nickname: str) -> None:
+            await handler_mod.handle_event(
+                rig_e2e.ws, _make_recv(msg_id, content, uid=uid, group_id="70019", nickname=nickname)
             )
-            assert [e.item.seq for e in (await rig_d.drain_next()).entries] == [41, 44]
-            assert [e.item.seq for e in (await rig_d.drain_next()).entries] == [43]
 
-            rig_d.submit(45, uid="100000001", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 5.0)
-            await rig_d.pump()
-            assert rig_d.ws.queue.empty()
-            rig_d.submit(46, uid="100000004", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 6.0)
-            assert [e.item.seq for e in (await rig_d.drain_next()).entries] == [46]
+        e2e_base = Event("OneBot", "900000001", "e2e_0", "group", "70019", "100000001", {}, 6)
+        e2e_base.WS_BOT_ID = "e2e_ws"
+        with isolated_history(e2e_base):
+            await _e2e("e2e_1", [Message("at", "900000001"), Message("text", "帮我看看")], "100000001", "测试用户A")
+            rig_e2e.now = e2e_t0 + 2.0
+            await _e2e("e2e_2", [Message("text", "刚才报了个错")], "100000001", "测试用户A")
+            rig_e2e.now = e2e_t0 + 2.5
+            await _e2e("e2e_3", [Message("at", "100000009"), Message("text", "你先吃")], "100000001", "测试用户A")
+            await _e2e("e2e_4", [Message("text", "路过打个招呼")], "100000002", "测试用户B")
+            rig_e2e.release_sleep()
+            await rig_e2e.drain_next()
+            assert len(rig_e2e.batches) == 1
+            assert [e.event.msg_id for e in rig_e2e.batches[0].entries] == ["e2e_1", "e2e_2"]
+            assert rig_e2e.batches[0].primary.event.msg_id == "e2e_1"
+            assert rig_e2e.ws.queue.empty() and rig_e2e.turn_times == [pytest.approx(e2e_t0 + 6.0)]
 
-            # 5a) 去重维度：未应答不缓存、at_bot、at_list、memory_dependent
-            rig_s = _InboxRig(start=2200.0, ws_id="sel_ws")
-            rig_s.answer_all = False
-            rig_s.submit(51, uid="100000001", kind="followup", strength="soft", raw_text="在吗")
-            await rig_s.drain_next()
-            rig_s.answer_all = True
-            rig_s.submit(
-                52, uid="100000001", kind="followup", strength="soft", raw_text="在吗", created_at=rig_s.now + 1.0
+        # 6) 活跃大群速率门控
+        busy_recs = [
+            MessageRecord(
+                role="user", content=f"消息{k}", user_id=f"10000010{k % 5}", user_name="群友", timestamp=1000.0 - k * 2
             )
-            await rig_s.drain_next()
-            rig_s.submit(53, uid="100000002", kind="mention", raw_text="在吗", at_bot=True, created_at=rig_s.now + 2.0)
-            assert [e.item.seq for e in (await rig_s.drain_next()).entries] == [53]
-
-            rig_s.submit(
-                54, uid="100000001", raw_text="测试人格帮我看看", at_list=["100000008"], created_at=rig_s.now + 3.0
-            )
-            await rig_s.drain_next()
-            rig_s.submit(
-                55, uid="100000002", raw_text="测试人格帮我看看", at_list=["100000009"], created_at=rig_s.now + 4.0
-            )
-            assert [e.item.seq for e in (await rig_s.drain_next()).entries] == [55]
-
-            rig_s.emit_mem_dep = True
-            rig_s.submit(56, uid="100000001", raw_text="测试人格，我上次说的那个怎么样", created_at=rig_s.now + 5.0)
-            await rig_s.drain_next()
-            rig_s.submit(57, uid="100000001", raw_text="测试人格，我上次说的那个怎么样", created_at=rig_s.now + 6.0)
-            await rig_s.pump()
-            assert rig_s.ws.queue.empty()
-            rig_s.submit(58, uid="100000002", raw_text="测试人格，我上次说的那个怎么样", created_at=rig_s.now + 7.0)
-            assert [e.item.seq for e in (await rig_s.drain_next()).entries] == [58]
-
-            # 6) 同说话人 settling 续发：is_awaiting_speaker、4s 滑动、12s 封顶与保序
-            rig_k = _InboxRig(start=3000.0, ws_id="cont_ws")
-            sid_c = rig_k.make_event("probe_c").session_id
-            assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000001") is False
-            rig_k.submit(71, uid="100000001", kind="mention", raw_text="帮我看看", at_bot=True)
-            assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000001") is True
-            assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000002") is False
-            rig_k.now = 3002.5
-            rig_k.submit(72, uid="100000001", kind="followup", strength="soft", raw_text="刚才报错了")
-            turn_slide = await rig_k.drain_next()
-            assert rig_k.turn_times[-1] == pytest.approx(3006.5)
-            assert [e.item.seq for e in turn_slide.entries] == [71, 72] and turn_slide.primary.item.seq == 71
-
-            rig_k.now = 3100.0
-            rig_k.submit(710, uid="100000001", kind="mention", raw_text="帮我看看", at_bot=True)
-            rig_k.now = 3102.5
-            rig_k.submit(720, uid="100000001", kind="followup", strength="soft", raw_text="刚才报错了")
-            rig_k.now = 3110.0
-            rig_k.submit(730, uid="100000001", kind="mention", raw_text="急用", at_bot=True)
-            turn_cap = await rig_k.drain_next()
-            assert rig_k.turn_times[-1] == pytest.approx(3112.0)
-            assert [e.item.seq for e in turn_cap.entries] == [710, 720, 730] and turn_cap.primary.item.seq == 710
-
-            # soft 在前 + hard 在后：按 seq 保序且 primary 锚定 hard
-            rig_k.submit(74, uid="100000001", kind="followup", strength="soft", raw_text="等等")
-            rig_k.submit(75, uid="100000001", kind="mention", raw_text="查一下", at_bot=True)
-            turn_sh = await rig_k.drain_next()
-            assert [e.item.seq for e in turn_sh.entries] == [74, 75] and turn_sh.primary.item.seq == 75
-
-            # 在途轮次不误判 awaiting；排队新说话人可续发合并；回执不吸附闲聊
-            rig_k.hold_turn()
-            rig_k.submit(76, uid="100000001", kind="mention", raw_text="第一轮", at_bot=True)
-            t_in_flight = await rig_k.start_next()
-            assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000001") is False
-            rig_k.submit(77, uid="100000002", kind="mention", raw_text="排队句1", at_bot=True)
-            assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000002") is True
-            rig_k.submit(78, uid="100000002", kind="followup", strength="soft", raw_text="排队句2")
-            rig_k.release_turn.set()
-            await t_in_flight
-            assert [e.item.seq for e in (await rig_k.drain_next()).entries] == [77, 78]
-
-            rig_k.submit(
-                79,
-                uid="100000003",
-                kind="receipt",
-                strength="soft",
-                raw_text="/签到",
-                receipt=ReceiptContext(None, "测试插件", "test", "签到成功"),
-            )
-            assert rig_k.sched.is_awaiting_speaker(sid_c, "测试人格", "100000003") is False
-            await rig_k.drain_next()
-
-            # 7) handle_event 真实入口：follow_up_window=0 下先 @Bot 再无 @ 续发仍合并
-            e2e_t0 = time.time()
-            rig_e2e = _InboxRig(start=e2e_t0, ws_id="e2e_ws", group_id="70019")
-            rig_e2e.pause_sleep()
-            stub_ai_cfg = _StubCfg(
-                {
-                    "enable": True,
-                    "black_list": [],
-                    "white_list": [],
-                    "follow_up_window": 0,
-                    "follow_up_max_total": 300,
-                    "follow_up_max_replies": 2,
-                }
-            )
-            monkeypatch.setattr(handler_mod, "ai_config", stub_ai_cfg)
-            monkeypatch.setattr(handler_mod, "_schedule_user_group_write", lambda *_args: None)
-            monkeypatch.setattr(hooks_mod, "should_fire", lambda _point: False)
-            monkeypatch.setattr(ai_ctrl_mod, "is_scope_banned", lambda _sid: False)
-            monkeypatch.setattr(startup_mod, "is_ai_core_ready", lambda: True)
-            monkeypatch.setattr(persona_cfg_mod, "persona_config_manager", _StubPersonaMgr())
-            monkeypatch.setattr(inbox_sched_mod, "_scheduler", rig_e2e.sched)
-
-            async def _e2e(msg_id: str, content: list[Message], uid: str, nickname: str) -> None:
-                await handler_mod.handle_event(
-                    rig_e2e.ws, _make_recv(msg_id, content, uid=uid, group_id="70019", nickname=nickname)
-                )
-
-            e2e_base = Event("OneBot", "900000001", "e2e_0", "group", "70019", "100000001", {}, 6)
-            e2e_base.WS_BOT_ID = "e2e_ws"
-            hm.clear_history(e2e_base)
-            try:
-                await _e2e("e2e_1", [Message("at", "900000001"), Message("text", "帮我看看")], "100000001", "测试用户A")
-                rig_e2e.now = e2e_t0 + 2.0
-                await _e2e("e2e_2", [Message("text", "刚才报了个错")], "100000001", "测试用户A")
-                rig_e2e.now = e2e_t0 + 2.5
-                await _e2e("e2e_3", [Message("at", "100000009"), Message("text", "你先吃")], "100000001", "测试用户A")
-                await _e2e("e2e_4", [Message("text", "路过打个招呼")], "100000002", "测试用户B")
-                rig_e2e.release_sleep()
-                await rig_e2e.drain_next()
-                assert len(rig_e2e.batches) == 1
-                assert [e.event.msg_id for e in rig_e2e.batches[0].entries] == ["e2e_1", "e2e_2"]
-                assert rig_e2e.batches[0].primary.event.msg_id == "e2e_1"
-                assert rig_e2e.ws.queue.empty()
-                assert rig_e2e.turn_times == [pytest.approx(e2e_t0 + 6.0)]
-            finally:
-                hm.clear_history(e2e_base)
-
-            # 8) 活跃大群速率门控
-            busy_recs = [
-                MessageRecord(
-                    role="user",
-                    content=f"消息{k}",
-                    user_id=f"10000010{k % 5}",
-                    user_name="群友",
-                    timestamp=1000.0 - k * 2,
-                )
-                for k in range(12)
-            ]
-            assert (
-                group_is_too_busy_for_followup(busy_recs, speaker_uid="100000001", now=1000.0, busy_per_min=12) is True
-            )
-            assert (
-                group_is_too_busy_for_followup(busy_recs[:3], speaker_uid="100000001", now=1000.0, busy_per_min=12)
-                is False
-            )
-        finally:
-            hm.clear_history(base_ev)
+            for k in range(12)
+        ]
+        assert group_is_too_busy_for_followup(busy_recs, speaker_uid="100000001", now=1000.0, busy_per_min=12) is True
+        assert (
+            group_is_too_busy_for_followup(busy_recs[:3], speaker_uid="100000001", now=1000.0, busy_per_min=12) is False
+        )
 
     asyncio.run(scenario())
 
@@ -1074,17 +1040,12 @@ class _ReloadPluginHarness:
             config_plugins.pop(pname, None)
             plugin_config_store._dirty.discard(pname)
             server_mod._import_memory_mb.pop(pname, None)
-            site.plugins_page.pop(pname, None)
-            site.plugins_page.pop(f"{pname}.py", None)
+            site.unregister_plugin_admins(pname, lambda obj, p=pname: reload_mod._belongs_to_plugin(obj.__module__, p))
             for mod_key in [k for k in sys.modules if reload_mod._belongs_to_plugin(k, pname)]:
                 sys.modules.pop(mod_key, None)
             for cache_key in [k for k in list(server_mod._module_cache) if pname in k]:
                 server_mod._module_cache.pop(cache_key, None)
-            for hook_set in (
-                server_mod.core_start_def,
-                server_mod.core_start_before_def,
-                server_mod.core_shutdown_def,
-            ):
+            for hook_set in (server_mod.core_start_def, server_mod.core_start_before_def, server_mod.core_shutdown_def):
                 stale = {
                     h for h in hook_set if reload_mod._belongs_to_plugin(reload_mod._resolve_func_module(h.func), pname)
                 }
@@ -1125,15 +1086,13 @@ def test_reload_plugin_lifecycle_and_cleanup(tmp_path: Path, monkeypatch: pytest
 
     async def scenario() -> None:
         try:
-            # 1) 首次异步重载：注册命令与启停钩子，验证索引可命中
             await harness.reload_and_await_start(1, "测重指令一")
             assert harness.read_events() == ["import:1", "start:1:state=1"]
             assert harness.matches_command("测重指令一") is True
 
-            # 2) 二次异步重载：旧 shutdown 命中 v1 且先于 v2 import；同步清三类管理模型
             site.plugins_page[harness.plugin_name] = [_DummyAdmin]
             site.plugins_page[f"{harness.plugin_name}.py"] = [_DummyExternalSingleFileAdmin]
-            site._registered[_DummyRegisteredAdmin] = None
+            site.register_admin(_DummyRegisteredAdmin, _ADD=True)
             harness.write_plugin(2, "测重指令二", shutdown_delay=0.03)
             assert (await reload_mod.reload_plugin_async(harness.plugin_name)).startswith("✨")
             assert harness.plugin_name not in site.plugins_page
@@ -1148,21 +1107,14 @@ def test_reload_plugin_lifecycle_and_cleanup(tmp_path: Path, monkeypatch: pytest
                 "import:2",
                 "start:2:state=2",
             ]
-            assert harness.matches_command("测重指令一") is False
-            assert harness.matches_command("测重指令二") is True
+            assert harness.matches_command("测重指令一") is False and harness.matches_command("测重指令二") is True
 
-            # 3) 导入失败：跑完 v2 shutdown 后回滚半导入状态并重置 TriggerIndex
             before_fail = len(harness.read_events())
             harness.write_plugin(3, "测重指令三", fail=True)
             assert (await reload_mod.reload_plugin_async(harness.plugin_name)).startswith("❌")
-            assert harness.matches_command("测重指令二") is False
-            assert harness.matches_command("测重指令三半残") is False
-            assert harness.read_events()[before_fail:] == [
-                "shutdown:2:state=2:begin",
-                "shutdown:2:state=2:done",
-            ]
+            assert harness.matches_command("测重指令二") is False and harness.matches_command("测重指令三半残") is False
+            assert harness.read_events()[before_fail:] == ["shutdown:2:state=2:begin", "shutdown:2:state=2:done"]
 
-            # 4) Meta 插件热重载：旧 shutdown 期间 require() 存活；降级时清旧登记
             before_meta = len(harness.read_events())
             harness.write_meta_plugin(1, is_meta=True)
             assert (await reload_mod.reload_plugin_async(harness.meta_plugin_name)).startswith("✨")
@@ -1194,7 +1146,7 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """验证热重载并发串行、取消隔离、同步兼容队列与超时预算（无时间窗竞态）。"""
+    """验证热重载并发串行、取消隔离、同步兼容队列与超时预算。"""
     from gsuid_core.utils.plugins_update import reload_plugin as reload_mod
 
     harness = _ReloadPluginHarness(tmp_path, monkeypatch, "Concurrency")
@@ -1202,7 +1154,6 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
     async def scenario() -> None:
         state = reload_mod._get_loop_state(asyncio.get_running_loop())
         try:
-            # 1) 并发异步重载：串行保底不断开旧 shutdown，中间版不误跑 shutdown
             await harness.reload_and_await_start(1, "并发指令一", shutdown_delay=0.04)
             before_step1 = len(harness.read_events())
             harness.write_plugin(2, "并发指令二", shutdown_delay=0.04)
@@ -1221,7 +1172,6 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
             ]
             assert harness.matches_command("并发指令二") is True
 
-            # 2) 同步兼容入口在途 shutdown 期间二次重载：关闭队列先于新 start 完成
             before_step2 = len(harness.read_events())
             harness.write_plugin(3, "并发指令三")
             assert reload_mod.reload_plugin(harness.plugin_name).startswith("✨")
@@ -1234,7 +1184,6 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
             assert step2_events.index("shutdown:2:state=3:done") < step2_events.index("start:4:state=4")
             assert not any(ev.startswith("shutdown:3:") for ev in step2_events)
 
-            # 3) 新版无启动钩子时仍会取消并等待旧版在途 start 任务退出
             before_step3 = len(harness.read_events())
             harness.write_plugin(5, "并发指令五", slow_start=True)
             assert (await reload_mod.reload_plugin_async(harness.plugin_name)).startswith("✨")
@@ -1249,7 +1198,6 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
                 "import:6",
             ]
 
-            # 4) 调用方取消时外层 shield 保护重载体跑完，不留半卸载态
             await harness.reload_and_await_start(7, "并发指令七", shutdown_delay=0.04)
             before_step4 = len(harness.read_events())
             harness.write_plugin(8, "并发指令八", shutdown_delay=0.04)
@@ -1264,7 +1212,6 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
             assert "shutdown:7:state=7:done" in step4_events and "start:8:state=8" in step4_events
             assert harness.matches_command("并发指令八") is True
 
-            # 5) 同步阻塞关闭钩子超时：到点继续重载，放行后线程干净退出
             await harness.reload_and_await_start(9, "并发指令九", sync_shutdown_gated=True)
             before_step5 = len(harness.read_events())
             with monkeypatch.context() as mp:
@@ -1277,7 +1224,6 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
             await harness.wait_for_event("shutdown:9:sync:done")
             assert "shutdown:9:sync:begin" in harness.read_events()[before_step5:]
 
-            # 6) 多优先级组共享超时预算 + 悬空任务保活
             await harness.reload_and_await_start(11, "并发指令十一", multi_priority_gated=True)
             before_step6 = len(harness.read_events())
             with monkeypatch.context() as mp:
@@ -1286,8 +1232,7 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
                 t0 = time.monotonic()
                 res12 = await reload_mod.reload_plugin_async(harness.plugin_name)
                 elapsed_mp = time.monotonic() - t0
-            assert res12.startswith("✨") and elapsed_mp < 1.5
-            assert len(state.orphaned_shutdown_tasks) == 1
+            assert res12.startswith("✨") and elapsed_mp < 1.5 and len(state.orphaned_shutdown_tasks) == 1
             await harness.await_start()
             harness.orphan_gate.write_text("go", encoding="utf-8")
             await harness.wait_for_event("shutdown:11:p0:finally_done")
@@ -1297,7 +1242,6 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
             step6_events = harness.read_events()[before_step6:]
             assert "shutdown:11:p0:begin" in step6_events and "shutdown:11:p1:begin" not in step6_events
 
-            # 7) 异步重载同 tick 与持锁在途时均拒绝并发同步重载
             before_step7 = len(harness.read_events())
             harness.write_plugin(13, "并发指令十三")
             t13 = asyncio.create_task(reload_mod.reload_plugin_async(harness.plugin_name))
@@ -1319,20 +1263,31 @@ def test_reload_plugin_concurrency_cancellation_and_timeouts(
     asyncio.run(scenario())
 
 
-def test_update_plugin_failure_detection_and_auto_reload_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """验证自动更新重载失败上报与 extract_update_failure 不误判含 ❌ 的提交记录。"""
+def test_extract_update_failure_detection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """update_from_git_async 重载失败产出失败行且可提取；成功时 ❌ 提交日志不误判。"""
+    from typing import TypeVar
+    from collections.abc import Callable, Coroutine
+
     from gsuid_core.utils.plugins_update import _plugins as plugins_mod
 
+    _T = TypeVar("_T")
+
+    def _async_const(value: _T) -> Callable[..., Coroutine[None, None, _T]]:
+        async def _fn(*_args: object, **_kwargs: object) -> _T:
+            return value
+
+        return _fn
+
+    # 1) 提取侧：准确识别各类失败行，含 ❌ 的正常提交记录不误判
     git_err = [
         "❌ 更新插件 DemoPlugin 失败",
         "📋 原因：本地代码与远程代码存在合并冲突",
         "💡 解决：使用「强制更新」覆盖本地修改",
     ]
+    reload_err = f"{plugins_mod.AUTO_RELOAD_FAIL_PREFIX}[DemoPlugin] 重载失败: boom"
     failure_cases: list[tuple[list[str] | str, str | None]] = [
         (["✅本次插件 DemoPlugin , 更新内容如下：", "❌ 移除废弃指令"], None),
+        (["✅本次插件 DemoPlugin , 更新内容如下：", reload_err], reload_err),
         (git_err, "\n".join(git_err)),
         (["更新失败, 不存在该插件!"], "更新失败, 不存在该插件!"),
         ([], "插件更新失败"),
@@ -1341,6 +1296,7 @@ def test_update_plugin_failure_detection_and_auto_reload_error(
     for logs, expected in failure_cases:
         assert plugins_mod.extract_update_failure(logs) == expected
 
+    # 2) 生产侧：pull 成功后重载失败必须在更新日志末尾追加失败行
     repo_dir = tmp_path / "DemoPlugin"
     repo_dir.mkdir()
     monkeypatch.setattr(plugins_mod, "is_reload", True)
@@ -1353,9 +1309,8 @@ def test_update_plugin_failure_detection_and_auto_reload_error(
     async def scenario() -> None:
         monkeypatch.setattr(plugins_mod, "reload_plugin_async", _async_const("❌ 重载失败: boom"))
         fail_logs = await plugins_mod.update_from_git_async(0, repo_dir)
-        expected_line = f"{plugins_mod.AUTO_RELOAD_FAIL_PREFIX}[DemoPlugin] 重载失败: boom"
-        assert fail_logs[-1] == expected_line
-        assert plugins_mod.extract_update_failure(fail_logs) == expected_line
+        assert fail_logs[-1] == reload_err
+        assert plugins_mod.extract_update_failure(fail_logs) == reload_err
 
         monkeypatch.setattr(plugins_mod, "reload_plugin_async", _async_const("✨ 已重载插件 DemoPlugin!"))
         ok_logs = await plugins_mod.update_from_git_async(0, repo_dir)

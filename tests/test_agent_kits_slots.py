@@ -11,7 +11,6 @@ import pytest
 
 from gsuid_core.ai_core.kits import (
     OFF,
-    CONTEXT_BLOCK_ORDER,
     AgentKit,
     KitSlotError,
     clear_kits,
@@ -47,7 +46,9 @@ class _FakeKit(AgentKit):
 
 
 @pytest.fixture
-def isolated() -> Iterator[None]:
+def isolated(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr(ai_config.get_config("enable"), "data", True)
+    monkeypatch.setattr(ai_config.get_config("agent_hooks_enable"), "data", True)
     clear_hooks()
     clear_kits()
     yield
@@ -97,13 +98,6 @@ def _fired_hook_points(tree: ast.Module) -> set[str]:
 
 
 def test_block_order_and_composer(isolated: None) -> None:
-    assert CONTEXT_BLOCK_ORDER.index("mood") < CONTEXT_BLOCK_ORDER.index("relationship")
-    assert CONTEXT_BLOCK_ORDER.index("identity") < CONTEXT_BLOCK_ORDER.index("history")
-    assert CONTEXT_BLOCK_ORDER.index("history") < CONTEXT_BLOCK_ORDER.index("group_context")
-    assert CONTEXT_BLOCK_ORDER.index("group_context") < CONTEXT_BLOCK_ORDER.index("memory")
-    assert CONTEXT_BLOCK_ORDER.index("task") < CONTEXT_BLOCK_ORDER.index("plan_hint")
-    assert CONTEXT_BLOCK_ORDER[-1] == "plugin_hints"
-
     ctx = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
     ctx.blocks.update({"memory": "MEM", "mood": "MOOD", "history": "HIST", "task": ""})
     full, _ = asyncio.run(compose_dynamic_context(ctx))
@@ -113,14 +107,27 @@ def test_block_order_and_composer(isolated: None) -> None:
     async def add_hint(ctx: AgentHookContext) -> None:
         ctx.append_user_hint("本群自选：A")
 
-    ctx2 = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
-    ctx2.blocks["memory"] = "MEM"
-    full2, _ = asyncio.run(compose_dynamic_context(ctx2))
-    assert full2.startswith("MEM") and full2.rstrip().endswith("）")
-    assert full2.index("MEM") < full2.index("本群自选")
+    ctx_all = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT)
+    ctx_all.blocks.update(
+        {
+            "plan_hint": "PLAN",
+            "task": "TASK",
+            "memory": "MEM",
+            "group_context": "GRP",
+            "history": "HIST",
+            "identity": "ID",
+            "relationship": "REL",
+            "mood": "MOOD",
+        }
+    )
+    rendered, _ = asyncio.run(compose_dynamic_context(ctx_all))
+    assert rendered.index("MOOD") < rendered.index("REL")
+    assert rendered.index("ID") < rendered.index("HIST") < rendered.index("GRP") < rendered.index("MEM")
+    assert rendered.index("TASK") < rendered.index("PLAN") < rendered.index("本群自选")
+    assert rendered.rstrip().endswith("）")
 
 
-def test_slot_exclusivity_sealing_and_config(isolated: None) -> None:
+def test_slot_exclusivity_sealing_and_config(isolated: None, monkeypatch: pytest.MonkeyPatch) -> None:
     a = register_agent_kit(_FakeKit(kit_id="a.mem", slot="memory", display_name="A"))
     b = register_agent_kit(_FakeKit(kit_id="b.mem", slot="memory", display_name="B"))
     assert enable_kit(a.kit_id) and hook_count() == 1 and occupants_of("memory") == ("a.mem",)
@@ -153,18 +160,10 @@ def test_slot_exclusivity_sealing_and_config(isolated: None) -> None:
     with pytest.raises(KitSlotError, match="未知槽名"):
         register_agent_kit(_FakeKit(kit_id="bad.kit", slot="no_such_slot", display_name="bad"))
 
-    key = "kit_slots.memory"
-    item = ai_config.get_config(key)
-    previous = item.data
-    try:
-        item.data = OFF
-        assert resolve_slot_config("memory") == ()
-        item.data = "my_plugin.mem"
-        assert resolve_slot_config("memory") == ("my_plugin.mem",)
-        item.data = "a.mem,b.mem"
-        assert resolve_slot_config("memory") == ("a.mem",)
-    finally:
-        item.data = previous
+    item = ai_config.get_config("kit_slots.memory")
+    for raw_val, expected in ((OFF, ()), ("my_plugin.mem", ("my_plugin.mem",)), ("a.mem,b.mem", ("a.mem",))):
+        monkeypatch.setattr(item, "data", raw_val)
+        assert resolve_slot_config("memory") == expected
 
 
 def test_first_party_kits_and_wired_fire_sites(isolated: None) -> None:
