@@ -164,6 +164,7 @@ class SessionLogFileData(TypedDict):
     session_uuid: str
     persona_name: Optional[str]
     create_by: str
+    task_kind: NotRequired[Optional[str]]
     is_subagent: bool
     # 逻辑会话链三元组（同链多分段共享 chain_id）。标记 NotRequired 仅为兼容历史（升级前
     # 落盘）文件——新写入恒包含；读取旧文件缺失时以其 session_uuid 兜底为独立一条链。

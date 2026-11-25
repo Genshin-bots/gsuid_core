@@ -473,11 +473,13 @@ class AISessionLogger:
         persona_name: Optional[str] = None,
         create_by: str = "LLM",
         is_subagent: bool = False,
+        task_kind: Optional[str] = None,
     ):
         self.session_id: str = session_id
         self.system_prompt: Optional[str] = system_prompt
         self.persona_name: Optional[str] = persona_name
         self.create_by: str = create_by
+        self.task_kind: Optional[str] = task_kind.strip() if isinstance(task_kind, str) and task_kind.strip() else None
         self.is_subagent: bool = is_subagent
 
         self.ended_at: Optional[float] = None
@@ -519,6 +521,10 @@ class AISessionLogger:
         # 滚动出的新分段不重复记 system_prompt（连续性由 chain 承载）；置位后下方跳过补记
         system_prompt_seeded: bool = False
         resumed_entries: List[SessionLogEntry] = resumed.get("entries", []) if resumed is not None else []
+        if self.task_kind is None and resumed is not None and "task_kind" in resumed:
+            resumed_tk = resumed["task_kind"]
+            if isinstance(resumed_tk, str) and resumed_tk.strip():
+                self.task_kind = resumed_tk.strip()
 
         if resumed is not None and resumed_path is not None and len(resumed_entries) < MAX_ENTRIES_PER_FILE:
             # A) 窗口内且未达上限 → 回放续写同一文件
@@ -1421,6 +1427,7 @@ class AISessionLogger:
             "session_uuid": self.session_uuid,
             "persona_name": self.persona_name,
             "create_by": self.create_by,
+            "task_kind": self.task_kind,
             "is_subagent": self.is_subagent,
             # 逻辑会话链三元组（放在 entries 之前，保持头部快速读取契约）
             "chain_id": self.chain_id,

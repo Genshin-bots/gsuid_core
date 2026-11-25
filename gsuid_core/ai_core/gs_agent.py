@@ -101,7 +101,11 @@ from gsuid_core.ai_core.agent_run.support import (
     _update_thrash_streak_for_response as _update_thrash_streak_for_response,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.configs.task_kinds import TASK_BUILD_PERSONA, TASK_IMAGE_DESC_SUMMARY
+from gsuid_core.ai_core.configs.task_kinds import (
+    TASK_BUILD_PERSONA,
+    TASK_IMAGE_DESC_SUMMARY,
+    capability_agent_task_kind,
+)
 from gsuid_core.ai_core.agent_run.budget_ctx import (
     _current_budget_scope as _current_budget_scope,
     budget_scope_from_event as _budget_scope_from_event,
@@ -367,12 +371,16 @@ class GsCoreAIAgent(RunOnceMixin):
 
         # 初始化会话日志记录器：所有 Agent 恒有 logger（session_id 已在上方自动派生
         # 兜底），因此 _session_logger 非 Optional，run() 中不再需要 None 守卫。
+        _logger_task_kind = self.task_kind or (
+            capability_agent_task_kind(self.capability_node_id) if self.capability_node_id else None
+        )
         self._session_logger: AISessionLogger = AISessionLogger(
             session_id=session_id,
             system_prompt=system_prompt,
             persona_name=persona_name,
             create_by=create_by,
             is_subagent=is_subagent,
+            task_kind=_logger_task_kind,
         )
 
     @property

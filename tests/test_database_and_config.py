@@ -972,3 +972,214 @@ def test_ai_model_session_decorator_flags() -> None:
         AIToolOutputRecord.batch_insert_data,
     ):
         assert inspect.getclosurevars(fn).nonlocals.get("read_only") is False, fn.__qualname__
+
+
+def test_session_logs_task_kind_filter_and_categories(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """会话日志 task_kind 落盘、旧日志兼容推断、能力代理父子筛选及全量人格/兜底来源统计。"""
+    import json
+
+    import gsuid_core.ai_core.session_logger as slog_mod
+    import gsuid_core.webconsole.ai_session_logs_api as logs_api
+    from gsuid_core.ai_core.session_logger import AISessionLogger
+
+    main_dir = tmp_path / "main"
+    sub_dir = tmp_path / "subagents"
+    main_dir.mkdir()
+    sub_dir.mkdir()
+
+    monkeypatch.setattr(slog_mod, "AI_SESSION_LOGS_PATH", main_dir)
+    monkeypatch.setattr(slog_mod, "AI_SUBAGENT_LOGS_PATH", sub_dir)
+    monkeypatch.setattr(logs_api, "AI_SESSION_LOGS_PATH", main_dir)
+    monkeypatch.setattr(logs_api, "AI_SUBAGENT_LOGS_PATH", sub_dir)
+    monkeypatch.setattr(logs_api, "_PERSIST_CACHE_PATH", tmp_path / "summary_cache.json")
+    monkeypatch.setattr(logs_api, "_BASE_SUMMARY_CACHE", {})
+    monkeypatch.setattr(logs_api, "_cache_loaded", True)
+    monkeypatch.setattr(logs_api, "_cache_dirty", False)
+    monkeypatch.setattr(logs_api, "_unified_cache", None)
+    monkeypatch.setattr(logs_api, "_categories_cache", None)
+    monkeypatch.setattr(logs_api, "_index_cache", None)
+    monkeypatch.setattr(logs_api, "_last_persist_save", 0.0)
+
+    # 1. 新格式日志：AISessionLogger 落盘带 task_kind 的头部
+    chat_logger = AISessionLogger(
+        session_id="ws:onebot:10001:group:100000001",
+        persona_name="测试人格A",
+        create_by="Chat",
+        task_kind="chat",
+    )
+    chat_logger.log_user_input("测试消息")
+    chat_logger.close()
+
+    cap_logger = AISessionLogger(
+        session_id="capagent_render_agent_present_ab12cd",
+        create_by="CapabilityAgent",
+        is_subagent=True,
+        task_kind="capability_agent:render_agent",
+    )
+    cap_logger.log_user_input("渲染测试卡片")
+    cap_logger.close()
+
+    # 同 create_by 下显式带 task_kind 的新日志（用于验证 unmapped_only 口径）
+    plugin_chat_logger = AISessionLogger(
+        session_id="custom_plugin_session_2",
+        create_by="CustomPluginChat",
+        task_kind="chat",
+    )
+    plugin_chat_logger.log_user_input("插件主对话")
+    plugin_chat_logger.close()
+
+    # 2. 旧格式磁盘日志（无 task_kind 字段）：验证能力代理后缀剥离、stats_keys 反查与未登记兜底
+    def _write_legacy(
+        directory: Path,
+        name: str,
+        *,
+        session_id: str,
+        create_by: str,
+        persona_name: str | None = None,
+        is_subagent: bool = False,
+        created_at: float = 1700000000.0,
+    ) -> None:
+        payload = {
+            "session_id": session_id,
+            "session_uuid": name,
+            "persona_name": persona_name,
+            "create_by": create_by,
+            "is_subagent": is_subagent,
+            "chain_id": name,
+            "segment_index": 0,
+            "prev_segment": None,
+            "created_at": created_at,
+            "updated_at": created_at + 1,
+            "ended_at": created_at + 2,
+            "entry_count": 1,
+            "type_counts": {"session_created": 1},
+            "linked_agents": [],
+            "linked_agent_count": 0,
+            "entries": [{"type": "session_created", "timestamp": created_at, "data": {}}],
+        }
+        (directory / f"{name}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    _write_legacy(
+        sub_dir,
+        "legacy_cap_dev",
+        session_id="capagent_plugin_developer_agent_kanban_a1b2c3_d4e5f6",
+        create_by="CapabilityAgent",
+        is_subagent=True,
+        created_at=1700000010.0,
+    )
+    # 名称含 _present_ 关键字的节点：验证正则不会提前贪婪截断
+    _write_legacy(
+        sub_dir,
+        "legacy_cap_present_name",
+        session_id="capagent_my_present_agent_adhoc",
+        create_by="CapabilityAgent",
+        is_subagent=True,
+        created_at=1700000015.0,
+    )
+    _write_legacy(
+        sub_dir,
+        "legacy_mem_alg",
+        session_id="auto_MemAlgebra_group-100000001_deadbeef",
+        create_by="MemAlgebra",
+        persona_name=" 测试人格B ",
+        is_subagent=True,
+        created_at=1700000020.0,
+    )
+    _write_legacy(
+        main_dir,
+        "legacy_proactive",
+        session_id="ws:onebot:10001:group:100000002",
+        create_by="Proactive_heartbeat",
+        persona_name="测试人格A",
+        created_at=1700000030.0,
+    )
+    _write_legacy(
+        main_dir,
+        "legacy_plugin_custom",
+        session_id="custom_plugin_session_1",
+        create_by="CustomPluginChat",
+        created_at=1700000040.0,
+    )
+    _write_legacy(
+        main_dir,
+        "legacy_unknown_cb",
+        session_id="orphan_no_cb_1",
+        create_by="",
+        created_at=1700000045.0,
+    )
+
+    async def scenario() -> None:
+        cat_resp = await logs_api.get_session_log_categories(_={})
+        assert cat_resp["status"] == 0 and cat_resp["data"] is not None
+        # 目录、活跃会话与注册表未变时直接命中分类缓存
+        cat_resp2 = await logs_api.get_session_log_categories(_={})
+        assert cat_resp2["data"] is cat_resp["data"]
+
+        data = cat_resp["data"]
+        tk_stats = data["task_kinds"]
+        assert tk_stats["chat"]["count"] == 2
+        assert tk_stats["capability_agent:render_agent"]["count"] == 1
+        assert tk_stats["capability_agent:plugin_developer_agent"]["count"] == 1
+        assert tk_stats["capability_agent:my_present_agent"]["count"] == 1
+        assert tk_stats["memory_algebra"]["count"] == 1
+
+        unmapped_cbs = {item["create_by"]: item["count"] for item in data["unmapped"]}
+        assert unmapped_cbs == {"Proactive_heartbeat": 1, "CustomPluginChat": 1, "Unknown": 1}
+
+        persona_counts = {item["persona_name"]: item["count"] for item in data["personas"]}
+        assert persona_counts == {"测试人格A": 2, "测试人格B": 1}
+
+        # sidecar 缓存仅存文件原生 task_kind（旧日志保持 None，不固化动态推断结果）
+        legacy_mem_key = str(sub_dir / "legacy_mem_alg.json")
+        cached_summary = logs_api._BASE_SUMMARY_CACHE[legacy_mem_key][1]
+        assert "task_kind" in cached_summary and cached_summary["task_kind"] is None
+
+        # task_kind 筛选：主对话 / 能力代理父项（覆盖全部子代理）/ 单个能力代理
+        chat_only = await logs_api.list_session_logs(task_kind="chat", _={})
+        assert chat_only["status"] == 0
+        assert {i["session_id"] for i in chat_only["data"]["items"]} == {
+            "ws:onebot:10001:group:100000001",
+            "custom_plugin_session_2",
+        }
+
+        all_caps = await logs_api.list_session_logs(task_kind="capability_agent", _={})
+        assert {i["task_kind"] for i in all_caps["data"]["items"]} == {
+            "capability_agent:render_agent",
+            "capability_agent:plugin_developer_agent",
+            "capability_agent:my_present_agent",
+        }
+
+        only_render = await logs_api.list_session_logs(task_kind="capability_agent:render_agent", _={})
+        assert [i["session_id"] for i in only_render["data"]["items"]] == ["capagent_render_agent_present_ab12cd"]
+
+        only_dev = await logs_api.list_session_logs(task_kind="capability_agent:plugin_developer_agent", _={})
+        assert [i["session_id"] for i in only_dev["data"]["items"]] == [
+            "capagent_plugin_developer_agent_kanban_a1b2c3_d4e5f6"
+        ]
+
+        only_present = await logs_api.list_session_logs(task_kind="capability_agent:my_present_agent", _={})
+        assert [i["session_id"] for i in only_present["data"]["items"]] == ["capagent_my_present_agent_adhoc"]
+
+        # unmapped_only=True 精确对齐 unmapped 计数；未加时返回该 create_by 全量
+        unmapped_plugin = await logs_api.list_session_logs(create_by="CustomPluginChat", unmapped_only=True, _={})
+        assert [i["session_id"] for i in unmapped_plugin["data"]["items"]] == ["custom_plugin_session_1"]
+        all_plugin = await logs_api.list_session_logs(create_by="CustomPluginChat", _={})
+        assert {i["session_id"] for i in all_plugin["data"]["items"]} == {
+            "custom_plugin_session_1",
+            "custom_plugin_session_2",
+        }
+
+        # Unknown 来源、带首尾空格的人格筛选、以及按 task_kind 关键词搜索
+        unknown_only = await logs_api.list_session_logs(create_by="Unknown", unmapped_only=True, _={})
+        assert [i["session_id"] for i in unknown_only["data"]["items"]] == ["orphan_no_cb_1"]
+
+        persona_b = await logs_api.list_session_logs(persona_name="测试人格B", _={})
+        assert [i["session_id"] for i in persona_b["data"]["items"]] == ["auto_MemAlgebra_group-100000001_deadbeef"]
+
+        by_search = await logs_api.list_session_logs(search="memory_algebra", _={})
+        assert [i["session_id"] for i in by_search["data"]["items"]] == ["auto_MemAlgebra_group-100000001_deadbeef"]
+
+    asyncio.run(scenario())
