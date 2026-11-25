@@ -110,6 +110,7 @@
   "log.webconsole.memory_reconcile_vectors_fail": "[Memory] インデックス照合のベクトル補正に失敗: {e}",
   "log.webconsole.mime_type_file_path": "[WebConsole] ファイル {file_path} の MIME タイプは {mime_type}",
   "log.webconsole.plugin_store_fail": "プラグインストア一覧の取得に失敗しました: {error}",
+  "log.webconsole.plugin_install_upload_fail": "zip からのプラグインインストールに失敗しました: {error}",
   "log.webconsole.received_request_app_path": "[WebConsole] リクエストを受信: /app/{path}",
   "log.webconsole.register_authentication_key_rotation_fail": "[WebConsole] 認証キーローテーションタスクの登録に失敗（認証には影響なし）: {e}",
   "log.webconsole.scope_ip_client_fail": "[WebConsole] {scope} ペイロードの復号に失敗: IP={client_ip}, {e}",

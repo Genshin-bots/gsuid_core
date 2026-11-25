@@ -8,11 +8,12 @@ import hashlib
 from typing import Any, Dict, Optional, TypedDict
 from pathlib import Path
 
-from fastapi import Body, Query, Depends, Request
+from fastapi import Body, File, Query, Depends, Request, UploadFile
 from pydantic import BaseModel
 
 from gsuid_core.sv import SL
 from gsuid_core.i18n import t
+from gsuid_core.logger import logger
 from gsuid_core.meta_plugins import provides_of
 from gsuid_core.utils.secret_mask import (
     unmask_against,
@@ -1408,6 +1409,43 @@ async def install_plugin_from_url_api(
             return {"status": 1, "msg": result}
         return {"status": 0, "msg": result}
     except Exception as e:
+        return {"status": 1, "msg": f"安装失败: {str(e)}"}
+
+
+@app.post("/api/plugin-store/install-upload", summary="从 zip 文件安装插件", tags=PLUGINS)
+async def install_plugin_from_upload_api(
+    file: UploadFile = File(..., description="插件 zip 包"),
+    _user: Dict[str, Any] = Depends(require_admin),
+):
+    """
+    从上传的 zip 安装插件（不经 git、不走插件商店白名单）。
+
+    插件包必须在 ``__init__.py`` 里声明 ``Plugins(name="唯一名称")``。
+    注册名解析不到或为空会直接失败，**不会**回退成 zip 的目录名。
+
+    校验全部在临时目录内完成：任何一步失败，``plugins/`` 下都不会留下残留。
+    已安装同名插件时直接拒绝，不做覆盖（覆盖安装留待后续迭代）。
+
+    Args:
+        file: 上传的插件 zip
+        _user: 认证用户信息
+
+    Returns:
+        status: 0 成功，1 失败
+        msg: 操作结果（成功以 ✅ 开头，失败以 ❌ 开头）
+    """
+    from gsuid_core.utils.plugins_update._plugins import install_plugin_from_zip
+
+    try:
+        data = await file.read()
+        if not data:
+            return {"status": 1, "msg": "❌ 上传的文件为空"}
+        result = await install_plugin_from_zip(data)
+        if result.lstrip().startswith("❌"):
+            return {"status": 1, "msg": result}
+        return {"status": 0, "msg": result}
+    except Exception as e:
+        logger.exception(t("log.webconsole.plugin_install_upload_fail", error=e))
         return {"status": 1, "msg": f"安装失败: {str(e)}"}
 
 
