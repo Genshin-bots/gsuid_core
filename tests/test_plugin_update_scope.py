@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
