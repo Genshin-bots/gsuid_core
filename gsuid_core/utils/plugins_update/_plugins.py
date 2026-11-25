@@ -398,7 +398,8 @@ def check_retcode(retcode: int) -> str:
 async def update_all_plugins(level: int = 0) -> List[str]:
     log_list = []
     for plugin in PLUGINS_PATH.iterdir():
-        if _is_plugin(plugin):
+        # 非 git 插件（手动拷入 / 从 zip 安装）没有远程可拉，跳过而不是记一条失败
+        if _is_plugin(plugin) and (plugin / ".git").exists():
             log_list.extend(await update_from_git_async(level, plugin))
     return log_list
 
