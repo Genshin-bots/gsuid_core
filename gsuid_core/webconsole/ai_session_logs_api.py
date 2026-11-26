@@ -608,7 +608,13 @@ def _base_summary_from_data(
     """从已解析的日志文件数据（头部或全文）构建基础摘要；``usage`` 缺省时该键不出现。"""
     created_at: float = data.get("created_at", 0)
     ended_at: Optional[float] = data.get("ended_at")
-    updated_at: float = data.get("updated_at", 0)
+    raw_updated = data.get("updated_at")
+    # 旧格式/异常日志缺少 updated_at 时回退 created_at，避免排序沉底
+    updated_at: float = (
+        float(raw_updated)
+        if isinstance(raw_updated, (int, float)) and not isinstance(raw_updated, bool) and raw_updated > 0
+        else created_at
+    )
 
     duration: Optional[float] = (ended_at - created_at) if (ended_at and created_at) else None
     linked_agents: List[LinkedAgentRecord] = data.get("linked_agents", [])
@@ -1009,7 +1015,7 @@ def _aggregate_chain(
     latest = segs[-1]
 
     created_at = min(s["created_at"] for s in segs)
-    updated_at = max(s["updated_at"] for s in segs)
+    updated_at = max((s["updated_at"] or s["created_at"]) for s in segs)
     is_active = latest["is_active"]
     ended_at: Optional[float] = None if is_active else latest["ended_at"]
 
@@ -1175,9 +1181,13 @@ def _build_unified_list(
     for key, summary in memory_segs.items():
         seg_by_uuid[key] = summary
 
-    # 4. 按 chain_id 归并为链卡片，按 created_at 倒序
+    # 4. 按 chain_id 归并为链卡片，按最近更新时间倒序（缺失时回退创建时间）
     chains = _group_segments_into_chains(list(seg_by_uuid.values()), tk_ctx)
-    return sorted(chains, key=lambda x: x["created_at"], reverse=True)
+    return sorted(
+        chains,
+        key=lambda x: (x["updated_at"] or x["created_at"], x["created_at"]),
+        reverse=True,
+    )
 
 
 class _UnifiedCache(NamedTuple):
@@ -1535,7 +1545,7 @@ async def list_session_logs(
 
     返回综合列表，每个条目包含 source 字段标识来源（"memory" 或 "disk"），
     is_active 字段标识是否仍在运行。同一 session_uuid 在内存和磁盘中都存在时，
-    优先使用内存版本（数据更新）。结果按创建时间倒序排列。
+    优先使用内存版本（数据更新）。结果按最近更新时间（updated_at）倒序排列。
 
     Args:
         session_id: 按 session_id 精确筛选

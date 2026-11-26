@@ -1041,7 +1041,9 @@ def test_session_logs_task_kind_filter_and_categories(
         persona_name: str | None = None,
         is_subagent: bool = False,
         created_at: float = 1700000000.0,
+        updated_at: float | None = None,
     ) -> None:
+        resolved_updated = created_at + 1 if updated_at is None else updated_at
         payload = {
             "session_id": session_id,
             "session_uuid": name,
@@ -1052,8 +1054,8 @@ def test_session_logs_task_kind_filter_and_categories(
             "segment_index": 0,
             "prev_segment": None,
             "created_at": created_at,
-            "updated_at": created_at + 1,
-            "ended_at": created_at + 2,
+            "updated_at": resolved_updated,
+            "ended_at": max(created_at, resolved_updated) + 1,
             "entry_count": 1,
             "type_counts": {"session_created": 1},
             "linked_agents": [],
@@ -1088,13 +1090,15 @@ def test_session_logs_task_kind_filter_and_categories(
         is_subagent=True,
         created_at=1700000020.0,
     )
+    # 创建早但最近活跃（updated_at 最新），用于验证列表按 updated_at 倒序而非 created_at
     _write_legacy(
         main_dir,
         "legacy_proactive",
         session_id="ws:onebot:10001:group:100000002",
         create_by="Proactive_heartbeat",
         persona_name="测试人格A",
-        created_at=1700000030.0,
+        created_at=1700000005.0,
+        updated_at=1700000100.0,
     )
     _write_legacy(
         main_dir,
@@ -1103,12 +1107,14 @@ def test_session_logs_task_kind_filter_and_categories(
         create_by="CustomPluginChat",
         created_at=1700000040.0,
     )
+    # updated_at=0 验证缺失/零值回退 created_at，不沉底
     _write_legacy(
         main_dir,
         "legacy_unknown_cb",
         session_id="orphan_no_cb_1",
         create_by="",
         created_at=1700000045.0,
+        updated_at=0.0,
     )
 
     async def scenario() -> None:
@@ -1181,5 +1187,17 @@ def test_session_logs_task_kind_filter_and_categories(
 
         by_search = await logs_api.list_session_logs(search="memory_algebra", _={})
         assert [i["session_id"] for i in by_search["data"]["items"]] == ["auto_MemAlgebra_group-100000001_deadbeef"]
+
+        # 列表按 updated_at 倒序：创建更早但更新更新的会话靠前，updated_at=0 回退 created_at
+        all_resp = await logs_api.list_session_logs(_={})
+        all_items = all_resp["data"]["items"]
+        sort_keys = [item["updated_at"] or item["created_at"] for item in all_items]
+        assert sort_keys == sorted(sort_keys, reverse=True)
+        order = [item["session_id"] for item in all_items]
+        assert order.index("ws:onebot:10001:group:100000002") < order.index("orphan_no_cb_1")
+        assert order.index("orphan_no_cb_1") < order.index("custom_plugin_session_1")
+        orphan_item = next(i for i in all_items if i["session_id"] == "orphan_no_cb_1")
+        assert orphan_item["updated_at"] == 1700000045.0
+        assert orphan_item["updated_at_str"] is not None
 
     asyncio.run(scenario())

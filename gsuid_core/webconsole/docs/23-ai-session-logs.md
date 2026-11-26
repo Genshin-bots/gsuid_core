@@ -38,7 +38,7 @@
 
 **端点**: `GET /api/ai/session_logs`
 
-**描述**: 获取 AI Session 日志列表，**自动合并内存活跃会话与磁盘持久化文件，按 session_uuid 去重**。每个条目包含 `source` 字段标识来源（`"memory"` 或 `"disk"`），`is_active` 字段标识是否仍在运行。结果按创建时间倒序排列。
+**描述**: 获取 AI Session 日志列表，**自动合并内存活跃会话与磁盘持久化文件，按 session_uuid 去重**。每个条目包含 `source` 字段标识来源（`"memory"` 或 `"disk"`），`is_active` 字段标识是否仍在运行。结果按最近更新时间（`updated_at`，缺失时回退 `created_at`）倒序排列。
 
 **请求参数**（Query）:
 
@@ -737,7 +737,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 2. **收集内存活跃会话的当前分段**：遍历 `AISessionRegistry._ai_sessions`，从每个 `GsCoreAIAgent._session_logger` 提取当前分段摘要
 3. **按 session_uuid 合并单分段**：同一 session_uuid 在内存和磁盘中都存在时，**优先使用内存版本**（数据更新）；磁盘分段做 `is_active` 修正（`ended_at` 为 null 但不在内存 registry 中的视为已结束）
 4. **按 chain_id 归并为链卡片**：把同一 `chain_id` 的多个分段聚合成一张卡片（条数/类型计数求和、时长取整段、`linked_agents` 跨分段去重合并、身份取最新分段），并附有序 `segments[]`
-5. **按 created_at 倒序排列**
+5. **按 `updated_at`（最近更新时间，缺失时回退 `created_at`）倒序排列**
 
 > 单分段会话（`segment_count === 1`，含全部旧格式文件）归并后行为与旧版一致——每张卡片仍对应一个 `session_uuid`。
 
