@@ -1214,6 +1214,92 @@ def test_parallel_web_search_maps_results_and_falls_back(monkeypatch: pytest.Mon
     assert not outcomes and not requests_with_cookies
 
 
+def test_specstream_web_search_key_pool_answer_and_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SpecStream：仅读配置 Key，Bearer + GET 参数契约，401 换 Key，未配置不入链，空结果换源。"""
+    import httpx2
+
+    from gsuid_core.ai_core.web_search import search
+    from gsuid_core.webconsole.ai_wizard_api import _check_websearch_config
+    from gsuid_core.ai_core.configs.ai_config import ai_config, specstream_config
+    from gsuid_core.ai_core.web_search.specstream_search import SEARCH_URL, specstream_search
+
+    query = "测试项目提问 发布日期"
+    seen: list[tuple[str, str, dict[str, str]]] = []
+    replies: list[httpx2.Response] = []
+    body: dict[str, object] = {
+        "data": {
+            "query": query,
+            "answer": {"value": "2021 年 1 月", "page": "https://a.example.test/post"},
+            "sources": [
+                {"title": "A", "url": " https://a.example.test/post ", "snippet": "片段 A", "published": "2021-01-05"},
+                {"title": "无效", "url": "ftp://b.example.test/", "snippet": "ignored"},
+                {"title": "C", "url": "https://c.example.test/", "snippet": "片段 C"},
+            ],
+        }
+    }
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        seen.append((request.method, request.headers["Authorization"], dict(request.url.params)))
+        assert str(request.url).startswith(SEARCH_URL)
+        return replies.pop(0)
+
+    def mock_transport(_client: httpx2.AsyncClient, _url: httpx2.URL) -> httpx2.MockTransport:
+        return httpx2.MockTransport(respond)
+
+    async def fallback(query: str, max_results: int | None = None) -> list[dict[str, str]]:
+        return [{"url": "https://fallback.example.test/"}]
+
+    monkeypatch.setattr(httpx2.AsyncClient, "_transport_for_url", mock_transport)
+    monkeypatch.setattr(search, "anysearch_search", fallback)
+    monkeypatch.setenv("SPECSTREAM_API_KEY", "env-key-must-not-be-read")
+    monkeypatch.setattr(specstream_config.get_config("speed"), "data", "default")
+    monkeypatch.setattr(ai_config.get_config("websearch_lb_strategy"), "data", "error_switch")
+    monkeypatch.setattr(ai_config.get_config("websearch_fallback_order"), "data", [])
+
+    monkeypatch.setattr(specstream_config.get_config("api_key"), "data", [])
+    monkeypatch.setattr(ai_config.get_config("websearch_provider"), "data", "SpecStream")
+    assert _check_websearch_config()["configured"] is False
+    assert asyncio.run(search.web_search(query, 2)) == [{"url": "https://fallback.example.test/"}]
+    with pytest.raises(RuntimeError):
+        asyncio.run(specstream_search(query, 2))
+    assert not seen
+
+    monkeypatch.setattr(specstream_config.get_config("api_key"), "data", ["ss_good"])
+    assert _check_websearch_config()["configured"] is True
+    replies.append(httpx2.Response(200, json=body))
+    assert asyncio.run(search.web_search(query, 2)) == [
+        {
+            "title": "A",
+            "url": "https://a.example.test/post",
+            "content": "片段 A",
+            "published_date": "2021-01-05",
+            "score": 0.0,
+        },
+        {"title": "C", "url": "https://c.example.test/", "content": "片段 C", "published_date": "", "score": 0.0},
+    ]
+    assert seen.pop() == ("GET", "Bearer ss_good", {"q": query, "num": "2"})
+
+    replies.append(httpx2.Response(200, json=body))
+    ctx = asyncio.run(search.web_search_with_context(query, 1))
+    assert ctx["answer"] is None
+    assert [r["url"] for r in ctx["results"]] == ["https://a.example.test/post"]
+
+    monkeypatch.setattr(specstream_config.get_config("api_key"), "data", ["ss_bad", "ss_good"])
+    monkeypatch.setattr(specstream_config.get_config("speed"), "data", "fast")
+    monkeypatch.setattr("gsuid_core.ai_core.web_search.specstream_search.random.choice", lambda keys: keys[0])
+    seen.clear()
+    replies.extend([httpx2.Response(401, json={"detail": "invalid_token"}), httpx2.Response(200, json=body)])
+    assert len(asyncio.run(specstream_search(query, 20))) == 2
+    assert [(auth, params["speed"], params["num"]) for _m, auth, params in seen] == [
+        ("Bearer ss_bad", "fast", "20"),
+        ("Bearer ss_good", "fast", "20"),
+    ]
+
+    replies.append(httpx2.Response(200, json={"data": {"sources": []}}))
+    assert asyncio.run(search.web_search(query, 2)) == [{"url": "https://fallback.example.test/"}]
+    assert not replies
+
+
 def test_keenable_opt_in_routing_and_wizard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -226,6 +226,11 @@ def _check_websearch_config() -> Dict[str, Any]:
     elif provider == "Parallel":
         result["configured"] = True
         result["note"] = "Parallel 通过公开 MCP 端点搜索，无需 API Key"
+    elif provider == "SpecStream":
+        from gsuid_core.ai_core.web_search.specstream_search import specstream_search_configured
+
+        result["configured"] = specstream_search_configured()
+        result["note"] = "已配置 SpecStream API Key" if result["configured"] else "SpecStream 需要 API Key"
     elif provider == "MCP":
         # MCP 作为 web search 提供方，检查是否有相关工具
         try:

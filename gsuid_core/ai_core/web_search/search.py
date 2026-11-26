@@ -46,6 +46,7 @@ from .deepseek_search import deepseek_search, deepseek_search_configured
 from .keenable_search import keenable_search, keenable_search_configured
 from .anysearch_search import anysearch_search, anysearch_search_configured
 from .firecrawl_search import firecrawl_search, firecrawl_search_configured
+from .specstream_search import specstream_search, specstream_search_configured
 
 # 单条 MCP 原始返回兜底透传时的最大字符数，避免一次搜索把上下文吃满
 _MAX_MCP_RAW_CHARS = 4000
@@ -127,6 +128,8 @@ def _provider_configured(provider: str) -> bool:
         return keenable_search_configured()
     if name == "Parallel":
         return True
+    if name == "SpecStream":
+        return specstream_search_configured()
     if is_mcp_provider(name) or name.upper() == "MCP":
         return bool(get_mcp_tool_id_optional("websearch_mcp_tool_id"))
     return False
@@ -296,6 +299,10 @@ async def _invoke_provider(
         from .parallel_search import parallel_search
 
         results = [dict(hit) for hit in await parallel_search(query=query, max_results=max_results)]
+        return {"results": results, "answer": None} if with_context else results
+
+    if name == "SpecStream":
+        results = await specstream_search(query=query, max_results=max_results)
         return {"results": results, "answer": None} if with_context else results
 
     if is_mcp_provider(name) or name.upper() == "MCP":
