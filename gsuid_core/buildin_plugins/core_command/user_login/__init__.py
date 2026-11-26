@@ -172,7 +172,7 @@ async def send_qrcode_login(bot: Bot, ev: Event):
 
     if not im:
         return
-    im, status = await deal_ck(ev.bot_id, im, ev.user_id)
+    im, status = await deal_ck(ev.bot_id, im, ev.user_id, refresh_stoken=False)
     if status:
         await _send_help(bot, im)
     else:

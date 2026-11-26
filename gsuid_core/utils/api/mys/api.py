@@ -103,6 +103,14 @@ EXCHANGE_TOKEN = ApiEndpoint(
     cn=f"{PASSPORT_URL}/account/ma-cn-session/app/exchange",
     name="EXCHANGE_TOKEN",
 )
+CREATE_AUTH_TICKET_BY_GAME_BIZ = ApiEndpoint(
+    cn=f"{PASSPORT_URL}/account/ma-cn-verifier/app/createAuthTicketByGameBiz",
+    name="CREATE_AUTH_TICKET_BY_GAME_BIZ",
+)
+LOGIN_BY_AUTH_TICKET = ApiEndpoint(
+    cn=f"{PASSPORT_URL}/account/ma-cn-passport/app/loginByAuthTicket",
+    name="LOGIN_BY_AUTH_TICKET",
+)
 GET_ALL_TOKEN_BY_STOKEN = ApiEndpoint(
     os=f"{PUBLIC_API_OS}/account/ma-passport/token/getBySToken",
     name="GET_ALL_TOKEN_BY_STOKEN",
@@ -265,6 +273,10 @@ REG_TIME = ApiEndpoint(
 BBS_TASKS = ApiEndpoint(
     cn=f"{NEW_BBS_URL}/apihub/sapi/getUserMissionsState",
     name="BBS_TASKS",
+)
+BBS_TASKS_WEB = ApiEndpoint(
+    cn=f"{NEW_BBS_URL}/apihub/wapi/getUserMissionsState",
+    name="BBS_TASKS_WEB",
 )
 BBS_SIGN = ApiEndpoint(
     cn=f"{NEW_BBS_URL}/apihub/app/api/signIn",

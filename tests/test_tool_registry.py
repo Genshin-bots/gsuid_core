@@ -3358,7 +3358,8 @@ def test_background_tool_grace_detach_wake_and_guards(
                 tb = _TOOL_REGISTRY["by_trigger"]["_demo_bg_trigger"]
                 assert tb.plugin == "demo_bg_plugin" and tb.code_callable is False
                 ctx_ct = make_run_ctx(bot=bot, ev=ev, parent_session_id="sess_bg_1", allow_user_outbound=True)
-                ct_ack = await call_tool(ctx_ct, tool_name="_demo_bg_trigger", arguments_json='{"text": ""}')
+                # fullmatch 无参触发器允许省略 text（传 {} 不应触发 Field required 校验失败）
+                ct_ack = await call_tool(ctx_ct, tool_name="_demo_bg_trigger", arguments_json="{}")
                 assert isinstance(ct_ack, str) and ct_ack.startswith(BACKGROUND_TOOL_PENDING_PREFIX)
                 assert any(entry.tool_name == "_demo_bg_trigger" for entry in bg_mod._INFLIGHT.values())
                 unregistered = unregister_tools_of_plugin("demo_bg_plugin")

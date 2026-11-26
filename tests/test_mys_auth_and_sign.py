@@ -19,12 +19,16 @@ from gsuid_core.utils.api.mys.api import (
     BBS_SIGN,
     BBS_TASKS,
     NEW_BBS_URL,
+    BBS_TASKS_WEB,
     EXCHANGE_TOKEN,
+    LOGIN_BY_AUTH_TICKET,
+    CREATE_AUTH_TICKET_BY_GAME_BIZ,
 )
 from gsuid_core.utils.api.mys_api import mys_api
-from gsuid_core.utils.database.models import GsUID, GsUser
-from gsuid_core.utils.cookie_manager.add_ck import build_cn_account_cookie
+from gsuid_core.utils.database.models import GsUID, GsBind, GsUser
+from gsuid_core.utils.cookie_manager.add_ck import _deal_ck, build_cn_account_cookie
 from gsuid_core.utils.cookie_manager.add_fp import deal_fp
+from gsuid_core.utils.cookie_manager.qrlogin import qrcode_login
 from gsuid_core.buildin_plugins.core_command.user_login import send_add_device_msg
 
 
@@ -339,5 +343,103 @@ def test_sign_uses_hk4e_paths_headers_and_auto_refreshes_expired_cookie(
             await sign_error("100000003", -100, "gs")
             marked = await GsUser.select_data_by_uid("100000001")
             assert marked is not None and marked.status == "error"
+
+    asyncio.run(scenario())
+
+
+def test_hyp_stoken_upgrade_to_bbs_scope_and_qr_dedup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert BBS_TASKS_WEB.get() == f"{NEW_BBS_URL}/apihub/wapi/getUserMissionsState"
+
+    exchange_calls = 0
+
+    def _respond(req: _CapturedRequest) -> dict[str, object]:
+        nonlocal exchange_calls
+        if req.url == CREATE_AUTH_TICKET_BY_GAME_BIZ.get():
+            assert req.method == "POST"
+            assert req.header["x-rpc-app_id"] == "ddxf5dufpuyo"
+            assert req.header["x-rpc-client_type"] == "3"
+            assert req.data == {
+                "game_biz": "bbs_cn",
+                "stoken": "v2_hyp_scoped_stoken=.CAE=",
+                "uid": 20000001,
+                "mid": "test_mid_mhy",
+            }
+            return {"retcode": 0, "message": "OK", "data": {"ticket": "test_auth_ticket_32"}}
+        if req.url == LOGIN_BY_AUTH_TICKET.get():
+            assert req.method == "POST"
+            assert req.header["x-rpc-app_id"] == "bll8iq97cem8"
+            assert req.header["x-rpc-client_type"] == "2"
+            assert "DS" in req.header
+            assert req.data == {"ticket": "test_auth_ticket_32"}
+            return {
+                "retcode": 0,
+                "message": "OK",
+                "data": {
+                    "token": {"token_type": 1, "token": "v2_bbs_scoped_stoken=.CAE="},
+                    "user_info": {"aid": "20000001", "mid": "test_mid_mhy"},
+                },
+            }
+        if req.url == EXCHANGE_TOKEN.get():
+            exchange_calls += 1
+            assert req.data is not None
+            src = req.data["src_token"]
+            assert isinstance(src, dict) and src["token"] == "v2_bbs_scoped_stoken=.CAE="
+            return _exchange_token_response(req.data, "v2_fresh_ck=.CAE=", "v2_fresh_lt=.CAE=")
+        if req.url.endswith("/game_record/card/wapi/getGameRecordCard"):
+            return {
+                "retcode": 0,
+                "message": "OK",
+                "data": {"list": [{"game_id": 2, "game_role_id": "100000001"}]},
+            }
+        if req.url.endswith(("/apihub/api/deviceLogin", "/apihub/api/saveDevice")):
+            assert "stoken=v2_bbs_scoped_stoken=.CAE=" in req.header["Cookie"]
+            return {"retcode": 0, "message": "OK", "data": {}}
+        if req.url.endswith("/device-fp/api/getFp"):
+            return {"retcode": 0, "message": "OK", "data": {"code": 200, "device_fp": "test_fp_00001"}}
+        raise AssertionError(f"unexpected url: {req.url}")
+
+    _mock_mys_request(monkeypatch, _respond)
+
+    async def _fake_create_hyp() -> dict[str, str]:
+        return {"ticket": "qr_tk", "url": "https://example.invalid/qr", "device_id": "dev_hyp_1"}
+
+    async def _fake_qr_bytes(url: str, path: Path, bot_id: str) -> bytes:
+        _ = (url, path, bot_id)
+        return b"png"
+
+    async def _fake_refresh(code_data: dict[str, str]) -> tuple[bool, dict[str, object]]:
+        _ = code_data
+        return True, {
+            "status": "Confirmed",
+            "tokens": [{"token_type": 1, "token": "v2_hyp_scoped_stoken=.CAE="}],
+            "user_info": {"aid": "20000001", "mid": "test_mid_mhy"},
+        }
+
+    monkeypatch.setattr(mys_api, "create_hyp_qrcode_url", _fake_create_hyp)
+    monkeypatch.setattr("gsuid_core.utils.cookie_manager.qrlogin.get_qrcode_base64", _fake_qr_bytes)
+    monkeypatch.setattr("gsuid_core.utils.cookie_manager.qrlogin.refresh", _fake_refresh)
+
+    async def scenario() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="mys_qr_upgrade.db"):
+            await GsBind.insert_data(user_id="100000001", bot_id="test_bot", uid="100000001")
+            ev = Event(bot_id="test_bot", user_id="100000001")
+            bot = _RecordingBot(ev)
+
+            ck_str = await qrcode_login(bot, ev, "100000001")
+            assert "stoken_v2=v2_bbs_scoped_stoken=.CAE=" in ck_str
+            assert "cookie_token_v2=v2_fresh_ck=.CAE=" in ck_str
+            assert exchange_calls == 2
+
+            # send_qrcode_login 传 refresh_stoken=False，不再重复换票
+            im = await _deal_ck("test_bot", ck_str, "100000001", refresh_stoken=False)
+            assert "添加Stoken成功" in im and "添加Cookies成功" in im
+            assert exchange_calls == 2
+
+            saved = await GsUser.select_data_by_uid("100000001")
+            assert saved is not None and saved.stoken is not None
+            assert "stoken=v2_bbs_scoped_stoken=.CAE=" in saved.stoken
 
     asyncio.run(scenario())

@@ -1,5 +1,6 @@
 {
   "log.cookie.add_ck_im_create": "ℹ️ [添加CK] {im}",
+  "log.cookie.bbs_stoken_upgrade_fail": "[登录]升级米游社作用域 stoken 失败(retcode={retcode})，保留原始 stoken",
   "log.cookie.login_qr_code_confirmed": "[登录]二维码已确认",
   "log.cookie.login_qr_code_expired": "[登录]二维码已过期",
   "log.cookie.login_qr_code_scanned": "[登录]二维码已扫描",

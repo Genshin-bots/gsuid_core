@@ -362,7 +362,12 @@ def _register_trigger_as_ai_tool(
             return False, f"❌ 权限不足：该功能需要权限等级 {sv.pm}，当前用户权限等级为 {ev.user_pm}。"
         return True, ""
 
-    async def _ai_tool_wrapper(ctx: RunContext[ToolContext], text: str, image_id: str = "", audio_id: str = "") -> str:
+    async def _ai_tool_wrapper(
+        ctx: RunContext[ToolContext],
+        text: str = "",
+        image_id: str = "",
+        audio_id: str = "",
+    ) -> str:
         from gsuid_core.ai_core.register import execute_guarded_tool
 
         async def _call_with_ctx(run_ctx: RunContext[ToolContext]) -> str:
@@ -440,6 +445,7 @@ def _register_trigger_as_ai_tool(
         "return": str,
     }
 
+    text_default = "" if trigger_type == "fullmatch" else inspect.Parameter.empty
     new_params = [
         inspect.Parameter(
             "ctx",
@@ -450,6 +456,7 @@ def _register_trigger_as_ai_tool(
             "text",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             annotation=str,
+            default=text_default,
         ),
         inspect.Parameter(
             "image_id",
