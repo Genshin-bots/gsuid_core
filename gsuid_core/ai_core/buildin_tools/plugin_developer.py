@@ -650,6 +650,9 @@ async def _perform_install_new(plugin_name: str) -> str:
     if install_err:
         await _record(_mark(plugin_name, "reset"))
         return f"安装失败：{install_err}"
+    from gsuid_core.plugin_registry import plugin_registry
+
+    await plugin_registry.refresh_one(plugin_name, with_commit=False)
     await _record(_mark(plugin_name, "installed"))
     return f"✅ 「{plugin_name}」已安装到 plugins/{plugin_name}/。"
 
@@ -710,6 +713,9 @@ async def _perform_delete(task, plugin_name: str) -> str:
     fin_err = _finalize_update(dest, staged)
     if fin_err:
         return f"安装失败：{fin_err}"
+    from gsuid_core.plugin_registry import plugin_registry
+
+    await plugin_registry.refresh_one(plugin_name, with_commit=False)
     await _record(_mark(plugin_name, "installed"))
     return f"✅ 「{plugin_name}」已安装到 plugins/{plugin_name}/（旧目录已删除）。"
 

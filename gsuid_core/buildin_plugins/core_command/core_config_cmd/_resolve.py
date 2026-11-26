@@ -1,7 +1,7 @@
 from typing import Dict, Optional
 
 from gsuid_core.sv import SL, get_plugin_available_prefix
-from gsuid_core.utils.plugins_update.api import PLUGINS_PATH
+from gsuid_core.plugin_registry import plugin_registry, resolve_plugin_on_disk
 from gsuid_core.utils.plugins_update._plugins import plugins_list, refresh_list
 from gsuid_core.utils.plugins_config.gs_config import StringConfig, all_config_list
 
@@ -32,9 +32,12 @@ async def resolve_plugin(name: str) -> Optional[str]:
                     lo = _n.lower()
                     break
 
-    for _n in PLUGINS_PATH.iterdir():
-        if lo == _n.name.lower():
-            return _n.name
+    cached = plugin_registry.get(lo)
+    if cached is not None:
+        return cached.name
+    disk = await resolve_plugin_on_disk(lo)
+    if disk is not None:
+        return disk.name
     return None
 
 

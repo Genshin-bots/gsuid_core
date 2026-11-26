@@ -102,6 +102,9 @@ GET /api/plugin-store/list
 | `data.has_more` | `boolean` | 是否还有下一页 |
 | `data.order_seed` | `string` / `null` | 后端采用的随机排序种子；未传时为 null |
 | `data.sort` | `string` | 实际生效的排序方式：`default` / `stars_desc` / `stars_asc`（非法值自动回退为 `default`） |
+| `data.store_offline` | `boolean` | 远程商店不可达且在 `tab="installed"` 降级仅返回本地已安装插件时为 `true` |
+
+> `tab="installed"` 会由后端统一合并非商店本地插件、单下划线禁用插件与加载失败插件（`in_store: false`，附带 `is_git` / `local_source_kind` / `local_upstream_url` / `local_upstream_host` / `load_status` / `last_error`），并计入 `counts.installed`。活跃本地插件同时按 `store_plugin_id` 与 `-dev` 基名对齐商店条目（附带 `local_plugin_name`），商店同名条目在本地为 Fork 时附带 `local_source_kind: "fork"` 与本地真实上游地址。
 
 > 前端应在进入页面时生成一个 `order_seed`，并在翻页期间复用该值。后端先筛选完整列表，
 > 再全局排序，最后分页。停止维护的插件始终排在最后；`sort` 为 `stars_desc` / `stars_asc`

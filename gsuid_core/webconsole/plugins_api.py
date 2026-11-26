@@ -14,6 +14,17 @@ from pydantic import BaseModel
 from gsuid_core.sv import SL
 from gsuid_core.i18n import t
 from gsuid_core.meta_plugins import provides_of
+from gsuid_core.plugin_registry import (
+    SSH_PREFIX,
+    LocalPluginMeta,
+    LocalPluginDiskViewDict,
+    plugin_registry,
+    meta_to_disk_view,
+    resolve_plugin_on_disk,
+    is_builtin_mirror_or_proxy,
+    normalize_mirror_config_pair,
+    validate_mirror_prefix_async,
+)
 from gsuid_core.utils.secret_mask import (
     unmask_against,
     is_secret_key_name,
@@ -56,8 +67,9 @@ def _read_plugin_icon(plugin_name: str) -> Optional[str]:
     icon_base64 = None
     from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
 
-    icon_path = None
-    if is_safe_filename(plugin_name):
+    cached = plugin_registry.get(plugin_name, include_core=True, include_buildin=True)
+    icon_path = cached.icon_path if cached is not None else None
+    if (icon_path is None or not icon_path.exists()) and is_safe_filename(plugin_name):
         try:
             icon_path = safe_join(PLUGINS_PATH, plugin_name, "ICON.png")
         except PathEscapeError:
@@ -225,6 +237,8 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
         name = plugin_name.lower()
 
         provides = provides_of(plugin_name)
+        meta = plugin_registry.get(plugin_name, include_core=True, include_buildin=True)
+        git = meta.git if meta is not None else None
         tasks.append(
             {
                 "id": name,
@@ -237,10 +251,72 @@ async def get_plugins_list(request: Request, _user: Dict[str, Any] = Depends(req
                 "provides": provides,
                 "pages": pages_for_plugin(plugin_name),
                 "memory_mb": mem_map[plugin_name] if plugin_name in mem_map else None,
+                "is_git": bool(meta.is_git and meta.has_remote) if meta is not None else False,
+                "source_kind": meta.source_kind if meta is not None else "local",
+                "upstream_host": git.upstream_host if git is not None else "",
+                "upstream_url": git.upstream_url if git is not None else "",
+                "layout": meta.layout if meta is not None else "unknown",
             }
         )
 
     return {"status": 0, "msg": "ok", "data": tasks}
+
+
+class _LocalPluginsDiskResp(TypedDict):
+    status: int
+    msg: str
+    data: list[LocalPluginDiskViewDict]
+
+
+class _RefreshPluginsData(TypedDict):
+    total: int
+    git_count: int
+    local_count: int
+    disabled_count: int
+    failed_count: int
+
+
+class _RefreshPluginsResp(TypedDict):
+    status: int
+    msg: str
+    data: _RefreshPluginsData
+
+
+@app.get("/api/plugins/local", summary="获取磁盘全量本地插件元信息", tags=PLUGINS)
+async def get_local_plugins_disk_api(
+    fresh: bool = Query(default=False, description="是否现扫磁盘刷新"),
+    _user: SessionRecord = Depends(require_auth),
+) -> _LocalPluginsDiskResp:
+    """返回磁盘上全部用户插件（含未加载 / 加载失败条目），供本地插件管理与卸载使用。"""
+    entries = await plugin_registry.list_plugins(scope="plugin", include_disabled=True, fresh=fresh, with_commit=False)
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": [meta_to_disk_view(item) for item in entries],
+    }
+
+
+@app.post("/api/plugins/refresh", summary="手动刷新本地插件元信息中心", tags=PLUGINS)
+async def refresh_plugins_registry_api(
+    _user: SessionRecord = Depends(require_admin),
+) -> _RefreshPluginsResp:
+    """管理员触发全量磁盘与 Git 元信息重扫（single-flight 合并，不阻塞 WS）。"""
+    await plugin_registry.refresh_all(with_commit=True)
+    entries = plugin_registry.list_cached(scope="plugin", include_disabled=True)
+    git_count = sum(1 for item in entries if item.is_git and item.has_remote)
+    disabled_count = sum(1 for item in entries if item.disabled)
+    failed_count = sum(1 for item in entries if item.load_status == "failed")
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "total": len(entries),
+            "git_count": git_count,
+            "local_count": len(entries) - git_count,
+            "disabled_count": disabled_count,
+            "failed_count": failed_count,
+        },
+    }
 
 
 @app.get("/api/plugins/usage", summary="插件命令触发热度", tags=PLUGINS)
@@ -464,6 +540,8 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str,
                 }
             )
 
+    detail_meta = plugin_registry.get(actual_plugin_name, include_core=True, include_buildin=True)
+    detail_git = detail_meta.git if detail_meta is not None else None
     return {
         "status": 0,
         "msg": "ok",
@@ -476,6 +554,11 @@ async def get_plugin_detail(request: Request, plugin_name: str, _user: Dict[str,
             "commit": get_plugin_commit(actual_plugin_name),
             "kind": "meta" if meta_provides is not None else "plugin",
             "provides": meta_provides,
+            "is_git": bool(detail_meta.is_git and detail_meta.has_remote) if detail_meta is not None else False,
+            "source_kind": detail_meta.source_kind if detail_meta is not None else "local",
+            "upstream_host": detail_git.upstream_host if detail_git is not None else "",
+            "upstream_url": detail_git.upstream_url if detail_git is not None else "",
+            "layout": detail_meta.layout if detail_meta is not None else "unknown",
             "config": plugin_config,
             "config_groups": config_groups,
             "config_names": config_names,
@@ -578,9 +661,33 @@ async def get_framework_config_detail(
     }
 
 
+async def _validate_git_mirror_config_write(
+    full_config_name: str,
+    key: str,
+    value: object,
+) -> tuple[str | None, object, bool]:
+    """校验通过框架配置接口写入的 GitMirror（防 SSRF），并判断内置源是否需归位模式。"""
+    if full_config_name != "GsCore" or key != "GitMirror":
+        return None, value, False
+    if not isinstance(value, str):
+        return "镜像地址必须为字符串", value, False
+    clean = value.strip()
+    if clean and not clean.lower().startswith(SSH_PREFIX):
+        ssrf_err = await validate_mirror_prefix_async(clean)
+        if ssrf_err is not None:
+            return f"镜像地址非法: {ssrf_err}", value, False
+    norm_prefix, _ = normalize_mirror_config_pair(clean, "auto")
+    # 写入空串 / ssh:// / 内置已知前缀时同步归位 GitMirrorMode，防止旧模式污染
+    is_builtin_or_empty = norm_prefix in ("", SSH_PREFIX) or is_builtin_mirror_or_proxy(norm_prefix)
+    return None, norm_prefix, is_builtin_or_empty
+
+
 @app.post("/api/framework-config/{config_name}", summary="更新框架配置", tags=FRAMEWORK_CONFIG)
 async def update_framework_config(
-    request: Request, config_name: str, data: Dict[str, Any] = Body(...), _user: Dict[str, Any] = Depends(require_admin)
+    request: Request,
+    config_name: str,
+    data: Dict[str, Any] = Body(...),
+    _user: SessionRecord = Depends(require_admin),
 ):
     """
     更新框架配置
@@ -606,9 +713,21 @@ async def update_framework_config(
         return {"status": 1, "msg": "配置不存在"}
 
     config_obj = all_config_list[full_config_name]
+    normalized_data: Dict[str, object] = {}
+    reset_mirror_mode = False
+    for key, value in data.items():
+        err, norm_val, should_reset_mode = await _validate_git_mirror_config_write(full_config_name, key, value)
+        if err is not None:
+            return {"status": 1, "msg": err}
+        normalized_data[key] = norm_val
+        if should_reset_mode:
+            reset_mirror_mode = True
+    if reset_mirror_mode and "GitMirrorMode" in config_obj.config_list:
+        normalized_data["GitMirrorMode"] = "auto"
+
     is_success = False
 
-    for key, value in data.items():
+    for key, value in normalized_data.items():
         try:
             result = _write_config_item(config_obj, key, value)
             if result:
@@ -630,7 +749,7 @@ async def update_framework_config_item(
     config_name: str,
     item_name: str,
     value: Any = Body(..., embed=True),
-    _user: Dict[str, Any] = Depends(require_admin),
+    _user: SessionRecord = Depends(require_admin),
 ):
     """
     更新单个框架配置项
@@ -661,9 +780,15 @@ async def update_framework_config_item(
     if item_name not in config_obj.config_list:
         return {"status": 1, "msg": f"配置项 {item_name} 不存在"}
 
+    err, norm_value, should_reset_mode = await _validate_git_mirror_config_write(full_config_name, item_name, value)
+    if err is not None:
+        return {"status": 1, "msg": err}
+
     try:
-        result = _write_config_item(config_obj, item_name, value)
+        result = _write_config_item(config_obj, item_name, norm_value)
         if result:
+            if should_reset_mode and "GitMirrorMode" in config_obj.config_list:
+                _write_config_item(config_obj, "GitMirrorMode", "auto")
             return {"status": 0, "msg": "配置项已保存"}
         else:
             logger.warning(
@@ -1083,6 +1208,63 @@ def _plugin_store_star_order_key(
     return (int(deprecated), int(star_count is None), star_order, random_key, plugin_id.lower())
 
 
+def _build_local_only_store_entry(
+    plugin_key: str, raw_local: object, meta: LocalPluginMeta | None
+) -> dict[str, object]:
+    """把不在远程商店里的本地磁盘插件构造为商店列表兼容条目，用于「已安装」页签展示与卸载。"""
+    display_name = meta.name if meta is not None else plugin_key
+    if meta is None and isinstance(raw_local, dict) and "name" in raw_local and isinstance(raw_local["name"], str):
+        display_name = raw_local["name"]
+    git = meta.git if meta is not None else None
+    upstream_url = git.upstream_url if git is not None else ""
+    upstream_host = git.upstream_host if git is not None else ""
+    author = git.upstream_owner if git is not None and git.upstream_owner else ""
+    branch = git.branch if git is not None and git.branch else "main"
+    source_kind = meta.source_kind if meta is not None else "local"
+    load_status = meta.load_status if meta is not None else "unloaded"
+    last_error = meta.last_error if meta is not None else None
+    is_git = bool(meta.is_git and meta.has_remote) if meta is not None else False
+    info_text = f"本地插件：{display_name}"
+    content_label = "本地"
+    if load_status == "failed" and last_error:
+        info_text = f"加载失败：{last_error}"
+        content_label = "加载失败"
+    elif load_status == "disabled":
+        info_text = f"已禁用本地插件：{display_name}"
+        content_label = "已禁用"
+    elif upstream_url:
+        info_text = upstream_url
+    return {
+        "id": display_name,
+        "name": display_name,
+        "description": info_text,
+        "version": git.short_commit if git is not None and git.short_commit else "local",
+        "author": author,
+        "tags": [],
+        "icon": "",
+        "cover": "",
+        "avatar": "",
+        "link": upstream_url,
+        "branch": branch,
+        "type": "danger" if load_status == "failed" else "tip",
+        "content": content_label,
+        "info": info_text,
+        "installMsg": "",
+        "alias": [],
+        "installed": True,
+        "hasUpdate": False,
+        "status": "installed",
+        "in_store": False,
+        "is_git": is_git,
+        "local_source_kind": source_kind,
+        "local_upstream_url": upstream_url,
+        "local_upstream_host": upstream_host,
+        "load_status": load_status,
+        "last_error": last_error,
+        "has_icon": meta.icon_path is not None if meta is not None else False,
+    }
+
+
 @app.get("/api/plugin-store/list", summary="获取插件商店列表", tags=PLUGINS)
 async def get_plugin_store_list(
     request: Request,
@@ -1098,108 +1280,169 @@ async def get_plugin_store_list(
     获取远程插件商店的插件列表
 
     从远程服务器获取可用插件列表，并与本地已安装插件进行比对。
-
-    **页签筛选 / 搜索 / 分页都在服务端做**，翻页不会漏条目。`limit` **不传**时返回
-    全量（旧契约不变），此时 `plugins` 就是完整列表。
-
-    Args:
-        request: FastAPI 请求对象
-        _user: 认证用户信息
-        tab: 页签筛选
-        search: 搜索关键词
-        limit: 单页条数；不传=全量
-        offset: 偏移量
-        order_seed: 分页随机排序种子；同一种子保持跨页顺序稳定
-        sort: 排序方式（default / stars_desc / stars_asc）
-
-    Returns:
-        status: 0成功，1失败
-        data: 包含 plugins、fun_plugins、tool_plugins、adapter_plugins、plugin_groups 的对象
-            + count（筛选后总数）/ total_count（全量）/ counts（各页签总数）
+    ``tab == "installed"`` 会合并展示非商店/加载失败本地插件；远端不可达时该页签自动降级。
     """
     import httpx2
 
     from gsuid_core.utils.plugins_update.api import plugins_lib
 
+    store_offline = False
+    plugin_data: dict[str, object] = {}
     try:
         async with httpx2.AsyncClient() as client:
             response = await client.get(plugins_lib, timeout=15)
             response.raise_for_status()
-            plugin_data = response.json()
+            loaded: object = response.json()
+            if isinstance(loaded, dict):
+                plugin_data = loaded
+    except Exception as e:
+        from gsuid_core.logger import logger
 
-        # Get plugins data structure（远端 JSON 不可控：plugins 非 dict 时降级为空，不让列表接口 500）
-        plugins_dict = plugin_data.get("plugins", {})
-        if not isinstance(plugins_dict, dict):
-            plugins_dict = {}
+        logger.warning(t("log.webconsole.plugin_store_fail", error=e))
+        if tab != "installed":
+            return {"status": 1, "msg": f"获取插件列表失败: {str(e)}", "data": []}
+        store_offline = True
 
-        # Get installed plugins
+    try:
+        raw_plugins_dict = plugin_data["plugins"] if "plugins" in plugin_data else {}
+        plugins_dict: dict[str, object] = raw_plugins_dict if isinstance(raw_plugins_dict, dict) else {}
+
+        if plugins_dict:
+            plugin_registry.reclassify_with_store(plugins_dict)
+
         installed_plugins = await get_local_plugins_list()
         installed_ids = set(installed_plugins.keys())
 
-        # Format plugin data for frontend
-        formatted_plugins = []
+        # 用 store_plugin_id 与 -dev 基名对齐重命名/开发目录，排除单下划线禁用目录防混淆
+        local_by_store_id: dict[str, LocalPluginMeta] = {}
+        for meta in plugin_registry.list_cached(scope="plugin", include_disabled=False):
+            if meta.key not in installed_ids:
+                continue
+            if meta.git is not None and meta.git.store_plugin_id:
+                sid_low = meta.git.store_plugin_id.lower()
+                prev_match = local_by_store_id[sid_low] if sid_low in local_by_store_id else None
+                if prev_match is None or meta.key == sid_low:
+                    local_by_store_id[sid_low] = meta
+            if meta.key.endswith("-dev"):
+                base_low = meta.key.removesuffix("-dev")
+                if base_low not in local_by_store_id:
+                    local_by_store_id[base_low] = meta
 
-        for plugin_id, plugin_info in plugins_dict.items():
-            # 条目畸形（非 dict）时按空信息展示，不让单个坏条目拖垮整个列表
-            if not isinstance(plugin_info, dict):
-                plugin_info = {}
-            is_installed = plugin_id.lower() in installed_ids
+        formatted_plugins: list[dict[str, object]] = []
+        matched_local_keys: set[str] = set()
 
-            # Determine status
-            status = "not_installed"
-            if is_installed:
-                status = "installed"
+        for plugin_id, plugin_info_raw in plugins_dict.items():
+            plugin_info: dict[str, object] = plugin_info_raw if isinstance(plugin_info_raw, dict) else {}
+            pid_lower = plugin_id.lower()
+            local_meta: LocalPluginMeta | None = None
+            if pid_lower in installed_ids:
+                is_installed = True
+                matched_local_keys.add(pid_lower)
+                local_meta = plugin_registry.get(plugin_id)
+            elif pid_lower in local_by_store_id:
+                is_installed = True
+                local_meta = local_by_store_id[pid_lower]
+                matched_local_keys.add(local_meta.key)
+            else:
+                is_installed = False
+            local_git = local_meta.git if local_meta is not None else None
+
+            raw_link = plugin_info["link"] if "link" in plugin_info and isinstance(plugin_info["link"], str) else ""
+            raw_info = plugin_info["info"] if "info" in plugin_info and isinstance(plugin_info["info"], str) else ""
+            raw_alias = (
+                plugin_info["alias"] if "alias" in plugin_info and isinstance(plugin_info["alias"], list) else []
+            )
+            link_parts = raw_link.split("/") if raw_link else []
+            author = link_parts[-2] if len(link_parts) >= 2 else "Unknown"
 
             formatted_plugins.append(
                 {
                     "id": plugin_id,
-                    "name": plugin_info.get("info", plugin_id),
-                    "description": plugin_info.get("info", ""),
-                    "version": "latest",  # Remote version would need git check
-                    "author": plugin_info.get("link", "").split("/")[-2] if plugin_info.get("link") else "Unknown",
-                    "tags": plugin_info.get("alias", []),
-                    "icon": plugin_info.get("icon", ""),
-                    "cover": plugin_info.get("cover", ""),
-                    "avatar": plugin_info.get("avatar", ""),
-                    "link": plugin_info.get("link", ""),
-                    "branch": plugin_info.get("branch", "main"),
-                    "type": plugin_info.get("type", "tip"),
-                    "content": plugin_info.get("content", "普通"),
-                    "info": plugin_info.get("info", ""),
-                    "installMsg": plugin_info.get("installMsg", ""),
-                    "alias": plugin_info.get("alias", []),
+                    "name": raw_info or plugin_id,
+                    "description": raw_info,
+                    "version": "latest",
+                    "author": author,
+                    "tags": raw_alias,
+                    "icon": plugin_info["icon"]
+                    if "icon" in plugin_info and isinstance(plugin_info["icon"], str)
+                    else "",
+                    "cover": (
+                        plugin_info["cover"] if "cover" in plugin_info and isinstance(plugin_info["cover"], str) else ""
+                    ),
+                    "avatar": (
+                        plugin_info["avatar"]
+                        if "avatar" in plugin_info and isinstance(plugin_info["avatar"], str)
+                        else ""
+                    ),
+                    "link": raw_link,
+                    "branch": (
+                        plugin_info["branch"]
+                        if "branch" in plugin_info and isinstance(plugin_info["branch"], str)
+                        else "main"
+                    ),
+                    "type": (
+                        plugin_info["type"] if "type" in plugin_info and isinstance(plugin_info["type"], str) else "tip"
+                    ),
+                    "content": (
+                        plugin_info["content"]
+                        if "content" in plugin_info and isinstance(plugin_info["content"], str)
+                        else "普通"
+                    ),
+                    "info": raw_info,
+                    "installMsg": (
+                        plugin_info["installMsg"]
+                        if "installMsg" in plugin_info and isinstance(plugin_info["installMsg"], str)
+                        else ""
+                    ),
+                    "alias": raw_alias,
                     "installed": is_installed,
-                    "hasUpdate": False,  # Would need git version check
-                    "status": status,
+                    "hasUpdate": False,
+                    "status": "installed" if is_installed else "not_installed",
+                    "in_store": True,
+                    "is_git": (bool(local_meta.is_git and local_meta.has_remote) if local_meta is not None else False),
+                    "local_plugin_name": local_meta.name if local_meta is not None else None,
+                    "local_source_kind": local_meta.source_kind if local_meta is not None else None,
+                    "local_upstream_url": local_git.upstream_url if local_git is not None else "",
+                    "local_upstream_host": local_git.upstream_host if local_git is not None else "",
+                    "load_status": local_meta.load_status if local_meta is not None else None,
+                    "last_error": local_meta.last_error if local_meta is not None else None,
                 }
             )
 
-        # Get fun_plugins / tool_plugins / adapter_plugins from the remote data
-        fun_plugins = plugin_data.get("fun_plugins", [])
-        tool_plugins = plugin_data.get("tool_plugins", [])
-        adapter_plugins = plugin_data.get("adapter_plugins", [])
+        local_only_plugins: list[dict[str, object]] = []
+        for local_key, raw_local in installed_plugins.items():
+            if local_key in matched_local_keys:
+                continue
+            local_meta = plugin_registry.get(local_key)
+            local_only_plugins.append(_build_local_only_store_entry(local_key, raw_local, local_meta))
+
+        fun_raw = plugin_data["fun_plugins"] if "fun_plugins" in plugin_data else []
+        tool_raw = plugin_data["tool_plugins"] if "tool_plugins" in plugin_data else []
+        adapter_raw = plugin_data["adapter_plugins"] if "adapter_plugins" in plugin_data else []
+        fun_plugins: list[str] = [x for x in fun_raw if isinstance(x, str)] if isinstance(fun_raw, list) else []
+        tool_plugins: list[str] = [x for x in tool_raw if isinstance(x, str)] if isinstance(tool_raw, list) else []
+        adapter_plugins: list[str] = (
+            [x for x in adapter_raw if isinstance(x, str)] if isinstance(adapter_raw, list) else []
+        )
         fun_ids = set(fun_plugins)
         tool_ids = set(tool_plugins)
         adapter_ids = set(adapter_plugins)
-        # 其余 *_plugins 分组原样透传：远端新增分组（如 xxx_plugins）无需改接口即可被前端使用
         plugin_groups = {
             key: value for key, value in plugin_data.items() if key.endswith("_plugins") and isinstance(value, list)
         }
 
-        # 页签计数（前端页签徽标用）：对**全量**统计，不受页签/搜索/分页影响
         counts = {
             "all": len(formatted_plugins),
-            "installed": sum(1 for p in formatted_plugins if p["installed"]),
+            "installed": sum(1 for p in formatted_plugins if p["installed"]) + len(local_only_plugins),
             "updates": sum(1 for p in formatted_plugins if p["hasUpdate"]),
             "fun": sum(1 for p in formatted_plugins if p["id"] in fun_ids),
             "tool": sum(1 for p in formatted_plugins if p["id"] in tool_ids),
             "adapter": sum(1 for p in formatted_plugins if p["id"] in adapter_ids),
         }
 
-        # 先筛后切：页签 + 搜索都在服务端过滤完再分页
         selected = formatted_plugins
         if tab == "installed":
-            selected = [p for p in selected if p["installed"]]
+            selected = [p for p in selected if p["installed"]] + local_only_plugins
         elif tab == "updates":
             selected = [p for p in selected if p["hasUpdate"]]
         elif tab == "fun":
@@ -1214,13 +1457,11 @@ async def get_plugin_store_list(
             selected = [
                 p
                 for p in selected
-                if keyword in p["id"].lower()
-                or keyword in p["description"].lower()
-                or any(keyword in str(tag).lower() for tag in p["tags"])
+                if keyword in str(p["id"]).lower()
+                or keyword in str(p["description"]).lower()
+                or (isinstance(p["tags"], list) and any(keyword in str(tag).lower() for tag in p["tags"]))
             ]
 
-        # 全局排序必须先于分页，避免停止维护或可更新插件落入错误页。
-        # 同一 order_seed 让独立分页请求共享同一顺序。
         effective_sort = sort if sort in ("stars_desc", "stars_asc") else "default"
         if effective_sort != "default":
             from gsuid_core.webconsole.github_auth_api import parse_github_repo, resolve_repo_star_counts
@@ -1228,10 +1469,13 @@ async def get_plugin_store_list(
             repo_by_id: dict[str, str] = {}
             for p in selected:
                 raw_link = p["link"]
-                link_str = raw_link if isinstance(raw_link, str) and raw_link else f"https://github.com/{p['id']}"
+                pid = str(p["id"])
+                if not p["in_store"] and not raw_link:
+                    continue
+                link_str = raw_link if isinstance(raw_link, str) and raw_link else f"https://github.com/{pid}"
                 repo = parse_github_repo(link_str)
                 if repo is not None:
-                    repo_by_id[p["id"]] = repo.lower()
+                    repo_by_id[pid] = repo.lower()
             star_counts = await resolve_repo_star_counts(repo_by_id.values())
             descending = effective_sort == "stars_desc"
 
@@ -1251,9 +1495,9 @@ async def get_plugin_store_list(
         else:
             selected.sort(
                 key=lambda p: _plugin_store_order_key(
-                    p["id"],
+                    str(p["id"]),
                     deprecated=p["type"] == "danger" and p["content"] == "停止维护",
-                    has_update=p["hasUpdate"],
+                    has_update=bool(p["hasUpdate"]),
                     installed_tab=tab == "installed",
                     order_seed=order_seed,
                 )
@@ -1280,6 +1524,7 @@ async def get_plugin_store_list(
                 "has_more": offset + len(page_items) < count,
                 "order_seed": order_seed,
                 "sort": effective_sort,
+                "store_offline": store_offline,
             },
         }
     except Exception as e:
@@ -1439,7 +1684,7 @@ async def update_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] 
 
 
 @app.delete("/api/plugin-store/uninstall/{plugin_id}", summary="卸载已安装插件", tags=PLUGINS)
-async def uninstall_plugin(request: Request, plugin_id: str, _user: Dict[str, Any] = Depends(require_admin)):
+async def uninstall_plugin(request: Request, plugin_id: str, _user: SessionRecord = Depends(require_admin)):
     """
     卸载已安装的插件
 
@@ -1453,16 +1698,25 @@ async def uninstall_plugin(request: Request, plugin_id: str, _user: Dict[str, An
         msg: 操作结果信息
     """
     try:
-        from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
+        from gsuid_core.utils.path_safety import is_safe_filename
         from gsuid_core.utils.plugins_update._plugins import uninstall_plugin
 
         if not is_safe_filename(plugin_id):
             return {"status": 1, "msg": "非法插件名"}
-        try:
-            plugin_path = safe_join(PLUGINS_PATH, plugin_id)
-        except PathEscapeError:
-            return {"status": 1, "msg": "非法插件名"}
-        result = await uninstall_plugin(plugin_path)
+        found = await resolve_plugin_on_disk(plugin_id, include_core=False, include_buildin=False)
+        if found is None:
+            # 仅唯一活跃 store_plugin_id 命中时允许按商店 ID 卸载重命名目录（排除禁用目录）
+            pid_low = plugin_id.lower()
+            candidates = [
+                m
+                for m in plugin_registry.list_cached(scope="plugin", include_disabled=False)
+                if m.git is not None and m.git.store_plugin_id is not None and m.git.store_plugin_id.lower() == pid_low
+            ]
+            if len(candidates) == 1:
+                found = candidates[0]
+        if found is None:
+            return {"status": 1, "msg": f"❌ 插件 {plugin_id} 不存在!"}
+        result = await uninstall_plugin(found.path)
 
         # 检查结果中是否包含失败标记
         if "❌" in result:

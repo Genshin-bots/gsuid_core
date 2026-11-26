@@ -890,10 +890,15 @@ async def _reload_plugin_locked(plugin_name: str) -> str:
             await _run_shutdown_hooks(plugin_name, shutdown_hooks)
 
         _purge_plugin_modules(plugin_name)
+        from gsuid_core.plugin_registry import plugin_registry
+
+        await plugin_registry.refresh_one(plugin_name, with_commit=True)
         import_error = _import_plugin_modules(plugin_name, meta_info, module_list, route_anchor)
         if import_error is not None:
+            plugin_registry.mark_load_result(plugin_name, "failed", import_error)
             return import_error
 
+        plugin_registry.mark_load_result(plugin_name, "loaded")
         _schedule_plugin_start_hooks(plugin_name)
 
         logger.success(i18n_t("log.plugin.plugin_name", plugin_name=plugin_name))
@@ -940,9 +945,14 @@ def reload_plugin(plugin_name: str) -> str:
     queued_shutdown = False
     if not skip_shutdown:
         queued_shutdown = _enqueue_shutdown_hooks(plugin_name, shutdown_hooks, wait_task=prev_start)
+    from gsuid_core.plugin_registry import plugin_registry
+
+    plugin_registry.refresh_entry_sync(plugin_name)
     if import_error is not None:
+        plugin_registry.mark_load_result(plugin_name, "failed", import_error)
         return import_error
 
+    plugin_registry.mark_load_result(plugin_name, "loaded")
     # 若 shutdown 已入队，由关闭队列单点等待 prev_start，避免与启动任务重复等待和重复告警
     _schedule_plugin_start_hooks(plugin_name, prev_start_task=None if queued_shutdown else prev_start)
 

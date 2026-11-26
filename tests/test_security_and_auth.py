@@ -405,14 +405,26 @@ def test_github_oauth_encryption_star_cache_and_fallback(tmp_path: Path, monkeyp
     asyncio.run(scenario())
 
 
-def test_plugin_store_sorting_pagination_and_installed_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_plugin_store_sorting_pagination_and_installed_filter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """商店列表多页单调排序、停更沉底、无 star 排已知之后、默认种子稳定与已装筛选。"""
     import httpx2
     from starlette.requests import Request as StarletteRequest
 
     import gsuid_core.webconsole.plugins_api as plugins_api
     import gsuid_core.webconsole.github_auth_api as gh
+    from gsuid_core.plugin_registry import LocalPluginRegistry
     from gsuid_core.utils.plugins_update.api import plugins_lib
+
+    monkeypatch.setattr(
+        plugins_api,
+        "plugin_registry",
+        LocalPluginRegistry(
+            plugins_path=tmp_path / "plugins",
+            buildin_path=tmp_path / "buildin",
+            core_path=tmp_path / "core",
+            store_cache_path=tmp_path / "store_index.json",
+        ),
+    )
 
     store_url = urlparse(plugins_lib)
     synthetic_plugins: dict[str, dict[str, object]] = {

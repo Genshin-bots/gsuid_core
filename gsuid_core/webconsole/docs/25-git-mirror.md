@@ -28,10 +28,39 @@ Git 镜像源管理 API 提供对所有插件 git remote URL 的查看和修改�
 获取当前镜像配置、所有可用镜像源选项，以及每个插件的 git remote URL 和镜像状态。这是前端页面的**主数据接口**，页面加载时应首先调用此接口。
 
 ```
-GET /api/git-mirror/info
+GET /api/git-mirror/info?fresh=false&probe=false
 ```
 
-**请求参数**：无
+**查询参数**：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `fresh` | `boolean` | `false` | 是否强制现扫磁盘刷新本地插件元信息 |
+| `probe` | `boolean` | `false` | 是否并发探活官方镜像源（CNB / GitCode）可用性 |
+
+> 仅返回 `gsuid_core` 本体与具备 `origin` 远端的 Git 插件；非 Git 插件与无 `origin` 本地仓自动过滤。
+
+**新增响应字段**（向后兼容）：
+- `data.current_mirror_mode`：`auto` / `proxy` / `mirror`
+- `data.available_mirrors[].channel`：稳定通道标识（`github` / `gitcode` / `cnb` / `ghproxy` / `ssh`）
+- `data.plugins[].source_kind`：`official` / `fork` / `third_party`
+- `data.plugins[].upstream_url` / `upstream_host` / `upstream_provider` / `active_mirror_prefix` / `store_upstream_url`
+- `data.plugins[].supported_mirrors`：允许切换的内置通道数组（原生非 GitHub 源为 `[]`；Fork/第三方不含 `cnb`/`gitcode`）
+- `data.plugins[].mirror_probes`：探活结果数组 `[{channel, target_url, state, checked_at, expires_at, detail}]`
+- `data.plugins[].mirror`：扩展支持 `custom_proxy`、`custom_mirror`、`native`
+
+**按需探活接口**（管理员）：
+```
+POST /api/git-mirror/probe
+Body: { "plugin_name": "GenshinUID" | null, "force": false }
+```
+
+**原子保存全局镜像配置接口**（管理员，不影响已安装插件，仅作用于后续新装插件）：
+```
+POST /api/git-mirror/config
+Body: { "mirror_prefix": "https://my-proxy.example.com/", "mirror_type": "proxy" }
+Response: { "status": 0, "msg": "ok", "data": { "current_mirror": "...", "current_mirror_mode": "proxy" } }
+```
 
 **响应**：
 ```json
@@ -133,13 +162,17 @@ POST /api/git-mirror/set-all
 **请求体**：
 ```json
 {
-    "mirror_prefix": "https://gitcode.com/gscore-mirror/"
+    "mirror_prefix": "https://gitcode.com/gscore-mirror/",
+    "mirror_type": "auto"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `mirror_prefix` | `string` | ✅ | 镜像源/代理前缀。传空字符串 `""` 表示恢复为 GitHub 原始地址。传 `"ssh://"` 表示切换到 SSH 模式 |
+| `mirror_prefix` | `string` | ✅ | 镜像源/反代前缀。空字符串 `""` 恢复 GitHub 默认，`"ssh://"` 切换 SSH；自定义地址须通过 SSRF 校验 |
+| `mirror_type` | `string` | ❌ | `auto`（默认，内置源自动识别，自定义地址按 `proxy`）/ `default` / `proxy` / `mirror` / `ssh` |
+
+> 切源前全通道强制预检可拉取性；Fork / 第三方 / 非 GitHub 原生源不适用时返回 `status: "skipped"`，计入 `summary.skipped_count`。仅当恢复默认、已知内置源无失败项，或至少一项切源成功时才更新全局 `GitMirror` / `GitMirrorMode`（见 `summary.config_updated`）。
 
 **响应**（成功）：
 ```json
@@ -151,23 +184,28 @@ POST /api/git-mirror/set-all
             {
                 "name": "gsuid_core",
                 "success": true,
-                "message": "gsuid_core: https://github.com/xxx/gsuid_core -> https://gitcode.com/gscore-mirror/gsuid_core"
+                "status": "switched",
+                "message": "gsuid_core: https://github.com/Genshin-bots/gsuid_core -> https://gitcode.com/gscore-mirror/gsuid_core"
             },
             {
                 "name": "GenshinUID",
                 "success": true,
-                "message": "GenshinUID: https://github.com/xxx/GenshinUID -> https://gitcode.com/gscore-mirror/GenshinUID"
+                "status": "skipped",
+                "message": "GenshinUID: Fork 仓库 (user-b/GenshinUID) 不允许切换至扁平镜像源，请改用反代或 SSH"
             },
             {
-                "name": "SomePlugin",
+                "name": "NewPlugin",
                 "success": false,
-                "message": "SomePlugin: 非 git 仓库或无 origin remote"
+                "status": "failed",
+                "message": "NewPlugin: 预检未通过（目标仓库未同步或不存在 (HTTP 404)），已保留原源"
             }
         ],
         "summary": {
             "total": 3,
-            "success_count": 2,
-            "fail_count": 1
+            "success_count": 1,
+            "skipped_count": 1,
+            "fail_count": 1,
+            "config_updated": true
         }
     }
 }
@@ -177,23 +215,26 @@ POST /api/git-mirror/set-all
 
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
-| `data.results` | `array` | 每个插件的处理结果 |
+| `data.results` | `array` | 每个含 `origin` 的 Git 插件处理结果 |
 | `data.results[].name` | `string` | 插件名称 |
-| `data.results[].success` | `boolean` | 是否成功切换 |
-| `data.results[].message` | `string` | 详细信息，包含原始 URL 和目标 URL |
+| `data.results[].success` | `boolean` | 是否成功（`switched` / `unchanged` / `skipped` 为 `true`，`failed` 为 `false`） |
+| `data.results[].status` | `string` | `switched` / `unchanged` / `skipped` / `failed` |
+| `data.results[].message` | `string` | 详细信息，包含原/目标 URL 或跳过/拦截原因 |
 | `data.summary.total` | `int` | 处理的插件总数（含 core 本体） |
-| `data.summary.success_count` | `int` | 成功切换的数量 |
-| `data.summary.fail_count` | `int` | 失败的数量（通常是非 git 仓库导致） |
+| `data.summary.success_count` | `int` | `switched` + `unchanged` 数量 |
+| `data.summary.skipped_count` | `int` | 不适用并自动跳过的数量（如 Fork / 非 GitHub 原生源） |
+| `data.summary.fail_count` | `int` | 预检未通过或写入失败的数量 |
+| `data.summary.config_updated` | `boolean` | 本次是否同步更新了全局 `GitMirror` / `GitMirrorMode` 配置 |
 
 **副作用**：
-- 此接口会同时将 `GitMirror` 配置项更新为传入的 `mirror_prefix` 值
-- 后续通过插件商店安装的新插件将自动使用此镜像源/代理/SSH
+- 仅当 `summary.config_updated` 为 `true` 时，才会同步更新 `GitMirror` 与 `GitMirrorMode` 配置项
+- 后续通过插件商店安装的新插件将按上述配置与归属规则使用镜像源/反代/SSH
 
 ---
 
 ## 25.3 设置单个插件的镜像源
 
-将指定插件的 git remote URL 切换到指定镜像源/代理/SSH。适用于只想切换某个特定插件的场景。
+将指定插件的 git remote URL 切换到指定镜像源/反代/SSH。适用于只想切换某个特定插件的场景。
 
 ```
 POST /api/git-mirror/set-plugin/{plugin_name}
@@ -208,13 +249,15 @@ POST /api/git-mirror/set-plugin/{plugin_name}
 **请求体**：
 ```json
 {
-    "mirror_prefix": "ssh://"
+    "mirror_prefix": "ssh://",
+    "mirror_type": "auto"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `mirror_prefix` | `string` | ✅ | 镜像源/代理前缀。传空字符串 `""` 表示恢复为 GitHub 原始地址。传 `"ssh://"` 表示切换到 SSH 模式 |
+| `mirror_prefix` | `string` | ✅ | 镜像源/反代前缀。空字符串 `""` 恢复 GitHub 默认，`"ssh://"` 切换 SSH；自定义地址须通过 SSRF 校验 |
+| `mirror_type` | `string` | ❌ | `auto`（默认）/ `default` / `proxy` / `mirror` / `ssh` |
 
 **响应**（成功）：
 ```json

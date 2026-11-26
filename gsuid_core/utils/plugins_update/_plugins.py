@@ -9,7 +9,20 @@ import aiohttp
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.server import _DefHook, core_start_def
+from gsuid_core.server import _DefHook, core_start_def, core_shutdown_def
+from gsuid_core.plugin_registry import (
+    SSH_PREFIX,
+    GITHUB_HOST,
+    CORE_PLUGIN_NAME,
+    SSH_GITHUB_TEMPLATE,
+    plugin_registry,
+    close_probe_client,
+    classify_git_source,
+    is_valid_plugin_entry,
+    resolve_plugin_on_disk,
+    resolve_target_mirror_mode,
+    validate_mirror_prefix_async,
+)
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 from .api import CORE_PATH, PLUGINS_PATH, plugins_lib
@@ -23,15 +36,14 @@ from .git_async import (
     git_reset_hard,
     git_diff_commits,
     git_is_valid_repo,
+    git_set_local_config,
     git_get_current_branch,
-    git_get_current_commit,
+    git_unset_local_config,
 )
 from .reload_plugin import reload_plugin_async
 
 plugins_list: Dict[str, Dict[str, str]] = {}
 
-# 插件 commit 版本信息（仅在运行时内部流转，不持久化）
-plugin_commit_versions: Dict[str, str] = {}
 AUTO_RELOAD_FAIL_PREFIX = "❌ [自动重载失败]"
 
 
@@ -231,13 +243,18 @@ async def check_plugin_exist(name: str):
     if name in ["core_command", "gs_test"]:
         return "❌ 内置插件不可删除！"
 
-    for i in PLUGINS_PATH.iterdir():
-        if i.stem.lower().strip("_") == name:
-            return i
-    else:
-        for i in PLUGINS_PATH.iterdir():
-            if name in i.name.lower():
-                return i
+    direct = await resolve_plugin_on_disk(name)
+    if direct is not None:
+        return direct.path
+
+    entries = await plugin_registry.list_plugins(scope="plugin", include_disabled=True, fresh=True)
+    for item in entries:
+        if item.name.lower().strip("_") == name:
+            return item.path
+    for item in entries:
+        if name in item.name.lower():
+            return item.path
+    return None
 
 
 def _remove_plugin_path(path: Path) -> tuple[bool, str]:
@@ -308,6 +325,9 @@ async def uninstall_plugin(path: Path):
         clean_plugin_help(name)
     except Exception as e:
         logger.warning(t("log.plugin.gscore_fail_help_cache", plugin_name=name, e=e))
+
+    refresh_key = path.stem if not was_dir else path.name
+    await plugin_registry.refresh_one(refresh_key, with_commit=False)
 
     kind = "目录" if was_dir else "文件"
     return f"{warn}✅ 插件{kind} {name} 删除成功!"
@@ -393,26 +413,24 @@ def check_retcode(retcode: int) -> str:
 
 
 async def update_all_plugins(level: int = 0) -> List[str]:
-    log_list = []
-    for plugin in PLUGINS_PATH.iterdir():
-        if _is_plugin(plugin):
-            log_list.extend(await update_from_git_async(level, plugin))
+    log_list: List[str] = []
+    entries = await plugin_registry.list_plugins(scope="plugin", git_only=True, fresh=True)
+    for entry in entries:
+        log_list.extend(await update_from_git_async(level, entry.path))
     return log_list
 
 
 def _is_plugin(plugin: Path) -> bool:
-    if plugin.is_dir() and plugin.name != "__pycache__" and plugin.name != "core_command":
-        return True
-    return False
+    return is_valid_plugin_entry(plugin, scope="plugin") and plugin.is_dir()
 
 
 async def set_proxy_all_plugins(proxy: Optional[str] = None) -> List[str]:
-    log_list = []
-    for plugin in PLUGINS_PATH.iterdir():
-        if _is_plugin(plugin):
-            log_list.append(await set_proxy(plugin, proxy))
-    log_list.append(await set_proxy(CORE_PATH, proxy))
-    return log_list
+    from .git_mirror import get_current_mirror_mode, set_all_plugins_mirror_detailed
+
+    mirror_prefix = proxy if proxy is not None else core_plugins_config.get_config("GitMirror").data
+    mirror_type = get_current_mirror_mode() if proxy is None else "auto"
+    items = await set_all_plugins_mirror_detailed(mirror_prefix, mirror_type=mirror_type)
+    return [item.message for item in items]
 
 
 async def refresh_list() -> List[str]:
@@ -421,11 +439,13 @@ async def refresh_list() -> List[str]:
         logger.trace(t("log.plugin.plugins_lib", plugins_lib=plugins_lib))
         async with session.get(plugins_lib) as resp:
             _plugins_list: Dict[str, Dict[str, Dict[str, str]]] = await resp.json()
-            for i in _plugins_list["plugins"]:
+            raw_plugins = _plugins_list["plugins"]
+            for i in raw_plugins:
                 if i.lower() not in plugins_list:
                     refresh_list.append(i)
                     logger.debug(t("log.plugin.event_info", i=i))
-                plugins_list[i.lower()] = _plugins_list["plugins"][i]
+                plugins_list[i.lower()] = raw_plugins[i]
+            plugin_registry.reclassify_with_store(raw_plugins)
     return refresh_list
 
 
@@ -436,17 +456,17 @@ async def get_plugins_list() -> Dict[str, Dict[str, str]]:
 
 
 async def get_local_plugins_list() -> Dict[str, Dict[str, str]]:
-    """获取本地已安装的插件列表"""
+    """获取本地已安装的插件列表（含单下划线禁用插件，供展示与卸载）。"""
     local_plugins: Dict[str, Dict[str, str]] = {}
-    for plugin_dir in PLUGINS_PATH.iterdir():
-        if _is_plugin(plugin_dir):
-            plugin_name = plugin_dir.name
-            local_plugins[plugin_name.lower()] = {
-                "name": plugin_name,
-                "link": str(plugin_dir),
-                "info": f"本地插件：{plugin_name}",
-                "branch": "main",
-            }
+    entries = await plugin_registry.list_plugins(scope="plugin", include_disabled=True, fresh=True)
+    for entry in entries:
+        branch = entry.git.branch if entry.git is not None and entry.git.branch else "main"
+        local_plugins[entry.key] = {
+            "name": entry.name,
+            "link": str(entry.path),
+            "info": f"本地插件：{entry.name}",
+            "branch": branch,
+        }
     return local_plugins
 
 
@@ -480,44 +500,78 @@ async def get_plugins_url(name: str) -> Optional[Dict[str, str]]:
 
 async def install_plugins(plugins: Dict[str, str]) -> str:
     from .git_async import git_set_remote_url
-    from .git_mirror import SSH_GITHUB_TEMPLATE, _is_ssh_mode, _is_proxy_prefix
+    from .git_mirror import get_current_mirror_mode
 
-    git_mirror: str = core_plugins_config.get_config("GitMirror").data
+    git_mirror: str = core_plugins_config.get_config("GitMirror").data.strip()
+    mirror_mode = get_current_mirror_mode()
+    if git_mirror and git_mirror.lower().startswith(SSH_PREFIX):
+        git_mirror = SSH_PREFIX
+    elif git_mirror:
+        mirror_err = await validate_mirror_prefix_async(git_mirror)
+        if mirror_err is not None:
+            logger.warning(
+                t(
+                    "log.plugin.git_mirror_probe_blocked",
+                    plugin_name=plugins["link"].strip(),
+                    target_url=git_mirror,
+                    reason=mirror_err,
+                )
+            )
+            git_mirror = ""
 
-    plugin_name = plugins["link"].split("/")[-1]
+    raw_link = plugins["link"].strip().rstrip("/")
+    plugin_name = raw_link.split("/")[-1]
+    if plugin_name.lower().endswith(".git"):
+        plugin_name = plugin_name[:-4]
 
-    # 始终保留一份原始 GitHub URL 作为兜底，用于镜像源未同步时的回退
-    fallback_git_path = f"{plugins['link']}.git"
+    from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
 
-    # 使用 GitMirror 镜像源/代理/SSH
-    if git_mirror:
-        if _is_ssh_mode(git_mirror):
-            # SSH 模式：ssh://git@ssh.github.com:443/{owner}/{repo}.git
-            link = plugins["link"].rstrip("/")
-            parts = link.split("/")
-            if len(parts) >= 2:
-                owner, repo = parts[-2], parts[-1]
-                git_path = SSH_GITHUB_TEMPLATE.format(owner=owner, repo=repo)
-            else:
-                git_path = fallback_git_path
-        elif _is_proxy_prefix(git_mirror):
-            # 代理前缀模式：{proxy_prefix}{full_github_url}（仍指向 GitHub 源，无需 fallback）
-            proxy_prefix = git_mirror.rstrip("/") + "/"
-            git_path = f"{proxy_prefix}{plugins['link']}.git"
+    if not is_safe_filename(plugin_name):
+        return f"❌ 非法插件目录名: {plugin_name}"
+    try:
+        path = safe_join(PLUGINS_PATH, plugin_name)
+    except PathEscapeError:
+        return f"❌ 非法插件目录名: {plugin_name}"
+
+    resolved_mode = resolve_target_mirror_mode(git_mirror, mirror_mode)
+    if resolved_mode == "mirror" and not plugin_registry.has_store_catalog:
+        await plugin_registry.ensure_store_catalog_loaded(timeout=4.0)
+
+    # 始终保留原始规范上游地址，供非官方仓直连与官方镜像未同步回退
+    fallback_git_path = raw_link if raw_link.lower().endswith(".git") else f"{raw_link}.git"
+    classified = classify_git_source(raw_link, plugin_name=plugin_name, catalog=plugin_registry.catalog)
+    is_github_upstream = classified.upstream_host.lower() == GITHUB_HOST and bool(
+        classified.upstream_owner and classified.upstream_repo
+    )
+
+    used_mode = "default"
+    used_prefix = ""
+    if git_mirror and is_github_upstream:
+        if resolved_mode == "ssh":
+            git_path = SSH_GITHUB_TEMPLATE.format(
+                owner=classified.upstream_owner,
+                repo=classified.upstream_repo,
+            )
+            used_mode = "ssh"
+        elif resolved_mode == "proxy":
+            proxy_prefix = git_mirror.strip().rstrip("/") + "/"
+            git_path = f"{proxy_prefix}{classified.upstream_url}.git"
+            used_mode = "proxy"
+            used_prefix = proxy_prefix
+        elif resolved_mode == "mirror" and classified.source_kind == "official":
+            # 扁平镜像仅作用于官方商店同源插件，Fork / 第三方 / 非 GitHub 严禁劫持
+            mirror_prefix = git_mirror.strip().rstrip("/") + "/"
+            git_path = f"{mirror_prefix}{classified.upstream_repo}"
+            used_mode = "mirror"
+            used_prefix = mirror_prefix
         else:
-            # 镜像模式：{mirror_prefix}/{repo_name}（cnb/gitcode 可能未同步，需 fallback）
-            mirror_prefix = git_mirror.rstrip("/")
-            git_path = f"{mirror_prefix}/{plugin_name}"
+            git_path = fallback_git_path
     else:
         git_path = fallback_git_path
 
-    # 仅当用户配置了「镜像模式」（cnb/gitcode）时才允许 fallback；
-    # 代理/SSH/默认 GitHub 模式路由目标都是 GitHub，不存在「镜像未同步」场景。
-    is_mirror_mode = bool(git_mirror) and not _is_ssh_mode(git_mirror) and not _is_proxy_prefix(git_mirror)
-    enable_mirror_fallback = is_mirror_mode and git_path != fallback_git_path
+    enable_mirror_fallback = used_mode == "mirror" and git_path != fallback_git_path
 
     logger.info(t("log.plugin.git_path_git_path_start", git_path=git_path))
-    path = PLUGINS_PATH / plugin_name
     if path.exists():
         return "❌ 该插件已经安装过了!"
 
@@ -539,8 +593,8 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
             success, message = await git_clone(fallback_git_path, path, branch=branch, depth=1)
             used_fallback = True
             if success:
-                # 把插件的 remote URL 也设回 GitHub 源，避免后续 update_from_git_async
-                # 又去走那个没同步的镜像导致再次失败
+                used_mode = "default"
+                used_prefix = ""
                 try:
                     ok, set_msg = await git_set_remote_url(path, fallback_git_path)
                     if ok:
@@ -562,6 +616,16 @@ async def install_plugins(plugins: Dict[str, str]) -> str:
         if used_fallback:
             return f"❌ 插件{plugin_name}安装失败：镜像源 {git_mirror} 与 GitHub 源均不可用，最后错误: {message}"
         return f"❌ 插件{plugin_name}安装失败: {message}"
+
+    # 持久化真实上游与镜像模式到 .git/config，避免后续切源丢作者或误判自建镜像为 Fork
+    if classified.upstream_url:
+        await git_set_local_config(path, "gscore.upstreamUrl", classified.upstream_url)
+    await git_set_local_config(path, "gscore.mirrorMode", used_mode)
+    if used_prefix:
+        await git_set_local_config(path, "gscore.mirrorPrefix", used_prefix)
+    else:
+        await git_unset_local_config(path, "gscore.mirrorPrefix")
+    await plugin_registry.refresh_one(plugin_name, with_commit=True)
 
     if used_fallback:
         logger.info(t("log.plugin.plugin_name_github", plugin_name=plugin_name))
@@ -711,10 +775,11 @@ def extract_last_url(text: str):
 
 async def set_proxy(repo: Path, proxy: Optional[str] = None) -> str:
     """设置单个仓库的 git remote URL（使用 GitMirror 镜像源）"""
-    from .git_mirror import set_plugin_mirror
+    from .git_mirror import set_plugin_mirror, get_current_mirror_mode
 
     mirror_prefix = proxy if proxy is not None else core_plugins_config.get_config("GitMirror").data
-    success, message = await set_plugin_mirror(repo, mirror_prefix)
+    mirror_type = get_current_mirror_mode() if proxy is None else "auto"
+    _success, message = await set_plugin_mirror(repo, mirror_prefix, mirror_type=mirror_type)
     return message
 
 
@@ -798,6 +863,16 @@ async def update_from_git_async(
 
     logger.info(t("log.plugin.plugin_name_pull_message", plugin_name=plugin_name, pull_message=pull_message))
 
+    refresh_target = (
+        CORE_PLUGIN_NAME
+        if repo_like is None
+        else await asyncio.to_thread(
+            lambda p: CORE_PLUGIN_NAME if p.resolve() == CORE_PATH.resolve() else p.name,
+            repo_path,
+        )
+    )
+    await plugin_registry.refresh_one(refresh_target, with_commit=True)
+
     # 构建更新日志
     log_list: List[str] = []
     if commits_diff:
@@ -851,9 +926,12 @@ async def resolve_plugin_name(plugin_name: str) -> str:
                     pn = _n.lower()
                     break
 
-    for _n in PLUGINS_PATH.iterdir():
-        if pn == _n.name.lower():
-            return _n.name
+    cached = plugin_registry.get(pn)
+    if cached is not None:
+        return cached.name
+    disk = await resolve_plugin_on_disk(pn)
+    if disk is not None:
+        return disk.name
 
     return plugin_name
 
@@ -878,50 +956,21 @@ async def update_plugins(
     return log_list
 
 
-# 注册到 on_core_start 钩子，优先级最高(priority=0)
+# 注册到 on_core_start 钩子，优先级最高(priority=0)：两阶段非阻塞建表
 async def _init_plugin_commit_versions() -> None:
-    """
-    在启动时初始化所有插件和本体的 commit 版本信息。
-    该函数仅在运行时内部流转，不持久化到任何存储。
-    """
-    global plugin_commit_versions
-
-    # 获取 core 的 commit 版本
-    core_commit = await git_get_current_commit(CORE_PATH)
-    if core_commit:
-        plugin_commit_versions["core"] = core_commit
-
-    # 获取所有插件的 commit 版本
-    for plugin_dir in PLUGINS_PATH.iterdir():
-        if plugin_dir.is_dir() and (plugin_dir / ".git").exists():
-            commit = await git_get_current_commit(plugin_dir)
-            if commit:
-                plugin_commit_versions[plugin_dir.name.lower()] = commit
-
-    # 同时检查 buildin_plugins
-    buildin_path = CORE_PATH / "buildin_plugins"
-    if buildin_path.exists():
-        for plugin_dir in buildin_path.iterdir():
-            if plugin_dir.is_dir() and (plugin_dir / ".git").exists():
-                commit = await git_get_current_commit(plugin_dir)
-                if commit:
-                    plugin_commit_versions[plugin_dir.name.lower()] = commit
-
-    logger.info(t("log.plugin.git_init_plugin_commit", p0=len(plugin_commit_versions)))
+    """阶段 A 快速纯盘建表(<10ms)，阶段 B 后台限流并发补全 commit 与按需预热商店索引。"""
+    await plugin_registry.refresh_all(with_commit=False)
+    plugin_registry.schedule_commit_enrichment()
+    plugin_registry.schedule_store_catalog_bootstrap()
+    git_count = len(plugin_registry.list_cached(scope="plugin", git_only=True, include_core=True))
+    logger.info(t("log.plugin.git_init_plugin_commit", p0=git_count))
 
 
-# 注册到 on_core_start 钩子，优先级最高
+# 注册到 on_core_start / on_core_shutdown 钩子
 core_start_def.add(_DefHook(priority=0, func=_init_plugin_commit_versions))
+core_shutdown_def.add(_DefHook(priority=0, func=close_probe_client))
 
 
 def get_plugin_commit(plugin_name: str) -> str:
-    """
-    获取指定插件的 commit 版本。
-
-    Args:
-        plugin_name: 插件名称
-
-    Returns:
-        commit hash 短格式，未找到则返回空字符串
-    """
-    return plugin_commit_versions.get(plugin_name.lower(), "")
+    """获取指定插件的 commit 版本（统一走元信息中心实时快照）。"""
+    return plugin_registry.get_commit(plugin_name)

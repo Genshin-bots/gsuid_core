@@ -71,7 +71,7 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
     ),
     "GitMirror": GsStrConfig(
         "Git镜像源",
-        "选择git镜像源，用于加速插件安装和更新。支持镜像源(gitcode/cnb)、代理前缀(ghproxy)和SSH三种模式",
+        "选择git镜像源，用于加速插件安装和更新。支持镜像源(gitcode/cnb)、代理前缀(ghproxy)、自定义反代/扁平镜像和SSH",
         "",
         [
             "",
@@ -80,5 +80,11 @@ CONIFG_DEFAULT: Dict[str, GSC] = {
             "https://ghproxy.mihomo.me/",
             "ssh://",
         ],
+    ),
+    "GitMirrorMode": GsStrConfig(
+        "Git镜像模式",
+        "auto 自动识别内置源（自定义地址默认按保真反代）；proxy 强制按反代前缀；mirror 强制按扁平镜像（仅官方插件）",
+        "auto",
+        ["auto", "proxy", "mirror"],
     ),
 }

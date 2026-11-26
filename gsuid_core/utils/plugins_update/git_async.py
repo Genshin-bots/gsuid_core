@@ -27,7 +27,12 @@ GIT_TIMEOUT = 30
 GIT_CLONE_TIMEOUT = 120
 
 
-async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tuple[int, str, str]:
+async def run_git(
+    repo_path: Path,
+    *args: str,
+    timeout: int = GIT_TIMEOUT,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
     """
     在指定目录下异步执行 git 命令。
 
@@ -61,6 +66,8 @@ async def run_git(repo_path: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tu
     env["GIT_HTTP_TIMEOUT"] = "30"
     # 使用简单的 User-Agent 避免某些服务器拒绝
     env["GIT_HTTP_USER_AGENT"] = "git/gsuid_core"
+    if extra_env:
+        env.update(extra_env)
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -478,3 +485,55 @@ async def git_is_valid_repo(repo_path: Path) -> bool:
 
     returncode, _, _ = await run_git(repo_path, "rev-parse", "--git-dir")
     return returncode == 0
+
+
+async def git_set_local_config(repo_path: Path, key: str, value: str) -> bool:
+    """写入仓库局部 .git/config（不污染工作区）。"""
+    returncode, _, _ = await run_git(repo_path, "config", "--local", key, value, timeout=10)
+    return returncode == 0
+
+
+async def git_unset_local_config(repo_path: Path, key: str) -> bool:
+    """删除仓库局部 .git/config 键（不存在也视为成功）。"""
+    returncode, _, _ = await run_git(repo_path, "config", "--local", "--unset-all", key, timeout=10)
+    return returncode in (0, 5)
+
+
+async def git_ls_remote_head(url: str, *, timeout: int = 6) -> tuple[bool, str]:
+    """非交互方式校验远端仓库是否可拉取（禁用凭据与 SSH 交互确认，HTTP 禁重定向防 SSRF）。"""
+    extra_env: dict[str, str] | None = None
+    cmd_args: list[str] = []
+    if url.lower().startswith(("http://", "https://")):
+        cmd_args.extend(["-c", "http.followRedirects=false"])
+    elif url.startswith(("ssh://", "git@")) and "GIT_SSH_COMMAND" not in os.environ:
+        extra_env = {"GIT_SSH_COMMAND": "ssh -o BatchMode=yes"}
+    cmd_args.extend(["ls-remote", "--exit-code", "--", url, "HEAD"])
+    returncode, stdout, stderr = await run_git(
+        Path("."),
+        *cmd_args,
+        timeout=timeout,
+        extra_env=extra_env,
+    )
+    if returncode == 0 and stdout:
+        return True, ""
+    if returncode == -999:
+        return False, f"探测超时({timeout}s)"
+    return False, (stderr or "远端不可访问")[:200]
+
+
+async def git_get_head_commit_info(repo_path: Path, *, timeout: int = 8) -> tuple[str, str, str, str, str] | None:
+    """单次 git log -1 取回 (hash, short_hash, author, date, message)。"""
+    returncode, stdout, _ = await run_git(
+        repo_path,
+        "log",
+        "-1",
+        "--format=%H%x1f%an%x1f%ai%x1f%s",
+        timeout=timeout,
+    )
+    if returncode != 0 or not stdout:
+        return None
+    parts = stdout.split("\x1f", 3)
+    if len(parts) < 4:
+        return None
+    full_hash = parts[0].strip()
+    return (full_hash, full_hash[:7], parts[1].strip(), parts[2].strip(), parts[3].strip())
