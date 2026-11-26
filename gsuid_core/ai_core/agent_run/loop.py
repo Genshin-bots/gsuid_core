@@ -241,6 +241,17 @@ class LoopPhase:
         async def _try_send(txt: str, at_uid: str | None) -> bool:
             return await _try_send_gated(self, st, txt, at_user_id=at_uid)
 
+        single_text_part = (
+            sum(1 for p in node.model_response.parts if isinstance(p, TextPart) and p.content.strip()) == 1
+        )
+        has_tool_call = any(isinstance(p, ToolCallPart) for p in node.model_response.parts)
+        allow_defer_pure_meme = (
+            self.create_by in _MAIN_PERSONA_CREATE_BY
+            and not self.is_subagent
+            and single_text_part
+            and not has_tool_call
+        )
+
         for part in node.model_response.parts:
             if isinstance(part, ToolCallPart):
                 saw_tool_call_this_turn = True
@@ -307,6 +318,7 @@ class LoopPhase:
                     resp_unsent=resp_unsent,
                     discard_preview=_discard,
                     try_send_gated=_try_send,
+                    defer_pure_meme=allow_defer_pure_meme,
                 )
             elif isinstance(part, ThinkingPart):
                 thinking = part.content.strip()

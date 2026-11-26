@@ -20,19 +20,20 @@
 | GET | `/api/meme/{meme_id}` | 获取单条记录详情 |
 | GET | `/api/meme/image/{meme_id}` | 获取原始图片文件 |
 | GET | `/api/meme/thumb/{meme_id}` | 获取长边 160 像素的预览 JPEG |
-| PUT | `/api/meme/{meme_id}` | 更新标签/描述/归属 |
+| PUT | `/api/meme/{meme_id}` | 更新语义元数据、启停状态与所属包 |
 | POST | `/api/meme/{meme_id}/move` | 移动表情包到目标文件夹 |
 | DELETE | `/api/meme/{meme_id}` | 删除表情包（文件+记录） |
 | POST | `/api/meme/upload` | 手动上传表情包 |
-| POST | `/api/meme/{meme_id}/retag` | 重新触发 VLM 打标 |
-| GET | `/api/meme/stats` | 统计概览（包含 `persona_counts`） |
+| POST | `/api/meme/{meme_id}/retag` | 强制重新触发 VLM 打标（在线热覆盖） |
+| GET | `/api/meme/stats` | 统计概览（含 `incomplete_count`、`enabled_count`） |
 | POST | `/api/meme/batch_delete` | 批量删除表情包 |
+| POST | `/api/meme/batch_update` | 批量启停或调整表情包归属 |
 | POST | `/api/meme/purge` | 按条件批量清空（`purge_all` 或 status/folder/人格） |
 | POST | `/api/meme/purge_rejected` | 清除所有已拒绝的表情包（兼容旧前端） |
-| POST | `/api/meme/batch_retag_pending` | 批量重新打标（待手动处理状态） |
+| POST | `/api/meme/batch_retag_pending` | 批量强制触发 VLM 识别（待补全 / 待手动 / 选中覆盖） |
 | POST | `/api/meme/export` | 批量导出为 .meme 格式 |
 | POST | `/api/meme/import` | 导入 .meme 格式文件 |
-| GET | `/api/meme/packs` | 列出表情包 |
+| GET | `/api/meme/packs` | 列出表情包（含 `is_repo_pack` 只读标记） |
 | POST | `/api/meme/packs` | 创建空表情包 |
 | GET | `/api/persona/{persona_name}/meme_packs` | 读取人格挂载的表情包 |
 | PUT | `/api/persona/{persona_name}/meme_packs` | 替换人格挂载的表情包 |
@@ -124,7 +125,7 @@ GET /api/meme/image/{meme_id}
 
 **响应**: 返回图片二进制流，`Content-Type` 为图片 MIME 类型。
 
-### 4. 更新标签/描述/归属
+### 4. 更新语义元数据、启停状态与所属包
 
 ```
 PUT /api/meme/{meme_id}
@@ -134,15 +135,21 @@ PUT /api/meme/{meme_id}
 
 ```json
 {
-    "description": "新描述",
-    "emotion_tags": ["开心", "搞笑"],
-    "scene_tags": ["日常"],
-    "custom_tags": ["猫咪"],
-    "persona_hint": "common"
+    "title": "斜眼嫌弃",
+    "ocr_text": "",
+    "usage_hint": "适合用于对方说离谱话时表达冷眼旁观或无语",
+    "description": "角色侧目斜视，眼神带着轻微嫌弃",
+    "emotion_tags": ["嫌弃", "无语"],
+    "scene_tags": [],
+    "custom_tags": ["斜眼看", "冷眼旁观"],
+    "persona_hint": "common",
+    "enabled": true,
+    "pack_ids": ["pack-id-1"],
+    "status": "manual"
 }
 ```
 
-所有字段均为可选，只更新传入的字段。更新后状态自动设为 `manual`。
+所有字段均为可选，只更新传入的字段。仅改 `enabled` / `pack_ids` 时不改写 `status`，只刷新 Qdrant payload；`rejected` / `pending` / `pending_manual` 不会因编辑字段被静默提升，状态变更需显式传 `status`。市场仓库管理的只读包（`is_repo_pack=true`）不允许手动增删归属。
 
 **响应**:
 
@@ -227,14 +234,14 @@ POST /api/meme/upload
 POST /api/meme/{meme_id}/retag
 ```
 
-将记录状态重置为 `pending` 并加入打标队列。
+强制加入 VLM 识别队列（`mode="retag_overwrite"`, `force_run=true`，不受 `meme_vlm_enable` 开关限制）。已在线记录（`tagged`/`manual`）保持可检索直至覆盖完成；`rejected` / `pending_manual` 会先切回 `pending`。
 
 **响应**:
 
 ```json
 {
     "status": 0,
-    "msg": "已加入打标队列",
+    "msg": "已加入识别队列",
     "data": null
 }
 ```
@@ -271,10 +278,13 @@ GET /api/meme/stats
             "早柚": 100
         },
         "total_usage": 1234,
+        "incomplete_count": 42,
+        "enabled_count": 480,
         "top_memes": [
             {
                 "meme_id": "ab12cd34ef56gh78",
-                "description": "一只猫翻白眼",
+                "title": "斜眼嫌弃",
+                "description": "角色侧目斜视",
                 "use_count": 50,
                 "file_path": "common/ab12cd34ef56gh78.webp"
             }
@@ -499,55 +509,77 @@ POST /api/meme/purge_rejected
 }
 ```
 
-### 10c. 批量重新打标（待手动处理状态）
+### 10c. 批量触发 VLM 识别（待补全 / 待手动 / 选中覆盖）
 
 ```
 POST /api/meme/batch_retag_pending
 ```
 
-一键将所有状态为 `pending_manual`（VLM 打标失败，待人工处理）的表情包重新加入 VLM 打标队列。无需请求体。
+批量触发强制 VLM 识别（`force_run=true`，不受 `meme_vlm_enable` 限制）。支持可选 JSON 请求体，不传体时默认 `mode="incomplete"`：
 
-执行逻辑：将 `pending_manual` 状态的记录重置为 `pending`，并逐条调用打标队列入队。
+```json
+{
+    "mode": "incomplete",
+    "pack_id": null,
+    "meme_ids": null
+}
+```
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `mode` | string | 否 | `incomplete` | `incomplete`=待补全记录（`pending`/`pending_manual` 或缺 `title`/`usage_hint`，保护手填非空字段）；`pending_only`=仅 `pending_manual`；`selected`=对 `meme_ids` 全量覆盖重识别 |
+| `pack_id` | string | 否 | - | 可选按所属表情包过滤（适用于 `incomplete` / `pending_only`） |
+| `meme_ids` | string[] | 否 | - | `mode="selected"` 时必填 |
 
 **响应**:
 
-无待手动处理的表情包时：
-
 ```json
 {
     "status": 0,
-    "msg": "没有待手动处理的表情包",
-    "data": {
-        "retag_count": 0,
-        "failed": []
-    }
-}
-```
-
-全部成功时：
-
-```json
-{
-    "status": 0,
-    "msg": "已将 8 个待手动处理的表情包加入打标队列",
+    "msg": "已将 8 个表情加入识别队列",
     "data": {
         "retag_count": 8,
+        "skipped_full": 0,
         "failed": []
     }
 }
 ```
 
-部分失败时：
+### 10d. 批量启停与归属调整
+
+```
+POST /api/meme/batch_update
+```
+
+批量修改表情包的启用状态或加入/移出指定表情包，并刷新对应 Qdrant payload。市场仓库只读包（`is_repo_pack=true`）禁止增删成员。
+
+**请求体** (JSON):
 
 ```json
 {
-    "status": 1,
-    "msg": "操作完成：成功 7 个，失败 1 个",
+    "meme_ids": ["ab12cd34ef56gh78", "1234abcd5678efgh"],
+    "enabled": false,
+    "add_pack_id": null,
+    "remove_pack_id": null
+}
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `meme_ids` | string[] | 是 | 目标表情包 ID 列表，至少 1 个 |
+| `enabled` | bool | 否 | 批量启用/停用（停用后不参与 AI 检索） |
+| `add_pack_id` | string | 否 | 批量加入目标表情包 ID |
+| `remove_pack_id` | string | 否 | 批量移出目标表情包 ID |
+
+**响应**:
+
+```json
+{
+    "status": 0,
+    "msg": "已更新 2 个表情",
     "data": {
-        "retag_count": 7,
-        "failed": [
-            {"meme_id": "xxx", "reason": "入队失败"}
-        ]
+        "updated_count": 2,
+        "meme_ids": ["ab12cd34ef56gh78", "1234abcd5678efgh"]
     }
 }
 ```
@@ -740,11 +772,15 @@ memes_20260530_093000.meme
 | `source_group` | string | 来源群组 ID（不对外暴露） |
 | `folder` | string | 文件夹：`inbox`, `common`, `persona_{name}`, `rejected` |
 | `persona_hint` | string | Persona 归属提示 |
-| `emotion_tags` | string[] | 情绪标签 |
-| `scene_tags` | string[] | 场景标签 |
-| `description` | string | 图片描述 |
-| `custom_tags` | string[] | 自定义标签 |
+| `title` | string | 简短语义标题（2–10 字） |
+| `ocr_text` | string | 图中可见文字原文 |
+| `usage_hint` | string | 正向适用回应场景 |
+| `emotion_tags` | string[] | 细粒度情绪/态度标签 |
+| `scene_tags` | string[] | 兼容历史场景标签 |
+| `description` | string | 神态与动作描写 |
+| `custom_tags` | string[] | 动作/反应触发标签 |
 | `status` | string | 状态：`pending`, `tagged`, `manual`, `pending_manual`, `rejected` |
+| `enabled` | bool | 是否允许 AI 检索使用（停用后仅保留在素材库） |
 | `nsfw_score` | float | NSFW 分数（0~1） |
 | `use_count` | int | 使用次数 |
 | `last_used_at` | datetime | 最后使用时间 |

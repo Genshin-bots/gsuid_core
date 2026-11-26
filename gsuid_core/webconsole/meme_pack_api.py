@@ -46,6 +46,8 @@ def repo_pack_block(pack_name: str) -> dict[str, object] | None:
 
 @app.get("/api/meme/packs", summary="列出表情包", tags=MEME)
 async def list_meme_packs(_user: SessionRecord = Depends(require_auth)) -> dict[str, object]:
+    from gsuid_core.ai_core.persona.store import is_repo_pack
+
     rows = await PackStore.list_summaries()
     data = [
         {
@@ -54,6 +56,7 @@ async def list_meme_packs(_user: SessionRecord = Depends(require_auth)) -> dict[
             "member_count": row.member_count,
             "tagged_count": row.tagged_count,
             "bound_personas": row.bound_personas,
+            "is_repo_pack": is_repo_pack(row.name),
         }
         for row in rows
     ]
@@ -136,7 +139,14 @@ async def list_pack_members(
     if await PackStore.get_pack(pack_id) is None:
         return {"status": 1, "msg": "表情包不存在", "data": None}
     if q:
-        found = await MemeLibrary.search_by_text(q, pack_ids=(pack_id,), top_k=max(page * page_size, page_size))
+        found = await MemeLibrary.search_by_text(
+            q,
+            pack_ids=(pack_id,),
+            top_k=max(page * page_size, page_size),
+            include_disabled=True,
+        )
+        if status:
+            found = [r for r in found if r.status == status]
         start = (page - 1) * page_size
         page_rows = list(found)[start : start + page_size]
         total = len(found)
@@ -148,11 +158,14 @@ async def list_pack_members(
             page=page,
             page_size=page_size,
         )
+    pack_map = await PackStore.pack_ids_by_memes([row.meme_id for row in page_rows])
     return {
         "status": 0,
         "msg": "ok",
         "data": {
-            "records": [_member_dict(row) for row in page_rows],
+            "records": [
+                _member_dict(row, pack_map[row.meme_id] if row.meme_id in pack_map else ()) for row in page_rows
+            ],
             "total": total,
             "page": page,
             "page_size": page_size,
@@ -160,18 +173,37 @@ async def list_pack_members(
     }
 
 
-def _member_dict(record: AiMemeRecord) -> dict[str, object]:
+def _member_dict(record: AiMemeRecord, pack_ids: tuple[str, ...] | list[str] = ()) -> dict[str, object]:
+    packs = list(pack_ids)
+    if record.pending_pack_id and record.pending_pack_id not in packs:
+        packs.append(record.pending_pack_id)
     return {
         "meme_id": record.meme_id,
         "file_path": record.file_path,
+        "file_size": record.file_size,
+        "file_mime": record.file_mime,
+        "width": record.width,
+        "height": record.height,
+        "source_group": record.source_group,
+        "folder": record.folder,
+        "persona_hint": record.persona_hint,
+        "title": record.title,
+        "ocr_text": record.ocr_text,
+        "usage_hint": record.usage_hint,
         "description": record.description,
         "emotion_tags": record.emotion_tags,
         "scene_tags": record.scene_tags,
         "custom_tags": record.custom_tags,
         "status": record.status,
-        "persona_hint": record.persona_hint,
-        "folder": record.folder,
+        "enabled": record.enabled,
+        "nsfw_score": record.nsfw_score,
         "use_count": record.use_count,
+        "last_used_at": str(record.last_used_at) if record.last_used_at else None,
+        "last_used_group": record.last_used_group,
+        "created_at": str(record.created_at),
+        "tagged_at": str(record.tagged_at) if record.tagged_at else None,
+        "updated_at": str(record.updated_at),
+        "pack_ids": packs,
     }
 
 

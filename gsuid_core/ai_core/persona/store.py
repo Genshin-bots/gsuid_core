@@ -224,13 +224,18 @@ def _reconcile_files(persona: Persona, root: Path) -> None:
 
 def _expected_meme_ids(pack_dir: Path) -> set[str]:
     from gsuid_core.ai_core.meme.library import compute_meme_id
-    from gsuid_core.ai_core.meme.normalize import prepare_meme_image
+    from gsuid_core.ai_core.meme.normalize import (
+        STORE_SHORT_SIDE,
+        LEGACY_SHORT_SIDE,
+        prepare_meme_image,
+    )
 
     ids: set[str] = set()
     for image_path in _image_files(pack_dir):
         data = image_path.read_bytes()
-        mime = _IMAGE_MIME.get(image_path.suffix.lower(), "image/jpeg")
-        ids.add(compute_meme_id(prepare_meme_image(data, mime).data))
+        mime = _IMAGE_MIME[image_path.suffix.lower()] if image_path.suffix.lower() in _IMAGE_MIME else "image/jpeg"
+        ids.add(compute_meme_id(prepare_meme_image(data, mime, short_side=STORE_SHORT_SIDE).data))
+        ids.add(compute_meme_id(prepare_meme_image(data, mime, short_side=LEGACY_SHORT_SIDE, upscale=True).data))
     return ids
 
 

@@ -17,52 +17,121 @@ from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 from gsuid_core.ai_core.buildin_tools.visibility import visible_to_capability_only
 
 
+async def _collect_event_image_payloads(ev: Event) -> list[tuple[bytes, str, str]]:
+    """提取当前消息与被引用消息中的图片字节，支持 RM ID、URL 与 base64://。"""
+    from gsuid_core.utils.image.image_io import sniff_image_mime
+    from gsuid_core.ai_core.meme.observer import _extract_image_urls, _materialize_image_source
+    from gsuid_core.utils.resource_manager import RM
+
+    payloads: list[tuple[bytes, str, str]] = []
+    seen_rm_ids: set[str] = set()
+
+    async def _append_rm_id(res_id: str) -> None:
+        rid = res_id.strip()
+        if not rid or rid in seen_rm_ids or not RM.has(rid):
+            return
+        seen_rm_ids.add(rid)
+        try:
+            raw = await RM.get(rid)
+        except ValueError:
+            return
+        if not isinstance(raw, (bytes, bytearray)):
+            return
+        blob = bytes(raw)
+        mime = sniff_image_mime(blob)
+        if mime is not None:
+            payloads.append((blob, mime, ""))
+
+    # 1. 优先读取当前消息及引用消息已注册到 RM 的图片 ID
+    rm_ids: list[str] = [*ev.reply_image_id_list, *ev.image_id_list]
+    if ev.image_id:
+        rm_ids.append(ev.image_id)
+    for rid in rm_ids:
+        await _append_rm_id(rid)
+        if len(payloads) >= 3:
+            return payloads
+
+    # 2. 若仅带 reply_id 且当前事件未展开引用图，回查 A 轨历史中的引用消息图片
+    if ev.reply_id and not ev.reply_image_id_list:
+        from gsuid_core.message_history import get_history_manager
+
+        quoted = get_history_manager().find_by_msg_id(ev, str(ev.reply_id))
+        if quoted is not None:
+            q_meta = quoted.metadata
+            if "image_id_list" in q_meta and isinstance(q_meta["image_id_list"], list):
+                for item in q_meta["image_id_list"]:
+                    if isinstance(item, str):
+                        await _append_rm_id(item)
+                        if len(payloads) >= 3:
+                            return payloads
+            if "image_id" in q_meta and isinstance(q_meta["image_id"], str):
+                await _append_rm_id(q_meta["image_id"])
+                if len(payloads) >= 3:
+                    return payloads
+            if len(payloads) < 3 and "images" in q_meta and isinstance(q_meta["images"], list):
+                for item in q_meta["images"]:
+                    if isinstance(item, str):
+                        mat = await _materialize_image_source(item)
+                        if mat is not None:
+                            payloads.append(mat)
+                            if len(payloads) >= 3:
+                                return payloads
+
+    # 3. 兜底：直接从 ev.content 提取 URL / base64:// 图片（兼容未注册 RM 的事件）
+    if not payloads:
+        for src in _extract_image_urls(ev)[:3]:
+            mat = await _materialize_image_source(src)
+            if mat is not None:
+                payloads.append(mat)
+                if len(payloads) >= 3:
+                    return payloads
+
+    return payloads
+
+
 @ai_tools(category="common", capability_domain="表情", code_callable=False)
 async def collect_meme(
     ev: Event,
-    reason: str = "",
 ) -> str:
     """
-    读取当前消息中的图片并写入表情包库
+    读取当前消息或引用消息中的图片并收藏到「群聊采集」表情包
 
-    当用户发送了一张有趣的图片时，AI 可以调用此工具将其收藏。
-
-    Args:
-        reason: 收藏原因（可选），用于记录
+    当用户发送或引用了一张有趣的表情/图片要求收藏时，调用此工具入库。
 
     Returns:
         收藏结果描述
 
     Example:
-        >>> await collect_meme(reason="这张图很搞笑")
+        >>> await collect_meme()
     """
-    from gsuid_core.ai_core.meme.observer import _download_image, _extract_image_urls
+    from gsuid_core.pool import to_thread
+    from gsuid_core.ai_core.meme.tagger import enqueue_tag
+    from gsuid_core.ai_core.meme.normalize import prepare_meme_image, is_known_outbound_meme
+    from gsuid_core.ai_core.meme.pack_model import PackStore
 
-    image_urls = _extract_image_urls(ev)
-    if not image_urls:
-        return "当前消息中没有图片"
+    payloads = await _collect_event_image_payloads(ev)
+    if not payloads:
+        return "当前消息和引用消息中没有可收藏的图片"
 
+    collected_pack = await PackStore.ensure_collected_pack()
     results: list[str] = []
-    for url in image_urls[:3]:
-        download_result = await _download_image(url)
-        if download_result is None:
-            results.append(f"下载失败: {url}")
+    for image_data, file_mime, src_url in payloads[:3]:
+        prepared = await to_thread(prepare_meme_image)(image_data, file_mime)
+        if await to_thread(is_known_outbound_meme)(prepared.data, prepared.width, prepared.height):
+            results.append("图片已存在")
             continue
-
-        image_data, file_mime = download_result
-
-        record = await MemeLibrary.save_raw(
-            image_data=image_data,
-            file_mime=file_mime,
+        record = await MemeLibrary.save_prepared(
+            prepared,
             source_group=ev.group_id or "",
             source_user=ev.user_id or "",
-            source_url=url,
+            source_url=src_url,
+            pending_pack_id=collected_pack.pack_id,
+            assign_default_pack=False,
+            enabled=True,
         )
 
         if record is not None:
-            results.append(f"已收藏: {record.meme_id}")
-            from gsuid_core.ai_core.meme.tagger import enqueue_tag
-
+            results.append(f"已收藏至「{collected_pack.name}」: {record.meme_id}")
             await enqueue_tag(record.meme_id)
         else:
             results.append("图片已存在")
@@ -113,9 +182,12 @@ async def search_meme(
     result_lines: list[str] = []
     for i, record in enumerate(records, 1):
         tags = ", ".join(record.all_tags) if record.all_tags else "无标签"
-        result_lines.append(
-            f"{i}. [{record.meme_id}] {record.description or '无描述'} (标签: {tags}, 使用次数: {record.use_count})"
+        label = (
+            f"{record.title} - {record.description}"
+            if record.title and record.description
+            else (record.title or record.description or "无描述")
         )
+        result_lines.append(f"{i}. [{record.meme_id}] {label} (标签: {tags}, 使用次数: {record.use_count})")
 
     return "\n".join(result_lines)
 

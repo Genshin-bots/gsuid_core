@@ -90,12 +90,17 @@ async def save_presence(persona_name: str, ribbon: PresenceRibbon) -> None:
 
 
 async def record_echo(persona_name: str, target_key: str, is_private: bool, summary: str, now: float) -> None:
+    from gsuid_core.ai_core.control.angle_guard import strip_protocol_tags
+
+    clean_summary = " ".join(strip_protocol_tags(summary).split()).strip()
+    if not clean_summary:
+        clean_summary = "[发表情]"
     ribbon = await load_presence(persona_name)
     ribbon.echoes.append(
         {
             "target_key": target_key,
             "is_private": is_private,
-            "summary": summary[:_SUMMARY_MAX],
+            "summary": clean_summary[:_SUMMARY_MAX],
             "emitted_at": now,
             "answered": False,
             "settled": False,

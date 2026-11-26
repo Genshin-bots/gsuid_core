@@ -55,8 +55,29 @@ class BundleError(Exception):
         self.message = message
 
 
-def _tags_for_file(pack_dir: Path, file_name: str) -> tuple[str, list[str], list[str], list[str]]:
-    """返回 description, emotion_tags, scene_tags, custom_tags。不从文件名猜标签。"""
+@dataclass(frozen=True, slots=True)
+class BundleMemeTags:
+    """整包 tags.json 单条表情元数据（兼容旧版缺 title/ocr_text/usage_hint 格式）。"""
+
+    title: str = ""
+    description: str = ""
+    ocr_text: str = ""
+    emotion_tags: list[str] = field(default_factory=list)
+    scene_tags: list[str] = field(default_factory=list)
+    custom_tags: list[str] = field(default_factory=list)
+    usage_hint: str = ""
+
+
+def _opt_str(item: dict[str, object], key: str, max_len: int) -> str:
+    if key in item:
+        val = item[key]
+        if isinstance(val, str):
+            return val.strip()[:max_len]
+    return ""
+
+
+def _tags_for_file(pack_dir: Path, file_name: str) -> BundleMemeTags:
+    """读取单张表情元数据，兼容旧版仅含 description/emotion_tags/scene_tags/custom_tags。"""
     tags_path = pack_dir / "tags.json"
     if tags_path.is_file():
         raw = json.loads(tags_path.read_text(encoding="utf-8"))
@@ -66,16 +87,16 @@ def _tags_for_file(pack_dir: Path, file_name: str) -> tuple[str, list[str], list
                     continue
                 if "file" not in item or item["file"] != file_name:
                     continue
-                description = (
-                    item["description"] if "description" in item and isinstance(item["description"], str) else ""
+                return BundleMemeTags(
+                    title=_opt_str(item, "title", 64),
+                    description=_opt_str(item, "description", 512),
+                    ocr_text=_opt_str(item, "ocr_text", 256),
+                    emotion_tags=_str_list(item, "emotion_tags"),
+                    scene_tags=_str_list(item, "scene_tags"),
+                    custom_tags=_str_list(item, "custom_tags"),
+                    usage_hint=_opt_str(item, "usage_hint", 512),
                 )
-                return (
-                    description,
-                    _str_list(item, "emotion_tags"),
-                    _str_list(item, "scene_tags"),
-                    _str_list(item, "custom_tags"),
-                )
-    return "", [], [], []
+    return BundleMemeTags()
 
 
 def _str_list(item: dict[str, object], key: str) -> list[str]:
@@ -192,20 +213,30 @@ async def import_bundle_dir(root: Path) -> BundleImportResult:
     imported: list[str] = []
     linked: list[str] = []
     pack_ids: list[str] = []
+    from gsuid_core.ai_core.meme.normalize import LEGACY_SHORT_SIDE
     from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
     for pack_dir in pack_dirs:
         pack = await PackStore.ensure_named_pack(pack_dir.name)
         pack_ids.append(pack.pack_id)
         for image_path in _image_files(pack_dir):
-            data = image_path.read_bytes()
-            mime = _IMAGE_MIME[image_path.suffix.lower()] if image_path.suffix.lower() in _IMAGE_MIME else "image/jpeg"
-            prepared = prepare_meme_image(data, mime)
+            raw_bytes = image_path.read_bytes()
+            raw_mime = (
+                _IMAGE_MIME[image_path.suffix.lower()] if image_path.suffix.lower() in _IMAGE_MIME else "image/jpeg"
+            )
+            prepared = prepare_meme_image(raw_bytes, raw_mime)
             data = prepared.data
             mime = prepared.mime
             meme_id = compute_meme_id(data)
-            description, emotion, scene, custom = _tags_for_file(pack_dir, image_path.name)
-            if not await AiMemeRecord.exists_by_meme_id(meme_id):
+            tags_meta = _tags_for_file(pack_dir, image_path.name)
+            exists_new = await AiMemeRecord.exists_by_meme_id(meme_id)
+            if not exists_new:
+                legacy_prepared = prepare_meme_image(raw_bytes, raw_mime, short_side=LEGACY_SHORT_SIDE, upscale=True)
+                legacy_id = compute_meme_id(legacy_prepared.data)
+                if legacy_id != meme_id and await AiMemeRecord.exists_by_meme_id(legacy_id):
+                    meme_id = legacy_id
+                    exists_new = True
+            if not exists_new:
                 folder = get_folder_path("common")
                 folder.mkdir(parents=True, exist_ok=True)
                 dest_name = f"{meme_id}{ext_for_mime(mime)}"
@@ -219,10 +250,14 @@ async def import_bundle_dir(root: Path) -> BundleImportResult:
                     height=prepared.height,
                     folder="common",
                     persona_hint="common",
-                    description=description,
-                    emotion_tags=emotion,
-                    scene_tags=scene,
-                    custom_tags=custom,
+                    title=tags_meta.title,
+                    description=tags_meta.description,
+                    ocr_text=tags_meta.ocr_text,
+                    emotion_tags=tags_meta.emotion_tags,
+                    scene_tags=tags_meta.scene_tags,
+                    custom_tags=tags_meta.custom_tags,
+                    usage_hint=tags_meta.usage_hint,
+                    enabled=True,
                     status="manual",
                     pending_pack_id="",
                     assign_default_pack=False,
@@ -302,10 +337,12 @@ async def export_persona_bundle(persona_name: str) -> bytes:
                 tags.append(
                     {
                         "file": file_path.name,
+                        "title": record.title,
                         "description": record.description,
+                        "ocr_text": record.ocr_text,
                         "emotion_tags": record.emotion_tags,
-                        "scene_tags": record.scene_tags,
                         "custom_tags": record.custom_tags,
+                        "usage_hint": record.usage_hint,
                     }
                 )
             archive.writestr(

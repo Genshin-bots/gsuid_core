@@ -659,3 +659,350 @@ def test_internal_handle_leak_gate_and_long_text_image_recovery(
             reset_run_image_delivered()
 
     asyncio.run(_verify_delivery())
+
+
+def test_meme_delivery_position_prefetch_and_placeholder_contracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """句前/句后表情按出现位置下发、出站历史记真实标题、发送成功才提交冷却。"""
+    import io
+
+    from PIL import Image
+
+    import gsuid_core.ai_core.delivery as delivery_mod
+    import gsuid_core.ai_core.meme.library as meme_library
+    import gsuid_core.ai_core.meme.selector as meme_selector
+    import gsuid_core.ai_core.persona.config as persona_config
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.models import Event
+    from gsuid_core.segment import Message
+    from gsuid_core.ai_core.delivery import send_chat_result, extract_pure_meme_query
+    from gsuid_core.ai_core.outbound import get_outbound_image_label
+    from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+    assert extract_pure_meme_query("<meme:无语>") == "无语"
+    assert extract_pure_meme_query("<reply #3><meme: 无语，翻白眼 >") == "无语 翻白眼"
+    assert extract_pure_meme_query("哈哈<meme:无语>") is None
+
+    memes_dir = tmp_path / "memes"
+    (memes_dir / "common").mkdir(parents=True)
+    buf = io.BytesIO()
+    Image.new("RGB", (320, 320), (180, 90, 90)).save(buf, format="PNG")
+    (memes_dir / "common" / "m_pos_1.png").write_bytes(buf.getvalue())
+
+    rec = AiMemeRecord(
+        meme_id="m_pos_1",
+        file_path="common/m_pos_1.png",
+        file_size=len(buf.getvalue()),
+        file_mime="image/png",
+        width=320,
+        height=320,
+        title="斜眼嫌弃",
+        description="卡通人物斜眼瞥向一旁流露嫌弃",
+        status="tagged",
+        enabled=True,
+    )
+
+    events_log: list[tuple[str, str]] = []
+
+    class _RecordBot(Bot):
+        def __init__(self, ev: Event) -> None:
+            super().__init__(_Bot("ws_test"), ev)
+
+        async def send(
+            self,
+            message: Message | list[Message] | str | bytes | list[str],
+            at_sender: bool = False,
+            extra_metadata: Mapping[str, object] | None = None,
+        ) -> list[str] | None:
+            del at_sender, extra_metadata
+            segs = message if isinstance(message, list) else [message]
+            has_img = any(isinstance(s, Message) and s.type == "image" for s in segs)
+            has_reply = any(isinstance(s, Message) and s.type == "reply" for s in segs)
+            if has_img:
+                events_log.append((f"image:reply={has_reply}", get_outbound_image_label()))
+            else:
+                events_log.append((f"text:reply={has_reply}", ""))
+            return None
+
+    async def _noop_sleep(_sec: float) -> None:
+        return None
+
+    async def _noop_pause() -> None:
+        return None
+
+    async def _noop_usage(_mid: str, _gid: str) -> None:
+        return None
+
+    pick_calls: list[bool] = []
+
+    async def _fake_pick(
+        query: str = "",
+        persona: str | None = None,
+        session_id: str = "",
+        *,
+        scene: str = "",
+        ignore_cooldown: bool = False,
+        commit: bool = True,
+        is_pure_meme: bool = False,
+    ) -> tuple[AiMemeRecord | None, str]:
+        del query, persona, session_id, scene, ignore_cooldown, is_pure_meme
+        pick_calls.append(commit)
+        return rec, "ok"
+
+    committed: list[tuple[str, str]] = []
+
+    def _fake_commit(session_id: str, meme_id: str) -> None:
+        committed.append((session_id, meme_id))
+
+    async def _scenario() -> None:
+        monkeypatch.setattr(meme_library, "get_memes_base_path", lambda: memes_dir)
+        monkeypatch.setattr(persona_config, "persona_allows_meme_reply", lambda _p: True)
+        monkeypatch.setattr(meme_selector, "pick", _fake_pick)
+        monkeypatch.setattr(meme_selector, "commit_pick", _fake_commit)
+        monkeypatch.setattr(delivery_mod, "pause_before_meme", _noop_pause)
+        monkeypatch.setattr(delivery_mod.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(AiMemeRecord, "record_usage", staticmethod(_noop_usage))
+
+        ev = Event("OneBot", "900000001", "m1", "group", "group_1", "100000001", {}, 6)
+        bot = _RecordBot(ev)
+
+        # 句前表情：图先于文，且引用前缀贴在首发的图上而不重复贴到正文
+        await send_chat_result(
+            bot,
+            "<meme:斜眼看>你认真的？",
+            ev=ev,
+            ooc_check=False,
+            _reply_prefix=[Message("reply", "msg_100")],
+        )
+        assert events_log == [("image:reply=True", "[表情:斜眼嫌弃]"), ("text:reply=False", "")]
+        assert pick_calls == [False] and committed == [(ev.session_id, "m_pos_1")]
+
+        # 句后表情：文先于图，并发预取后下发
+        events_log.clear()
+        await send_chat_result(bot, "你认真的？<meme:斜眼看>", ev=ev, ooc_check=False)
+        assert events_log == [("text:reply=False", ""), ("image:reply=False", "[表情:斜眼嫌弃]")]
+        assert len(committed) == 2
+
+    asyncio.run(_scenario())
+
+
+def test_pure_meme_no_match_guard_and_settle_retry_contracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """纯表情在 guards 层延迟至 settle；被寻址未命中触发单次重说，旁观轮静默，命中直发。"""
+    import gsuid_core.ai_core.meme.selector as meme_selector
+    import gsuid_core.ai_core.persona.config as persona_config
+    import gsuid_core.ai_core.session_logger as slog_mod
+    import gsuid_core.ai_core.agent_run.settle as settle_mod
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.agent_run import DeliveryGuard
+    from gsuid_core.ai_core.session_logger import AISessionLogger
+    from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
+    from gsuid_core.ai_core.control.directive import Directive
+    from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+    from gsuid_core.ai_core.interaction_scaffold import TurnGraph
+
+    monkeypatch.setattr(slog_mod, "AI_SESSION_LOGS_PATH", tmp_path)
+
+    class _FakePureRingHost:
+        persona_name: str | None = "测试人格"
+        create_by: str = "Chat"
+        dispute_count: int = 0
+        attempt_tool_calls: Sequence[str] = ()
+
+        def __init__(self, *, retry_reply: str = "行吧，这事我知道了。") -> None:
+            self.sent_texts: set[str] = set()
+            self.retry_reply = retry_reply
+            self.retry_codes: list[str] = []
+            self.emitted: list[str] = []
+            self.scrubbed: list[set[str]] = []
+            self.blocks: list[tuple[str, str]] = []
+
+        def latest_dispute_preview(self) -> str:
+            return ""
+
+        def model_declares_video(self) -> bool:
+            return False
+
+        async def try_correction_pass(
+            self,
+            st: RunOnceState,
+            directives: tuple[Directive, ...],
+            *,
+            suppress_intermediate_text: bool = True,
+            return_mode: ReturnMode = "return",
+        ) -> object:
+            del st, suppress_intermediate_text, return_mode
+            self.retry_codes.extend(d.reason_code for d in directives)
+            return self.retry_reply
+
+        async def emit_unsent_reply(self, st: RunOnceState, text: str) -> None:
+            del st
+            self.emitted.append(text)
+
+        async def run_inv3_correction(
+            self,
+            st: RunOnceState,
+            directive: Directive,
+            result_msg: str,
+            *,
+            scrub_replaced: bool = True,
+        ) -> str:
+            del st, directive, result_msg, scrub_replaced
+            return "<SILENCE>"
+
+        def scrub_fake_done_history(self, fabricated: set[str]) -> None:
+            self.scrubbed.append(fabricated)
+
+        def note_output_block(self, st: RunOnceState, reason: str, body: str) -> None:
+            del st
+            self.blocks.append((reason, body))
+
+    async def _scenario() -> None:
+        ev_addr = Event("OneBot", "900000001", "m1", "group", "group_1", "100000001", {}, 6)
+        ev_addr.is_tome = True
+        bot = Bot(_Bot("ws_test"), ev_addr)
+        slog = AISessionLogger("sess_pure_meme", "测试人格", "Chat")
+
+        # 1. guards 层仅在 defer_pure_meme=True 时延迟纯表情，非主人格/多段不得静默吞掉
+        st_guard = make_run_state("你好", bot=bot, ev=ev_addr)
+        st_guard.return_mode = "by_bot"
+        guard_sent: list[str] = []
+
+        async def _fake_try_send(txt: str, _at: str | None) -> bool:
+            guard_sent.append(txt)
+            return True
+
+        await DeliveryGuard.process_gated_text_part(
+            st_guard,
+            "<meme:冷门不存在>",
+            speech_ctx=None,
+            ab_attempt_counted=False,
+            session_logger=slog,
+            run_sent_texts=set(),
+            run_sent_order=[],
+            resp_unsent=[],
+            discard_preview=lambda _s: None,
+            try_send_gated=_fake_try_send,
+            defer_pure_meme=True,
+        )
+        assert guard_sent == []
+
+        await DeliveryGuard.process_gated_text_part(
+            st_guard,
+            "<meme:冷门不存在>",
+            speech_ctx=None,
+            ab_attempt_counted=False,
+            session_logger=slog,
+            run_sent_texts=set(),
+            run_sent_order=[],
+            resp_unsent=[],
+            discard_preview=lambda _s: None,
+            try_send_gated=_fake_try_send,
+            defer_pure_meme=False,
+        )
+        assert guard_sent == ["<meme:冷门不存在>"]
+
+        # 2. settle 层：被寻址轮与私聊引用轮未命中 -> 1 次 INV-3 改口发短台词
+        monkeypatch.setattr(persona_config, "persona_allows_meme_reply", lambda _p: True)
+
+        async def _miss_pick(*_a: object, **_kw: object) -> tuple[AiMemeRecord | None, str]:
+            return None, "no_match"
+
+        monkeypatch.setattr(meme_selector, "pick", _miss_pick)
+
+        host_addr = _FakePureRingHost()
+        st_addr = make_run_state("在吗", bot=bot, ev=ev_addr)
+        st_addr.return_mode = "by_bot"
+        st_addr.tg = TurnGraph("group", "在吗", "测试人格", True, "100000001", call_to_self=True)
+        out_addr = await settle_mod._resolve_pure_meme_settle_for(host_addr, st_addr, "<meme:冷门不存在>")
+        assert host_addr.retry_codes == ["pure_meme_no_match"]
+        assert out_addr == "行吧，这事我知道了。"
+        assert host_addr.emitted == ["行吧，这事我知道了。"]
+        assert host_addr.scrubbed == [{"<meme:冷门不存在>"}]
+
+        ev_dm = Event("OneBot", "900000001", "m2", "direct", None, "100000001", {}, 6)
+        ev_dm.is_tome = True
+        host_dm = _FakePureRingHost()
+        st_dm = make_run_state("在吗", bot=Bot(_Bot("ws_test"), ev_dm), ev=ev_dm)
+        st_dm.return_mode = "by_bot"
+        st_dm.tg = TurnGraph("direct", "在吗", "测试人格", True, "100000001", call_to_self=True, quoted_tome=True)
+        out_dm = await settle_mod._resolve_pure_meme_settle_for(host_dm, st_dm, "<meme:冷门不存在>")
+        assert host_dm.retry_codes == ["pure_meme_no_match"] and out_dm == "行吧，这事我知道了。"
+
+        # 2b. 检索链路异常（Qdrant/SQL 抖动）不得拖垮 settle：按未命中走同一改口路径
+        async def _raise_pick(*_a: object, **_kw: object) -> tuple[AiMemeRecord | None, str]:
+            raise ConnectionError("qdrant down")
+
+        monkeypatch.setattr(meme_selector, "pick", _raise_pick)
+        host_err = _FakePureRingHost()
+        st_err = make_run_state("在吗", bot=bot, ev=ev_addr)
+        st_err.return_mode = "by_bot"
+        st_err.tg = TurnGraph("group", "在吗", "测试人格", True, "100000001", call_to_self=True)
+        out_err = await settle_mod._resolve_pure_meme_settle_for(host_err, st_err, "<meme:冷门不存在>")
+        assert host_err.retry_codes == ["pure_meme_no_match"] and out_err == "行吧，这事我知道了。"
+        monkeypatch.setattr(meme_selector, "pick", _miss_pick)
+
+        # 3. 旁观轮未命中 -> 不重说，安静返回 <SILENCE>
+        host_bystander = _FakePureRingHost()
+        st_bystander = make_run_state("路过闲聊", bot=bot, ev=ev_addr)
+        st_bystander.return_mode = "by_bot"
+        st_bystander.tg = TurnGraph("group", "路过闲聊", "测试人格", False, "100000001", call_to_self=False)
+        out_bystander = await settle_mod._resolve_pure_meme_settle_for(
+            host_bystander,
+            st_bystander,
+            "<meme:冷门不存在>",
+        )
+        assert host_bystander.retry_codes == [] and host_bystander.emitted == []
+        assert out_bystander == "<SILENCE>"
+        assert st_bystander.silence_reason == "pure_meme_no_match"
+
+        # 4. 命中时需先校验磁盘文件存在：缺文件走未命中重试，有文件则预选直发
+        import gsuid_core.ai_core.meme.library as meme_library
+
+        meme_root = tmp_path / "memes"
+        monkeypatch.setattr(meme_library, "get_memes_base_path", lambda: meme_root)
+        hit_rec = AiMemeRecord(meme_id="m_hit_1", file_path="common/m_hit_1.png", title="点头", status="tagged")
+
+        async def _hit_pick(*_a: object, **_kw: object) -> tuple[AiMemeRecord | None, str]:
+            return hit_rec, "ok"
+
+        preselected_seen: list[str] = []
+
+        async def _fake_send_chat(
+            _bot: object,
+            _text: str,
+            *,
+            preselected_meme: AiMemeRecord | None = None,
+            **_kw: object,
+        ) -> None:
+            if preselected_meme is not None:
+                preselected_seen.append(preselected_meme.meme_id)
+
+        monkeypatch.setattr(meme_selector, "pick", _hit_pick)
+        monkeypatch.setattr(settle_mod, "send_chat_result", _fake_send_chat)
+
+        host_missing = _FakePureRingHost()
+        st_missing = make_run_state("收到", bot=bot, ev=ev_addr)
+        st_missing.return_mode = "by_bot"
+        out_missing = await settle_mod._resolve_pure_meme_settle_for(host_missing, st_missing, "<meme:点头>")
+        assert host_missing.retry_codes == ["pure_meme_no_match"] and out_missing == "行吧，这事我知道了。"
+        assert preselected_seen == []
+
+        hit_file = meme_root / hit_rec.file_path
+        hit_file.parent.mkdir(parents=True, exist_ok=True)
+        hit_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        host_hit = _FakePureRingHost()
+        st_hit = make_run_state("收到", bot=bot, ev=ev_addr)
+        st_hit.return_mode = "by_bot"
+        out_hit = await settle_mod._resolve_pure_meme_settle_for(host_hit, st_hit, "<meme:点头>")
+        assert out_hit == "<meme:点头>"
+        assert preselected_seen == ["m_hit_1"]
+        assert st_hit.main_channel_sends == 1
+
+    asyncio.run(_scenario())

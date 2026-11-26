@@ -11,6 +11,7 @@ from typing import (
     Dict,
     List,
     Tuple,
+    Literal,
     Mapping,
     Callable,
     Optional,
@@ -18,11 +19,13 @@ from typing import (
     Sequence,
     runtime_checkable,
 )
+from dataclasses import dataclass
 
 from PIL import Image
 
 from gsuid_core.bot import Bot
 from gsuid_core.i18n import t as i18n_t
+from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.segment import Message, MessageSegment
@@ -50,6 +53,7 @@ from gsuid_core.ai_core.control.angle_guard import MEME_TAG_PATTERN
 if TYPE_CHECKING:
     from gsuid_core.ai_core.inbox.turn import InboxTurn
     from gsuid_core.ai_core.reply_plan import ReplyGroup
+    from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 # 表情没有字数，按 7 个字计，间隔是 1 秒。
 MEME_PAUSE_CHARS = 7
@@ -237,6 +241,59 @@ def pack_outbound_bubbles(blocks: Sequence[str], budget: int) -> list[str]:
     return [*head, tail]
 
 
+def normalize_meme_query(raw_tag: str) -> str:
+    """将 <meme:...> 标签正文规范化为检索短语。"""
+    cleaned = raw_tag.strip().replace("，", " ").replace(",", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip("，,。！？!?、 \t\n\r")
+    return cleaned
+
+
+def extract_pure_meme_query(text: str) -> str | None:
+    """仅含 <meme:...>（及可选协议标签/空白标点）时返回规范化短语，否则返回 None。"""
+    body = remainder_after_protocol_tags(text or "").strip()
+    if not body:
+        return None
+    matches = list(MEME_TAG_PATTERN.finditer(body))
+    if not matches:
+        return None
+    leftover = MEME_TAG_PATTERN.sub("", body)
+    leftover = re.sub(r"[，。！？!?、\s]+", "", leftover)
+    if leftover:
+        return None
+    return normalize_meme_query(matches[0].group(1)) or None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedOutboundMeme:
+    """已选定并完成出站 128px 压缩的表情包载荷。"""
+
+    record: "AiMemeRecord"
+    img_b64: str
+    outbound_bytes: bytes
+    placeholder_label: str
+    query: str
+
+
+def _resolve_deferred_reply(
+    ev: Event | None,
+    deferred_reply: Optional[Tuple[int, str]],
+    segments: list[Message],
+) -> list[Message]:
+    if deferred_reply is None or ev is None:
+        return segments
+    target_seq, target_mid = deferred_reply
+    from gsuid_core.message_history import get_history_manager
+
+    cur_latest = -1
+    for rec in reversed(get_history_manager().get_history(ev)):
+        if rec.role == "user" and rec.link is not None:
+            cur_latest = rec.link.seq
+            break
+    if cur_latest != -1 and cur_latest != target_seq and not any(s.type == "reply" for s in segments):
+        return [Message("reply", target_mid), *segments]
+    return segments
+
+
 async def send_chat_result(
     bot: Bot,
     text: str,
@@ -248,15 +305,15 @@ async def send_chat_result(
     _reply_prefix: Optional[Sequence[Message]] = None,
     _plan_group: bool = False,
     _reply_target: Optional[Tuple[int, str]] = None,
+    preselected_meme: Optional["AiMemeRecord"] = None,
 ) -> None:
     """
     解析并发送聊天结果，支持：
     - 按换行分割多条消息
     - <@用户ID> 或 <@昵称> → MessageSegment.at。裸 @ 不解析
     - at_user_id：框架强制前置 @（任务交付回灌等，不依赖模型自觉）
-    - <meme: 情绪> 标记（可带反引号；尖括号和冒号旁边的空格也认）→ 触发表情包发送（需传入 ev）
-    - extra_metadata：透传到 ``Bot.send`` 的 ``extra_metadata``，最终落到
-      ``message_history`` 记录上（如主动消息的 ``proactive=True / source / reason``）
+    - <meme: 短语> 标记→ 按出现位置在句前/句后触发表情包发送（需传入 ev）
+    - extra_metadata：透传到 ``Bot.send`` 的 ``extra_metadata``
     - ooc_check：出戏防火墙开关。gs_agent 自判产物已走过系统提醒，传 False 放行
     """
     if not text:
@@ -300,6 +357,7 @@ async def send_chat_result(
                 ev=ev,
                 meta=meta,
                 ooc_check=ooc_check,
+                preselected_meme=preselected_meme,
             )
             return
 
@@ -349,7 +407,17 @@ async def send_chat_result(
 
     logger.trace(i18n_t("log.ai.meme_text_raw_output", text=repr(text)))
 
-    meme_tags: list[str] = MEME_TAG_PATTERN.findall(text)
+    meme_matches = list(MEME_TAG_PATTERN.finditer(text))
+    meme_tags: list[str] = [m.group(1) for m in meme_matches]
+    meme_query: str = normalize_meme_query(meme_tags[0]) if meme_tags else ""
+    meme_position: Literal["leading", "trailing"] = "trailing"
+    if meme_matches:
+        prefix_raw = text[: meme_matches[0].start()]
+        prefix_clean = _strip_persona_markdown(prefix_raw)
+        prefix_clean = re.sub(r"^[，。！？!?、\s]+|[，。！？!?、\s]+$", "", prefix_clean)
+        if not prefix_clean:
+            meme_position = "leading"
+
     md_source: str = MEME_TAG_PATTERN.sub("", text).strip()
 
     clean_text: str = _strip_persona_markdown(md_source)
@@ -392,100 +460,171 @@ async def send_chat_result(
                         )
                 report_blocks = _kept_blocks
 
-    async def _send_trailing_artifacts() -> None:
-        if report_blocks:
-            await _send_report_images(report_blocks, bot, extra_metadata, ev)
-        if meme_tags and ev is not None:
-            await _send_meme_from_tag(meme_tags[0].strip(), bot, ev)
-
     logger.trace(i18n_t("log.ai.meme_parsed_tags_cleaned", meme_tags=meme_tags, clean_text=repr(clean_text)))
 
     if not clean_text:
-        await _send_trailing_artifacts()
+        if report_blocks:
+            await _send_report_images(report_blocks, bot, extra_metadata, ev)
+        if meme_tags and ev is not None and not _ooc_replaced:
+            prepared_pure = await _prepare_meme_payload(
+                meme_query,
+                ev,
+                ignore_cooldown=True,
+                is_pure_meme=True,
+                preselected_record=preselected_meme,
+            )
+            if prepared_pure is not None:
+                await _send_prepared_meme(
+                    prepared_pure,
+                    bot,
+                    ev,
+                    extra_metadata=extra_metadata,
+                    reply_prefix=_reply_prefix,
+                    deferred_reply=_reply_target,
+                    at_user_id=at_user_id,
+                    pause=False,
+                )
         return
 
-    if not _ooc_replaced and _should_render_markdown_image(md_source):
-        if await _try_present_via_render_agent(md_source, bot, ev, extra_metadata):
-            await _send_trailing_artifacts()
-            return
-        if await _try_render_markdown_image(md_source, bot, extra_metadata):
-            await _send_trailing_artifacts()
-            return
-
-    _PERSONA_MAX_BUBBLES = _persona_max_bubbles(ev)
-    raw_blocks = [b for b in re.split(r"\n\s*\n", clean_text) if b.strip()]
-    _plan_turn = None
-    if meta["speech_channel"] == "persona":
-        from gsuid_core.ai_core.inbox.turn import current_turn
-
-        _plan_turn = current_turn()
-
-    _budget = _PERSONA_MAX_BUBBLES
-    if _plan_turn is not None:
-        _turn_rem = max(0, _INBOX_MAX_BUBBLES - _plan_turn.bubbles_sent)
-        _budget = min(_PERSONA_MAX_BUBBLES, _turn_rem)
-
-    if _budget <= 0:
-        if raw_blocks:
-            logger.info(i18n_t("log.inbox.bubble_capped", count=len(raw_blocks)))
-        await _send_trailing_artifacts()
-        return
-
-    if len(raw_blocks) > _budget:
-        logger.debug(i18n_t("log.ai.persona_bubbles_clamped", p0=_budget))
-    blocks = pack_outbound_bubbles(raw_blocks, _budget)
     _force_at = (at_user_id or "").strip()
     _at_done = False
-    _audit = _outbound_auditor(ev)
-    _total = len(blocks)
     _prefix = list(_reply_prefix) if _reply_prefix else []
     _deferred_reply = _reply_target
 
-    for _idx, block in enumerate(blocks, 1):
-        if not block.strip():
-            continue
+    trailing_meme_task: asyncio.Task[_PreparedOutboundMeme | None] | None = None
+    if meme_tags and ev is not None:
+        if meme_position == "leading":
+            prepared_leading = await _prepare_meme_payload(
+                meme_query,
+                ev,
+                preselected_record=preselected_meme,
+            )
+            if prepared_leading is not None:
+                sent_leading = await _send_prepared_meme(
+                    prepared_leading,
+                    bot,
+                    ev,
+                    extra_metadata=extra_metadata,
+                    reply_prefix=_prefix,
+                    deferred_reply=_deferred_reply,
+                    at_user_id=_force_at or None,
+                    pause=False,
+                )
+                if sent_leading:
+                    _prefix = []
+                    _deferred_reply = None
+                    if _force_at:
+                        _at_done = True
+        else:
+            trailing_meme_task = asyncio.create_task(
+                _prepare_meme_payload(
+                    meme_query,
+                    ev,
+                    preselected_record=preselected_meme,
+                )
+            )
 
-        segments = _parse_at_segments(block)
-        if _prefix:
-            segments = [*_prefix, *segments]
-            _prefix = []
-        _has_force_in_block = any(s.type == "at" and str(s.data or "") == _force_at for s in segments)
-        if _force_at and not _at_done:
-            if not _has_force_in_block:
-                segments = [MessageSegment.at(_force_at), *segments]
-            _at_done = True
-        elif _at_done:
-            kept = [s for s in segments if s.type != "at"]
-            if not kept:
-                continue
-            segments = kept
-        segments = _ensure_at_trailing_space(segments)
+    async def _send_trailing_artifacts() -> None:
+        nonlocal trailing_meme_task
+        if report_blocks:
+            await _send_report_images(report_blocks, bot, extra_metadata, ev)
+        if trailing_meme_task is not None and ev is not None:
+            try:
+                prepared_trailing = await trailing_meme_task
+            except Exception as e:
+                logger.debug(i18n_t("log.ai.meme_tag_fail", e=e))
+                prepared_trailing = None
+            finally:
+                trailing_meme_task = None
+            if prepared_trailing is not None:
+                await _send_prepared_meme(
+                    prepared_trailing,
+                    bot,
+                    ev,
+                    extra_metadata=extra_metadata,
+                    pause=True,
+                )
 
+    try:
+        if not _ooc_replaced and _should_render_markdown_image(md_source):
+            if await _try_present_via_render_agent(md_source, bot, ev, extra_metadata):
+                await _send_trailing_artifacts()
+                return
+            if await _try_render_markdown_image(md_source, bot, extra_metadata):
+                await _send_trailing_artifacts()
+                return
+
+        _PERSONA_MAX_BUBBLES = _persona_max_bubbles(ev)
+        raw_blocks = [b for b in re.split(r"\n\s*\n", clean_text) if b.strip()]
+        _plan_turn = None
+        if meta["speech_channel"] == "persona":
+            from gsuid_core.ai_core.inbox.turn import current_turn
+
+            _plan_turn = current_turn()
+
+        _budget = _PERSONA_MAX_BUBBLES
         if _plan_turn is not None:
-            _plan_turn.bubbles_sent += 1
+            _turn_rem = max(0, _INBOX_MAX_BUBBLES - _plan_turn.bubbles_sent)
+            _budget = min(_PERSONA_MAX_BUBBLES, _turn_rem)
 
-        plain_text = strip_mention_tags(block)
+        if _budget <= 0:
+            if raw_blocks:
+                logger.info(i18n_t("log.inbox.bubble_capped", count=len(raw_blocks)))
+            await _send_trailing_artifacts()
+            return
 
-        await asyncio.sleep(bubble_pause(len(plain_text)))
+        if len(raw_blocks) > _budget:
+            logger.debug(i18n_t("log.ai.persona_bubbles_clamped", p0=_budget))
+        blocks = pack_outbound_bubbles(raw_blocks, _budget)
+        _audit = _outbound_auditor(ev)
+        _total = len(blocks)
 
-        if _deferred_reply is not None and ev is not None:
-            _t_seq, _t_mid = _deferred_reply
-            _deferred_reply = None
-            from gsuid_core.message_history import get_history_manager
+        for _idx, block in enumerate(blocks, 1):
+            if not block.strip():
+                continue
 
-            _cur_latest = -1
-            for _rec in reversed(get_history_manager().get_history(ev)):
-                if _rec.role == "user" and _rec.link is not None:
-                    _cur_latest = _rec.link.seq
-                    break
-            if _cur_latest != -1 and _cur_latest != _t_seq and not any(s.type == "reply" for s in segments):
-                segments = [Message("reply", _t_mid), *segments]
+            segments = _parse_at_segments(block)
+            if _prefix:
+                segments = [*_prefix, *segments]
+                _prefix = []
+            _has_force_in_block = any(s.type == "at" and str(s.data or "") == _force_at for s in segments)
+            if _force_at and not _at_done:
+                if not _has_force_in_block:
+                    segments = [MessageSegment.at(_force_at), *segments]
+                _at_done = True
+            elif _at_done:
+                kept = [s for s in segments if s.type != "at"]
+                if not kept:
+                    continue
+                segments = kept
+            segments = _ensure_at_trailing_space(segments)
 
-        await bot.send(segments, extra_metadata=extra_metadata)
-        if _audit is not None:
-            _audit(plain_text.strip(), _idx, _total)
+            if _plan_turn is not None:
+                _plan_turn.bubbles_sent += 1
 
-    await _send_trailing_artifacts()
+            plain_text = strip_mention_tags(block)
+
+            await asyncio.sleep(bubble_pause(len(plain_text)))
+
+            if _deferred_reply is not None and ev is not None:
+                segments = _resolve_deferred_reply(ev, _deferred_reply, segments)
+                _deferred_reply = None
+
+            await bot.send(segments, extra_metadata=extra_metadata)
+            if _audit is not None:
+                _audit(plain_text.strip(), _idx, _total)
+
+        await _send_trailing_artifacts()
+    finally:
+        if trailing_meme_task is not None:
+            if trailing_meme_task.done():
+                if not trailing_meme_task.cancelled():
+                    exc = trailing_meme_task.exception()
+                    if exc is not None:
+                        logger.debug(i18n_t("log.ai.meme_tag_fail", e=exc))
+            else:
+                trailing_meme_task.cancel()
+                await asyncio.gather(trailing_meme_task, return_exceptions=True)
 
 
 async def _send_reply_plan_groups(
@@ -496,6 +635,7 @@ async def _send_reply_plan_groups(
     ev: Event | None,
     meta: dict[str, object],
     ooc_check: bool,
+    preselected_meme: Optional["AiMemeRecord"] = None,
 ) -> None:
     """回复计划分发（§1.6）：每组一次出站，绑定 OutboundBinding 与目标收件人。
 
@@ -521,6 +661,7 @@ async def _send_reply_plan_groups(
                 latest_user_seq = rec.link.seq
                 break
 
+    remaining_preselected = preselected_meme
     for group in groups:
         target_seqs = [s for s in group.seqs]
         if not target_seqs:
@@ -591,6 +732,11 @@ async def _send_reply_plan_groups(
         if targets[0][1]:
             gmeta["reply_to_user_name"] = targets[0][1]
 
+        group_preselected: AiMemeRecord | None = None
+        if remaining_preselected is not None and MEME_TAG_PATTERN.search(group.text):
+            group_preselected = remaining_preselected
+            remaining_preselected = None
+
         binding = OutboundBinding(
             seen_seq=turn.head_seq,
             in_reply_to_seqs=tuple(target_seqs),
@@ -608,66 +754,126 @@ async def _send_reply_plan_groups(
                 _reply_prefix=prefix,
                 _plan_group=True,
                 _reply_target=reply_target,
+                preselected_meme=group_preselected,
             )
         finally:
             reset_outbound(token)
         turn.answered |= {s for s in target_seqs if s in pending}
 
 
-def _split_meme_tag(tag: str) -> tuple[str, str]:
-    """第一个词是情绪，其余是场景。空格、中文逗号、英文逗号都能拆。"""
-    text = tag.strip().replace("，", " ").replace(",", " ")
-    mood, _, scene = text.partition(" ")
-    return mood.strip(), scene.strip()
-
-
-async def _send_meme_from_tag(tag: str, bot: Bot, ev: Event) -> None:
-    """解析 meme 标记并发送对应表情包"""
-    from gsuid_core.ai_core.outbound import (
-        format_meme_placeholder,
-        set_outbound_image_label,
-        reset_outbound_image_label,
-    )
+async def _prepare_meme_payload(
+    query: str,
+    ev: Event,
+    *,
+    ignore_cooldown: bool = False,
+    is_pure_meme: bool = False,
+    preselected_record: Optional["AiMemeRecord"] = None,
+) -> _PreparedOutboundMeme | None:
+    """检索并预压出站 128px 表情包字节，不提前消耗冷却或防重队列。"""
     from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
     from gsuid_core.ai_core.buildin_tools.meme_tools import _get_persona_for_event
 
     persona = _get_persona_for_event(ev)
     if not persona_allows_meme_reply(persona):
-        return
+        return None
 
-    mood, scene = _split_meme_tag(tag)
-    label_token: contextvars.Token | None = None
+    from gsuid_core.ai_core.meme.library import _read_file, get_memes_base_path
+    from gsuid_core.ai_core.meme.selector import pick
+    from gsuid_core.ai_core.meme.normalize import prepare_outbound_meme_bytes
+
     try:
-        from gsuid_core.ai_core.meme.library import _read_file, get_memes_base_path
-        from gsuid_core.ai_core.meme.selector import pick
-        from gsuid_core.ai_core.meme.database_model import AiMemeRecord
-
-        record, reason = await pick(
-            mood=mood,
-            scene=scene,
-            persona=persona,
-            session_id=ev.session_id,
-        )
-        if record is None:
-            logger.debug(i18n_t("log.ai.meme_tag_skip", reason=reason, mood=mood, scene=scene))
-            return
+        if preselected_record is not None:
+            record = preselected_record
+        else:
+            record, reason = await pick(
+                query=query,
+                persona=persona,
+                session_id=ev.session_id,
+                ignore_cooldown=ignore_cooldown,
+                commit=False,
+                is_pure_meme=is_pure_meme,
+            )
+            if record is None:
+                logger.debug(i18n_t("log.ai.meme_tag_skip", reason=reason, mood=query, scene=""))
+                return None
 
         file_path = get_memes_base_path() / record.file_path
         if not file_path.exists():
             logger.debug(i18n_t("log.ai.meme_file_exist_path", file_path=file_path))
-            return
+            return None
 
         image_data = await _read_file(file_path)
-        img_b64 = await convert_img(image_data)
-        from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
-
-        label_token = set_outbound_image_label(format_meme_placeholder(mood))
-        await pause_before_meme()
-        await bot.send(MessageSegment.image(img_b64), extra_metadata=turn_reply_metadata(ev))
-        await AiMemeRecord.record_usage(record.meme_id, ev.group_id or "")
-        logger.info(i18n_t("log.ai.meme_tag_triggered_mood", p0=record.meme_id, mood=mood))
+        outbound_bytes = await to_thread(prepare_outbound_meme_bytes)(
+            record.meme_id,
+            image_data,
+            record.file_mime,
+        )
+        img_b64 = await convert_img(outbound_bytes)
+        placeholder_label = record.title.strip() or record.description.strip()[:16] or query[:16]
+        return _PreparedOutboundMeme(
+            record=record,
+            img_b64=img_b64,
+            outbound_bytes=outbound_bytes,
+            placeholder_label=placeholder_label,
+            query=query,
+        )
     except Exception as e:
         logger.debug(i18n_t("log.ai.meme_tag_fail", e=e))
+        return None
+
+
+async def _send_prepared_meme(
+    prepared: _PreparedOutboundMeme,
+    bot: Bot,
+    ev: Event,
+    *,
+    extra_metadata: Optional[Mapping[str, object]] = None,
+    reply_prefix: Optional[Sequence[Message]] = None,
+    deferred_reply: Optional[Tuple[int, str]] = None,
+    at_user_id: str | None = None,
+    pause: bool = True,
+) -> bool:
+    """真正发出已就绪表情包；发送成功后再提交冷却与防重记录，外部发送异常降级返回 False。"""
+    from gsuid_core.ai_core.outbound import (
+        format_meme_placeholder,
+        set_outbound_image_label,
+        reset_outbound_image_label,
+    )
+    from gsuid_core.ai_core.meme.selector import commit_pick
+    from gsuid_core.ai_core.meme.normalize import record_outbound_variant
+    from gsuid_core.ai_core.agent_run.support import turn_reply_metadata
+    from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+    if pause:
+        await pause_before_meme()
+
+    segments: list[Message] = [MessageSegment.image(prepared.img_b64)]
+    force_at = (at_user_id or "").strip()
+    has_force_at = bool(
+        force_at and reply_prefix and any(s.type == "at" and str(s.data or "") == force_at for s in reply_prefix)
+    )
+    if force_at and not has_force_at:
+        segments = [MessageSegment.at(force_at), *segments]
+    if reply_prefix:
+        segments = [*reply_prefix, *segments]
+    segments = _resolve_deferred_reply(ev, deferred_reply, segments)
+    payload: Message | list[Message] = segments[0] if len(segments) == 1 else segments
+
+    send_meta: Mapping[str, object] = extra_metadata if extra_metadata else turn_reply_metadata(ev)
+    label_token: contextvars.Token[str] | None = None
+    try:
+        label_token = set_outbound_image_label(format_meme_placeholder(prepared.placeholder_label))
+        await bot.send(payload, extra_metadata=send_meta)
+        commit_pick(ev.session_id, prepared.record.meme_id)
+        record_outbound_variant(prepared.record.meme_id, prepared.outbound_bytes)
+        await AiMemeRecord.record_usage(prepared.record.meme_id, ev.group_id or "")
+        logger.info(
+            i18n_t("log.ai.meme_tag_triggered_mood", p0=prepared.record.meme_id, mood=prepared.placeholder_label)
+        )
+        return True
+    except Exception as e:
+        logger.debug(i18n_t("log.ai.meme_tag_fail", e=e))
+        return False
     finally:
         if label_token is not None:
             reset_outbound_image_label(label_token)

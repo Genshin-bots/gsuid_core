@@ -14,7 +14,10 @@ from collections.abc import Callable, Awaitable
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.control import angle_guard as _ab
-from gsuid_core.ai_core.control.lines import INNER_OS_NUDGE
+from gsuid_core.ai_core.control.lines import (
+    INNER_OS_NUDGE,
+    PURE_MEME_NO_MATCH_OBSERVATION,
+)
 from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
 from gsuid_core.ai_core.agent_run.support import (
@@ -131,6 +134,18 @@ def addressed_silence_directive() -> Directive:
         "本轮你被直接呼叫，却只输出了沉默。该拒就短拒，该办事就调工具，该闲聊就短回；不要只沉默。",
         must="deliver",
         satisfied_by=("any_tool_called",),
+    )
+
+
+def pure_meme_no_match_directive(query: str) -> Directive:
+    """被寻址轮仅发纯表情但未命中时，要求改用当前人格回一句短台词。"""
+    detail = f"未匹配表情：{query[:24]}" if query else "未匹配表情"
+    return _correction(
+        "pure_meme_no_match",
+        PURE_MEME_NO_MATCH_OBSERVATION,
+        must="deliver",
+        satisfied_by=("user_visible_sent",),
+        detail=detail,
     )
 
 

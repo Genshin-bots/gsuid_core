@@ -1633,13 +1633,16 @@ API 错误字面量 → 角色短句替换
 制品两通道兜底：内容形态结构化块 + 遗留 <report> body → 资料图
 （主契约：render_agent → render_html_to_image 登记 artifact，非 <report> 标签协议）
 非法 <> sanitize 兜底（漏网；``<br>``→换行；``<report>`` 标签删除）
-解析 <meme:情绪>；剥 markdown / *动作*（保留整行/整段（…）心声，跟人设）
+解析 <meme:微表情或回应意图>（自由短语，句前=先发表情/句后=收尾补表情，并发预压 128px）；
+剥 markdown / *动作*（保留整行/整段（…）心声，跟人设）
 若 ooc_check：台词 + report 体再 inspect_outbound_ooc → 替换/丢弃（无重说）
 长 markdown 整篇出图：配置 render_long_markdown_as_image（**默认 False**，2026-08-08）
   · 开启时仍只作呈现层兜底，避免主人格浅分析被渲成丑图
   · 失败则降级空行拆条
 空行拆条 + 打字延迟 → bot.send
-尾声：report 图 + meme
+尾声：report 图 + meme（发送成功才提交冷却/防重并登记回流指纹）
+纯表情回复（整段仅 <meme:…>）在 guards 层延迟到 settle：命中预选直发；
+被寻址轮未命中则一次改口重说短台词，旁观轮静默
 ```
 
 **`render_html_to_image`（render_agent 持有，2026-08）**：

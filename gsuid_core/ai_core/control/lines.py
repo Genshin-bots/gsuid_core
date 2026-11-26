@@ -32,6 +32,11 @@ HANDLE_IMAGE_LEAK_NUDGE = (
 )
 INNER_OS_NUDGE = INNER_OS_PREFIX + "…）段落，只保留角色台词）"
 
+PURE_MEME_NO_MATCH_OBSERVATION = (
+    "你刚才打算仅用一张表情包回复，但表情库里当前没有匹配的图（没有发出去）。"
+    "现在请直接用当前角色口吻回一句简短台词回应对方，不要再写 `<meme:...>`，也不要只输出 `<SILENCE>`。"
+)
+
 GATE_NUDGE_MARKERS: tuple[str, ...] = (
     ANGLE_NUDGE_MARKER,
     FUND_CLAIM_PREFIX,

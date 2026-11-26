@@ -49,9 +49,9 @@ def ledger_group_key(ev: Event | None, *, group_id: str = "", user_id: str = "")
     return f"direct:{uid}" if uid else ""
 
 
-def format_meme_placeholder(mood: str) -> str:
-    """群聊历史里的表情占位。只放情绪词，方便记忆摄入当文字表情跳过。"""
-    word = (mood or "").strip()
+def format_meme_placeholder(label: str) -> str:
+    """群聊历史里的表情占位。放简短语义名称，方便记忆摄入与上下文理解。"""
+    word = (label or "").strip()
     return f"[表情:{word}]" if word else "[表情]"
 
 

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 import hashlib
 from typing import Sequence
 from datetime import datetime, timezone
@@ -21,8 +22,11 @@ from gsuid_core.utils.database.base_models import with_session, with_read_sessio
 _MEME_PACK_NS = uuid.UUID("a3c1e7b2-4f58-4d09-8e16-2b7c9d0e4f11")
 DEFAULT_PACK_ID = str(uuid.uuid5(_MEME_PACK_NS, "hint:common"))
 DEFAULT_PACK_NAME = "通用表情包"
+COLLECTED_PACK_ID = str(uuid.uuid5(_MEME_PACK_NS, "system:collected"))
+COLLECTED_PACK_NAME = "群聊采集"
 MAX_PACKS_PER_PERSONA = 16
 _HINT_PACK_PREFIX = "hint:"
+_SYSTEM_PACK_LOCK = asyncio.Lock()
 
 
 def pack_id_for_hint(hint: str) -> str:
@@ -165,6 +169,27 @@ async def _ensure_default_pack(session: AsyncSession) -> None:
         )
 
 
+async def _ensure_collected_pack(session: AsyncSession) -> PackRef:
+    row = await session.get(AiMemePack, COLLECTED_PACK_ID)
+    if row is not None:
+        return PackRef(pack_id=row.pack_id, name=row.name)
+    by_name = (
+        await session.execute(select(AiMemePack).where(col(AiMemePack.name) == COLLECTED_PACK_NAME))
+    ).scalar_one_or_none()
+    if by_name is not None:
+        return PackRef(pack_id=by_name.pack_id, name=by_name.name)
+    session.add(
+        AiMemePack(
+            pack_id=COLLECTED_PACK_ID,
+            name=COLLECTED_PACK_NAME,
+            created_at=_now(),
+            updated_at=_now(),
+        )
+    )
+    await session.flush()
+    return PackRef(pack_id=COLLECTED_PACK_ID, name=COLLECTED_PACK_NAME)
+
+
 async def _member_exists(session: AsyncSession, pack_id: str, meme_id: str) -> bool:
     row = await session.get(AiMemePackItem, (pack_id, meme_id))
     return row is not None
@@ -182,8 +207,24 @@ class PackStore:
 
     @classmethod
     @with_session
-    async def ensure_default_pack(cls, session: AsyncSession) -> None:
+    async def _ensure_default_pack_tx(cls, session: AsyncSession) -> None:
         await _ensure_default_pack(session)
+
+    @classmethod
+    async def ensure_default_pack(cls) -> None:
+        async with _SYSTEM_PACK_LOCK:
+            await cls._ensure_default_pack_tx()
+
+    @classmethod
+    @with_session
+    async def _ensure_collected_pack_tx(cls, session: AsyncSession) -> PackRef:
+        return await _ensure_collected_pack(session)
+
+    @classmethod
+    async def ensure_collected_pack(cls) -> PackRef:
+        """确保「群聊采集」隔离包存在（串行防并发建行冲突，不自动挂载到任何人格）。"""
+        async with _SYSTEM_PACK_LOCK:
+            return await cls._ensure_collected_pack_tx()
 
     @classmethod
     @with_session
@@ -221,6 +262,64 @@ class PackStore:
     @with_read_session
     async def pack_ids_of_meme(cls, session: AsyncSession, meme_id: str) -> list[str]:
         return await _pack_ids_of(session, meme_id)
+
+    @classmethod
+    @with_read_session
+    async def pack_ids_by_memes(cls, session: AsyncSession, meme_ids: Sequence[str]) -> dict[str, list[str]]:
+        """批量反查每张表情所属的 pack_ids，避免列表查询 N+1。"""
+        unique_ids = list(dict.fromkeys(mid for mid in meme_ids if mid))
+        mapping: dict[str, list[str]] = {mid: [] for mid in unique_ids}
+        if not unique_ids:
+            return mapping
+        result = await session.execute(
+            select(AiMemePackItem.pack_id, AiMemePackItem.meme_id).where(col(AiMemePackItem.meme_id).in_(unique_ids))
+        )
+        for row in result.all():
+            pid = str(row[0])
+            mid = str(row[1])
+            if mid in mapping:
+                mapping[mid].append(pid)
+        for ids in mapping.values():
+            ids.sort()
+        return mapping
+
+    @classmethod
+    @with_session
+    async def set_meme_packs(cls, session: AsyncSession, meme_id: str, pack_ids: Sequence[str]) -> list[str]:
+        """更新单张表情所属的包列表，自动保护市场只读包不被删改。"""
+        from gsuid_core.ai_core.persona.store import is_repo_pack
+        from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+        current_ids = set(await _pack_ids_of(session, meme_id))
+        requested_ids = {pid.strip() for pid in pack_ids if pid and pid.strip()}
+        all_involved = list(current_ids | requested_ids)
+        pack_by_id: dict[str, AiMemePack] = {}
+        if all_involved:
+            stmt_packs = select(AiMemePack).where(col(AiMemePack.pack_id).in_(all_involved))
+            rows = (await session.execute(stmt_packs)).scalars()
+            pack_by_id = {p.pack_id: p for p in rows}
+
+        protected_repo_ids = {pid for pid in current_ids if pid in pack_by_id and is_repo_pack(pack_by_id[pid].name)}
+        desired_editable = {
+            pid for pid in requested_ids if pid in pack_by_id and not is_repo_pack(pack_by_id[pid].name)
+        }
+        final_ids = protected_repo_ids | desired_editable
+
+        for pid in sorted(current_ids - final_ids):
+            item = await session.get(AiMemePackItem, (pid, meme_id))
+            if item is not None:
+                await session.delete(item)
+        for pid in sorted(final_ids - current_ids):
+            session.add(AiMemePackItem(pack_id=pid, meme_id=meme_id))
+
+        record = await session.get(AiMemeRecord, meme_id)
+        if record is not None and (record.pending_pack_id or record.assign_default_pack):
+            record.pending_pack_id = ""
+            record.assign_default_pack = False
+            record.updated_at = _now()
+            session.add(record)
+
+        return sorted(final_ids)
 
     @classmethod
     @with_read_session

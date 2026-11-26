@@ -26,7 +26,7 @@ from gsuid_core.ai_core.const import (
     _STICKY_FAMILY_TURNS,
     _PROGRESSIVE_TOOLS_SKIP_INTENTS,
 )
-from gsuid_core.ai_core.delivery import send_chat_result
+from gsuid_core.ai_core.delivery import send_chat_result, extract_pure_meme_query
 from gsuid_core.ai_core.register import find_tool_base
 from gsuid_core.ai_core.agent_errors import (
     NO_RESULT_TEXT,
@@ -43,6 +43,7 @@ from gsuid_core.ai_core.agent_run.state import (
 from gsuid_core.ai_core.history_compact import _relean_user_turn
 from gsuid_core.ai_core.agent_run.support import (
     _THRASH_FUSE_NUDGE,
+    _MAIN_PERSONA_CREATE_BY,
     record_output_block,
     turn_reply_metadata,
     collect_run_thinking,
@@ -61,6 +62,7 @@ from gsuid_core.ai_core.control.policy_ring import (
     turn_user_text,
     corrected_or_original,
     run_settle_policy_ring,
+    pure_meme_no_match_directive,
 )
 from gsuid_core.ai_core.agent_run.budget_ctx import reset_user_turn_id, _current_budget_scope
 from gsuid_core.ai_core.control.outbound_detectors import (
@@ -774,6 +776,117 @@ def _remember_outbound_on_silence_for(host: RunOnceHost, st: RunOnceState, resul
     remember_silence_handles(ev, noted_thread_handles(st.context))
 
 
+def _pure_meme_reply_expected(st: RunOnceState) -> bool:
+    """被寻址/私聊轮才要求纯表情未命中时改口短台词；群聊旁观轮允许静默。"""
+    if st.blocks_user_speech or st.ev is None:
+        return False
+    if not st.ev.group_id:
+        return True
+    if st.tg is not None:
+        return bool(
+            st.tg.ellipsis_followup or (st.tg.call_to_self and not st.tg.quoted_tome and not st.tg.address_gated)
+        )
+    return bool(st.ev.is_tome)
+
+
+async def _resolve_pure_meme_settle_for(
+    ring_host: SettleRingHost,
+    st: RunOnceState,
+    result_msg: str,
+    *,
+    is_subagent: bool = False,
+    sent_order: list[str] | None = None,
+) -> str:
+    """统一收口延迟到 settle 的纯表情回复：命中则预选发出，未命中则按寻址规则重说或静默。"""
+    if st.ab_abort or is_subagent or ring_host.create_by not in _MAIN_PERSONA_CREATE_BY:
+        return result_msg
+    if st.bot is None or st.ev is None or st.return_mode not in ("always", "by_bot"):
+        return result_msg
+
+    prior = result_msg.strip()
+    if not prior or prior in ring_host.sent_texts:
+        return result_msg
+    pure_query = extract_pure_meme_query(prior)
+    if pure_query is None:
+        return result_msg
+
+    from gsuid_core.ai_core.meme.selector import pick
+    from gsuid_core.ai_core.persona.config import persona_allows_meme_reply
+    from gsuid_core.ai_core.buildin_tools.meme_tools import _get_persona_for_event
+
+    persona = _get_persona_for_event(st.ev)
+    if not persona_allows_meme_reply(persona):
+        pre_record, reason = None, "persona_disabled"
+    else:
+        try:
+            pre_record, reason = await pick(
+                query=pure_query,
+                persona=persona,
+                session_id=st.ev.session_id,
+                ignore_cooldown=True,
+                commit=False,
+                is_pure_meme=True,
+            )
+        except Exception as e:
+            # 检索链路（Qdrant/SQL/嵌入）抖动不能拖垮整轮回复，按未命中走改口或静默
+            logger.warning(i18n_t("log.ai.meme_pick_fail", e=e))
+            pre_record, reason = None, "pick_error"
+
+    if pre_record is not None:
+        from gsuid_core.ai_core.meme.library import get_memes_base_path
+
+        if not (get_memes_base_path() / pre_record.file_path).is_file():
+            pre_record = None
+            reason = "file_missing"
+
+    if pre_record is not None:
+        raw_at = st.run_extra["at_user_id"] if "at_user_id" in st.run_extra else None
+        at_uid = str(raw_at) if isinstance(raw_at, str) and raw_at else None
+        await send_chat_result(
+            st.bot,
+            prior,
+            ev=st.ev,
+            at_user_id=at_uid,
+            extra_metadata=turn_reply_metadata(st.ev),
+            preselected_meme=pre_record,
+        )
+        absorb_run_image_delivered(st)
+        ring_host.sent_texts.add(prior)
+        if sent_order is not None and prior not in sent_order:
+            sent_order.append(prior)
+        st.main_channel_sends += 1
+        return result_msg
+
+    scrub_targets = {prior}
+    if (
+        st.main_channel_sends == 0
+        and not st.image_sent_this_run
+        and not st.fake_done_retry
+        and _pure_meme_reply_expected(st)
+    ):
+        corrected = await ring_host.try_correction_pass(
+            st,
+            (pure_meme_no_match_directive(pure_query),),
+            suppress_intermediate_text=True,
+            return_mode="return",
+        )
+        next_msg = corrected_or_original(corrected, original=result_msg, user_text=turn_user_text(st))
+        next_stripped = next_msg.strip()
+        if next_stripped != prior and not is_silence_marker(next_msg) and extract_pure_meme_query(next_msg) is None:
+            await ring_host.emit_unsent_reply(st, next_msg)
+            ring_host.scrub_fake_done_history({prior})
+            return next_msg
+        if next_stripped:
+            scrub_targets.add(next_stripped)
+
+    ring_host.scrub_fake_done_history(scrub_targets)
+    block_reason = f"pure_meme_{reason}"
+    if st.main_channel_sends == 0 and not st.image_sent_this_run:
+        st.silence_reason = block_reason
+    ring_host.note_output_block(st, block_reason, prior)
+    return "<SILENCE>"
+
+
 async def _finalize_settle_text(
     host: RunOnceHost,
     st: RunOnceState,
@@ -830,6 +943,14 @@ async def _finalize_settle_text(
         replacement_visible=ring_out.replacement_visible,
     ):
         await _deliver_withheld(st, host._run_sent_texts, host._run_sent_order)
+
+    result_msg = await _resolve_pure_meme_settle_for(
+        ring_host,
+        st,
+        result_msg,
+        is_subagent=host.is_subagent,
+        sent_order=host._run_sent_order,
+    )
 
     if st.return_mode in ["by_bot"] and st.bot and st.ev:
         if st.main_channel_sends > 0 or st.image_sent_this_run:

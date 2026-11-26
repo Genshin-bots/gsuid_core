@@ -83,7 +83,7 @@ def _match(value: MatchValue | MatchAny | None) -> qm.MatchValue | qm.MatchAny |
         if isinstance(value.value, str):
             return qm.MatchValue(value=value.value)
         if isinstance(value.value, bool):
-            return qm.MatchValue(value=int(value.value))
+            return qm.MatchValue(value=value.value)
         if isinstance(value.value, int):
             return qm.MatchValue(value=value.value)
         return qm.MatchValue(value=str(value.value))

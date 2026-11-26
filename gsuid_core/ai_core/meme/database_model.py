@@ -6,11 +6,11 @@ AiMemeRecord 表情包主表，使用 SQLModel 直接定义。
 """
 
 import json
-from typing import List, Optional, Sequence
+from typing import List, Mapping, Optional, Sequence
 from datetime import datetime, timezone
 
 from sqlmodel import JSON, Field, Column, SQLModel, col, delete, select
-from sqlalchemy import String, or_, cast, func
+from sqlalchemy import String, or_, and_, cast, func
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -63,11 +63,15 @@ class AiMemeRecord(SQLModel, table=True):
     # 为真时，第一次成功且当时没有成员，才加入「通用表情包」。
     assign_default_pack: bool = Field(default=False)
 
-    # ── 标签（JSON 字段） ──
+    # ── 结构化语义与标签 ──
+    title: str = Field(default="", max_length=64)
+    ocr_text: str = Field(default="", max_length=256)
+    usage_hint: str = Field(default="", max_length=512)
     emotion_tags: List[str] = Field(default_factory=list, sa_column=Column(JSON))
     scene_tags: List[str] = Field(default_factory=list, sa_column=Column(JSON))
     description: str = Field(default="", max_length=512)
     custom_tags: List[str] = Field(default_factory=list, sa_column=Column(JSON))
+    enabled: bool = Field(default=True)
 
     # ── 状态 ──
     status: str = Field(default="pending", index=True, max_length=32)
@@ -132,7 +136,7 @@ class AiMemeRecord(SQLModel, table=True):
         cls,
         session: AsyncSession,
         meme_id: str,
-        update_data: dict,
+        update_data: Mapping[str, object],
     ) -> bool:
         """更新记录字段，返回是否成功"""
         result = await session.execute(select(cls).where(cls.meme_id == meme_id))
@@ -144,6 +148,28 @@ class AiMemeRecord(SQLModel, table=True):
         record.updated_at = datetime.now(timezone.utc)
         session.add(record)
         return True
+
+    @classmethod
+    @with_session
+    async def batch_set_enabled(
+        cls,
+        session: AsyncSession,
+        meme_ids: Sequence[str],
+        enabled: bool,
+    ) -> List[str]:
+        """批量启停表情记录，返回实际更新的 meme_id 列表。"""
+        unique_ids = list(dict.fromkeys(mid for mid in meme_ids if mid))
+        if not unique_ids:
+            return []
+        result = await session.execute(select(cls).where(col(cls.meme_id).in_(unique_ids)))
+        now = datetime.now(timezone.utc)
+        updated: List[str] = []
+        for record in result.scalars().all():
+            record.enabled = enabled
+            record.updated_at = now
+            session.add(record)
+            updated.append(record.meme_id)
+        return updated
 
     @classmethod
     @with_session
@@ -286,6 +312,55 @@ class AiMemeRecord(SQLModel, table=True):
         return result.scalars().all()
 
     @classmethod
+    def _incomplete_clause(cls) -> ColumnElement[bool]:
+        """待补全条件：pending/pending_manual，或已入库但缺 title / usage_hint。"""
+        empty_title = or_(col(cls.title).is_(None), func.trim(col(cls.title)) == "")
+        empty_usage = or_(col(cls.usage_hint).is_(None), func.trim(col(cls.usage_hint)) == "")
+        return or_(
+            col(cls.status).in_(["pending", "pending_manual"]),
+            and_(
+                col(cls.status).in_(["tagged", "manual"]),
+                or_(empty_title, empty_usage),
+            ),
+        )
+
+    @classmethod
+    @with_read_session
+    async def list_incomplete_records(
+        cls,
+        session: AsyncSession,
+        pack_id: Optional[str] = None,
+        limit: int = 500,
+    ) -> Sequence["AiMemeRecord"]:
+        """列出待补全记录（可选限定在某个表情包内）。"""
+        stmt = select(cls).where(cls._incomplete_clause())
+        if pack_id:
+            from gsuid_core.ai_core.meme.pack_model import AiMemePackItem
+
+            member_ids = select(AiMemePackItem.meme_id).where(col(AiMemePackItem.pack_id) == pack_id)
+            stmt = stmt.where(or_(col(cls.meme_id).in_(member_ids), col(cls.pending_pack_id) == pack_id))
+        stmt = stmt.order_by(col(cls.created_at).asc()).limit(limit)
+        result = await session.execute(stmt)
+        return result.scalars().all()
+
+    @classmethod
+    @with_read_session
+    async def count_incomplete_records(
+        cls,
+        session: AsyncSession,
+        pack_id: Optional[str] = None,
+    ) -> int:
+        """统计待补全记录数量。"""
+        stmt = select(func.count()).select_from(cls).where(cls._incomplete_clause())
+        if pack_id:
+            from gsuid_core.ai_core.meme.pack_model import AiMemePackItem
+
+            member_ids = select(AiMemePackItem.meme_id).where(col(AiMemePackItem.pack_id) == pack_id)
+            stmt = stmt.where(or_(col(cls.meme_id).in_(member_ids), col(cls.pending_pack_id) == pack_id))
+        result = await session.execute(stmt)
+        return int(result.scalar() or 0)
+
+    @classmethod
     @with_read_session
     async def get_pending_records(
         cls,
@@ -353,6 +428,7 @@ class AiMemeRecord(SQLModel, table=True):
         stmt = select(cls).where(
             cls.folder == folder,
             col(cls.status).in_(["tagged", "manual"]),
+            col(cls.enabled).is_(True),
         )
         if exclude_ids:
             stmt = stmt.where(col(cls.meme_id).not_in(exclude_ids))
@@ -373,6 +449,7 @@ class AiMemeRecord(SQLModel, table=True):
         stmt = select(cls).where(
             cls.folder == folder,
             col(cls.status).in_(["tagged", "manual"]),
+            col(cls.enabled).is_(True),
         )
         if exclude_ids:
             stmt = stmt.where(col(cls.meme_id).not_in(exclude_ids))
@@ -433,6 +510,12 @@ class AiMemeRecord(SQLModel, table=True):
         usage_result = await session.execute(select(func.coalesce(func.sum(cls.use_count), 0)))
         total_usage = usage_result.scalar() or 0
 
+        # 待补全数量与启用数量
+        incomplete_result = await session.execute(select(func.count()).select_from(cls).where(cls._incomplete_clause()))
+        incomplete_count = int(incomplete_result.scalar() or 0)
+        enabled_result = await session.execute(select(func.count()).select_from(cls).where(col(cls.enabled).is_(True)))
+        enabled_count = int(enabled_result.scalar() or 0)
+
         # Top 10 最常用
         top_result = await session.execute(
             select(cls).where(col(cls.use_count) > 0).order_by(col(cls.use_count).desc()).limit(10)
@@ -440,6 +523,7 @@ class AiMemeRecord(SQLModel, table=True):
         top_memes = [
             {
                 "meme_id": r.meme_id,
+                "title": r.title,
                 "description": r.description,
                 "use_count": r.use_count,
                 "file_path": r.file_path,
@@ -453,6 +537,8 @@ class AiMemeRecord(SQLModel, table=True):
             "folder_counts": folder_counts,
             "persona_counts": persona_counts,
             "total_usage": total_usage,
+            "incomplete_count": incomplete_count,
+            "enabled_count": enabled_count,
             "top_memes": top_memes,
         }
 
@@ -616,7 +702,10 @@ class AiMemeRecord(SQLModel, table=True):
 
         tag_set = set(tags)
 
-        stmt = select(cls).where(col(cls.status).in_(["tagged", "manual"]))
+        stmt = select(cls).where(
+            col(cls.status).in_(["tagged", "manual"]),
+            col(cls.enabled).is_(True),
+        )
         if folder:
             stmt = stmt.where(cls.folder == folder)
         if pack_ids is not None:
@@ -655,13 +744,66 @@ class AiMemeRecord(SQLModel, table=True):
 
     @classmethod
     @with_read_session
+    async def search_lexical_candidates(
+        cls,
+        session: AsyncSession,
+        terms: Sequence[str],
+        *,
+        folder: Optional[str] = None,
+        pack_ids: Optional[Sequence[str]] = None,
+        include_disabled: bool = False,
+        limit: int = 200,
+    ) -> List["AiMemeRecord"]:
+        """按长度 >= 2 的词项在 SQL 层粗筛结构化字段候选，供词面精排打分。"""
+        clean_terms = [t.strip() for t in terms if len(t.strip()) >= 2]
+        if not clean_terms:
+            return []
+        if pack_ids is not None and len(pack_ids) == 0:
+            return []
+
+        stmt = select(cls).where(col(cls.status).in_(["tagged", "manual"]))
+        if not include_disabled:
+            stmt = stmt.where(col(cls.enabled).is_(True))
+        if folder:
+            stmt = stmt.where(cls.folder == folder)
+        if pack_ids is not None:
+            from gsuid_core.ai_core.meme.pack_model import AiMemePackItem
+
+            member_ids = select(AiMemePackItem.meme_id).where(col(AiMemePackItem.pack_id).in_(list(pack_ids)))
+            stmt = stmt.where(col(cls.meme_id).in_(member_ids))
+
+        from sqlalchemy import case
+
+        title_ocr_conditions: List[ColumnElement[bool]] = []
+        like_conditions: List[ColumnElement[bool]] = []
+        for kw in clean_terms[:16]:
+            raw_pattern = f"%{escape_like(kw)}%"
+            t_like = col(cls.title).like(raw_pattern, escape="\\")
+            o_like = col(cls.ocr_text).like(raw_pattern, escape="\\")
+            title_ocr_conditions.append(t_like)
+            title_ocr_conditions.append(o_like)
+            like_conditions.append(t_like)
+            like_conditions.append(o_like)
+            like_conditions.append(col(cls.usage_hint).like(raw_pattern, escape="\\"))
+            like_conditions.append(col(cls.description).like(raw_pattern, escape="\\"))
+            for tag_col in (cls.emotion_tags, cls.custom_tags):
+                for pattern in _keyword_like_patterns(kw):
+                    like_conditions.append(cast(tag_col, String).like(pattern, escape="\\"))
+
+        priority = case((or_(*title_ocr_conditions), 0), else_=1)
+        stmt = stmt.where(or_(*like_conditions)).order_by(priority, col(cls.updated_at).desc()).limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_read_session
     async def confirm_sendable(
         cls,
         session: AsyncSession,
         meme_ids: Sequence[str],
         pack_ids: Sequence[str],
     ) -> List["AiMemeRecord"]:
-        """按传入顺序留下属于这些包、且状态可发的行。丢掉的名额不补。"""
+        """按传入顺序留下属于这些包、且启用可发的行。丢掉的名额不补。"""
         if not meme_ids or not pack_ids:
             return []
         from gsuid_core.ai_core.meme.pack_model import AiMemePackItem
@@ -674,6 +816,7 @@ class AiMemeRecord(SQLModel, table=True):
             select(cls).where(
                 col(cls.meme_id).in_(member_ids),
                 col(cls.status).in_(["tagged", "manual"]),
+                col(cls.enabled).is_(True),
             )
         )
         by_id = {row.meme_id: row for row in result.scalars().all()}
@@ -691,6 +834,7 @@ class AiMemeRecord(SQLModel, table=True):
         stmt = select(cls).where(
             col(cls.meme_id).in_(member_ids),
             col(cls.status).in_(["tagged", "manual"]),
+            col(cls.enabled).is_(True),
         )
         if exclude_ids:
             stmt = stmt.where(col(cls.meme_id).not_in(exclude_ids))

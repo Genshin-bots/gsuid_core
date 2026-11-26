@@ -1517,3 +1517,364 @@ def test_session_logs_task_kind_filter_and_categories(
         assert orphan_item["updated_at_str"] is not None
 
     asyncio.run(scenario())
+
+
+def test_meme_dual_scale_collection_and_admin_contracts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """双轨缩放(400px不放大/128px出站缓存)、群聊采集归包、强制补全与批量启停契约。"""
+    import io
+
+    from PIL import Image
+
+    import gsuid_core.ai_core.meme.tagger as meme_tagger
+    import gsuid_core.webconsole.meme_api as meme_api
+    import gsuid_core.ai_core.meme.library as meme_library
+    import gsuid_core.ai_core.persona.store as persona_store
+    from gsuid_core.models import Event
+    from gsuid_core.segment import Message
+    from gsuid_core.ai_core.meme.filter import MemeFilter
+    from gsuid_core.ai_core.meme.tagger import (
+        MemeTagResult,
+        _merge_complete_missing,
+        _strip_negative_usage_clauses,
+    )
+    from gsuid_core.webconsole.meme_api import (
+        MemeUpdateRequest,
+        MemeBatchRetagRequest,
+        MemeBatchUpdateRequest,
+        retag_meme,
+        update_meme,
+        batch_update_memes,
+        batch_retag_pending,
+    )
+    from gsuid_core.ai_core.meme.observer import (
+        _MAX_BASE64_SOURCE_CHARS,
+        _source_dedupe_key,
+        _extract_image_urls,
+    )
+    from gsuid_core.ai_core.meme.normalize import (
+        prepare_meme_image,
+        is_known_outbound_meme,
+        record_outbound_variant,
+        clear_outbound_meme_cache,
+        evict_outbound_meme_cache,
+        prepare_outbound_meme_bytes,
+    )
+    from gsuid_core.ai_core.meme.pack_model import COLLECTED_PACK_ID, PackStore
+    from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+    def _make_png(w: int, h: int, color: tuple[int, int, int]) -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", (w, h), color).save(buf, format="PNG")
+        return buf.getvalue()
+
+    # 1. 双轨缩放：小图不放大，大图短边缩至 400px，出站缓存短边缩至 128px
+    small_png = _make_png(200, 240, (80, 120, 200))
+    prep_small = prepare_meme_image(small_png, "image/png")
+    assert (prep_small.width, prep_small.height) == (200, 240)
+
+    large_png = _make_png(800, 600, (200, 80, 80))
+    prep_large = prepare_meme_image(large_png, "image/png")
+    assert min(prep_large.width, prep_large.height) == 400
+    assert (prep_large.width, prep_large.height) == (533, 400)
+
+    clear_outbound_meme_cache()
+    out_bytes = prepare_outbound_meme_bytes("cache_m1", prep_large.data, prep_large.mime)
+    with Image.open(io.BytesIO(out_bytes)) as out_im:
+        assert min(out_im.size) == 128
+        out_w, out_h = out_im.size
+    assert prepare_outbound_meme_bytes("cache_m1", b"ignored_on_cache_hit", "image/png") == out_bytes
+    # 未发送（未登记）时不误判；发送成功登记后精确字节与平台重压 JPEG 均识别为已发出副本
+    assert is_known_outbound_meme(out_bytes, out_w, out_h) is False
+    record_outbound_variant("cache_m1", out_bytes)
+    assert is_known_outbound_meme(out_bytes, out_w, out_h) is True
+    other_128 = _make_png(128, 128, (10, 200, 30))
+    assert is_known_outbound_meme(other_128, 128, 128) is False
+    evict_outbound_meme_cache("cache_m1")
+    assert is_known_outbound_meme(out_bytes, out_w, out_h) is False
+
+    grad_im = Image.new("RGB", (400, 400))
+    grad_im.putdata([((x * 3) % 256, (y * 5) % 256, ((x + y) * 2) % 256) for y in range(400) for x in range(400)])
+    grad_buf = io.BytesIO()
+    grad_im.save(grad_buf, format="PNG")
+    grad_out = prepare_outbound_meme_bytes("cache_grad", grad_buf.getvalue(), "image/png")
+    record_outbound_variant("cache_grad", grad_out)
+    rejpg_buf = io.BytesIO()
+    with Image.open(io.BytesIO(grad_out)) as grad_128:
+        gw, gh = grad_128.size
+        grad_128.convert("RGB").save(rejpg_buf, format="JPEG", quality=75)
+    assert is_known_outbound_meme(rejpg_buf.getvalue(), gw, gh) is True
+    evict_outbound_meme_cache("cache_grad")
+
+    # base64 超限直拒与 O(1) 采样指纹区分
+    oversized_b64 = "base64://" + ("A" * (_MAX_BASE64_SOURCE_CHARS + 10))
+    ev_b64 = Event("OneBot", "900000001", "m_b64", "group", "group_1", "100000001", {}, 6)
+    ev_b64.content = [Message("image", oversized_b64), Message("image", "base64://abcd")]
+    assert _extract_image_urls(ev_b64) == ["base64://abcd"]
+    big_a = "base64://" + ("A" * 8000) + "XXXX" + ("A" * 8000)
+    big_b = "base64://" + ("A" * 8000) + "YYYY" + ("A" * 8000)
+    assert _source_dedupe_key(big_a) != _source_dedupe_key(big_b)
+
+    # 2. 负向适用句清洗与 complete_missing 手填保护
+    assert _strip_negative_usage_clauses("适合用于轻松吐槽，不适合用于严肃道歉。") == "适合用于轻松吐槽"
+    existing_rec = AiMemeRecord(
+        meme_id="m_keep",
+        file_path="common/m_keep.png",
+        title="手写标题",
+        description="旧短描述",
+        ocr_text="",
+        custom_tags=["手填标签"],
+        emotion_tags=[],
+        usage_hint="",
+        status="manual",
+        enabled=True,
+    )
+    vlm_tag = MemeTagResult(
+        is_meme=True,
+        title="模型新标题",
+        description="这是一段超过二十五字的详细客观画面描写，用来验证旧短描述会被平滑升级补全。",
+        ocr_text="图中配字",
+        custom_tags=["模型标签"],
+        emotion_tags=["吐槽", "无语"],
+        usage_hint="适合用于群聊调侃与轻松吐槽",
+        nsfw_score=0.0,
+    )
+    m_title, m_desc, m_ocr, m_custom, m_emo, m_usage = _merge_complete_missing(existing_rec, vlm_tag)
+    assert m_title == "手写标题"
+    assert m_custom == ["手填标签"]
+    assert m_ocr == "图中配字" and m_emo == ["吐槽", "无语"] and "吐槽" in m_usage
+    assert len(m_desc) >= 25
+
+    async def _scenario() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="meme-v2-admin.db"):
+            monkeypatch.setattr(meme_library, "get_memes_base_path", lambda: tmp_path / "memes")
+            monkeypatch.setattr(meme_api, "get_memes_base_path", lambda: tmp_path / "memes")
+            monkeypatch.setattr(persona_store, "is_repo_pack", lambda name: name == "市场只读包")
+
+            enqueued_jobs: list[tuple[str, str, bool]] = []
+
+            async def _fake_enqueue(
+                meme_id: str,
+                *,
+                mode: str = "auto",
+                force_run: bool = False,
+            ) -> bool:
+                enqueued_jobs.append((meme_id, mode, force_run))
+                return True
+
+            async def _noop_sync(_rec: AiMemeRecord) -> None:
+                return None
+
+            async def _noop_payloads(_ids: list[str] | None = None, *, strict: bool = True) -> None:
+                return None
+
+            monkeypatch.setattr(meme_tagger, "enqueue_tag", _fake_enqueue)
+            monkeypatch.setattr(meme_tagger, "is_tagging_enabled", lambda: True)
+            monkeypatch.setattr(meme_library.MemeLibrary, "sync_to_qdrant", staticmethod(_noop_sync))
+            monkeypatch.setattr(meme_library, "write_member_payloads", _noop_payloads)
+            monkeypatch.setattr(meme_api, "write_member_payloads", _noop_payloads)
+
+            # 3. 群聊采集自动归入「群聊采集」包并立即触发入队
+            MemeFilter._daily_counts.clear()
+            MemeFilter._rejected_ids.clear()
+            await MemeFilter.enqueue(small_png, "image/png", 200, 240, "group_1", "100000001", "")
+            assert len(enqueued_jobs) == 1
+            col_id = enqueued_jobs[0][0]
+            col_rec = await AiMemeRecord.get_by_meme_id(col_id)
+            assert col_rec is not None and col_rec.pending_pack_id == COLLECTED_PACK_ID
+
+            # 4. 补齐语义并上线，验证在线 retag 不降级为 pending 且走强制模式
+            await PackStore.apply_successful_tag(col_id)
+            pack_user = await PackStore.create_pack("自建包")
+            pack_repo = await PackStore.create_pack("市场只读包")
+            upd_res = await update_meme(
+                col_id,
+                MemeUpdateRequest(
+                    title="测试标题",
+                    ocr_text="配字测试",
+                    usage_hint="适合用于日常调侃",
+                    description="短",
+                    status="tagged",
+                    pack_ids=[pack_user.pack_id],
+                ),
+                _={},
+            )
+            assert upd_res["status"] == 0
+            assert await PackStore.pack_ids_of_meme(col_id) == [pack_user.pack_id]
+
+            # 市场只读包修改受阻
+            fake_admin = make_session_record("admin")
+            repo_err = await batch_update_memes(
+                MemeBatchUpdateRequest(meme_ids=[col_id], add_pack_id=pack_repo.pack_id),
+                _user=fake_admin,
+            )
+            assert repo_err["status"] == 1
+
+            # 静态路由 /api/meme/stats 必须注册在 /api/meme/{meme_id} 之前，避免被路径参数吞掉
+            from fastapi.routing import APIRoute
+            from qdrant_client.http import models as qm
+
+            from gsuid_core.ai_core.rag.qlocal import _match as qlocal_match
+            from gsuid_core.webconsole.app_app import app as web_app
+            from gsuid_core.ai_core.rag.qmodels import MatchValue as LocalMatchValue
+
+            meme_get_paths = [
+                r.path
+                for r in web_app.routes
+                if isinstance(r, APIRoute)
+                and r.methods is not None
+                and "GET" in r.methods
+                and r.path.startswith("/api/meme/")
+            ]
+            assert meme_get_paths.index("/api/meme/stats") < meme_get_paths.index("/api/meme/{meme_id}")
+            # 本地 Qdrant 布尔匹配必须保留 bool，避免 enabled=False 被误转为整数 0
+            bool_matched = qlocal_match(LocalMatchValue(value=False))
+            assert isinstance(bool_matched, qm.MatchValue) and bool_matched.value is False
+
+            # 批量停用与强制重识别（即使关闭 meme_vlm_enable 也应 force_run=True 入队，且在线记录不降级）
+            monkeypatch.setattr(meme_tagger, "is_tagging_enabled", lambda: False)
+            dis_res = await batch_update_memes(
+                MemeBatchUpdateRequest(meme_ids=[col_id], enabled=False),
+                _user=fake_admin,
+            )
+            assert dis_res["status"] == 0
+            after_dis = await AiMemeRecord.get_by_meme_id(col_id)
+            assert after_dis is not None and after_dis.enabled is False
+
+            enqueued_jobs.clear()
+            retag_res = await retag_meme(col_id, _={})
+            assert retag_res["status"] == 0
+            assert enqueued_jobs == [(col_id, "retag_overwrite", True)]
+            still_online = await AiMemeRecord.get_by_meme_id(col_id)
+            assert still_online is not None and still_online.status == "tagged"
+
+            # 已填齐 title 与 usage_hint 的精简记录不再误标为待补全；缺 usage_hint 时才入队补全
+            assert await AiMemeRecord.list_incomplete_records() == []
+            await AiMemeRecord.update_record(col_id, {"usage_hint": ""})
+            enqueued_jobs.clear()
+            batch_res = await batch_retag_pending(MemeBatchRetagRequest(mode="incomplete"), _={})
+            assert batch_res["status"] == 0
+            assert enqueued_jobs == [(col_id, "complete_missing", True)]
+
+    asyncio.run(_scenario())
+
+
+def test_meme_semantic_retrieval_and_selector_contracts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """二元词面防误召、exact title/ocr 穿透、停用隔离、相对分差截断与小包防死锁。"""
+    import gsuid_core.ai_core.meme.library as meme_library
+    import gsuid_core.ai_core.meme.selector as meme_selector
+    from gsuid_core.ai_core.meme.library import (
+        ScoredMeme,
+        MemeLibrary,
+        compute_lexical_score,
+        extract_lexical_terms,
+    )
+    from gsuid_core.ai_core.meme.selector import pick, commit_pick, select_from_scored
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+    from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+    # 1. 严格二元词以上：禁止单字拆词误命中（「害羞」不命中「害怕」）
+    assert extract_lexical_terms("害羞")[1] == ["害羞"]
+    rec_fear = AiMemeRecord(
+        meme_id="m_fear",
+        file_path="common/f.png",
+        title="害怕发抖",
+        emotion_tags=["害怕", "日常", "卖萌"],
+        status="tagged",
+        enabled=True,
+    )
+    assert compute_lexical_score("害羞", rec_fear) == 0.0
+    # 泛化老标签仅作极小 tie-breaker（<=0.03），不能单独凑分穿透
+    assert compute_lexical_score("日常 卖萌", rec_fear) <= 0.03
+    # title 精确命中获得高词面分（>=0.55）
+    assert compute_lexical_score("害怕发抖", rec_fear) >= 0.55
+
+    # 2. 相对分差 0.78 截断 + 小包防死锁（不因 1 张/2 张包被全部排除而 PICK_EXHAUSTED）
+    rec_hi = AiMemeRecord(meme_id="m_hi", file_path="common/hi.png", title="高分表情", status="tagged")
+    rec_lo = AiMemeRecord(meme_id="m_lo", file_path="common/lo.png", title="低分噪声", status="tagged")
+    meme_selector._recent_sent.clear()
+    meme_selector._send_cooldowns.clear()
+    chosen, reason = select_from_scored(
+        [ScoredMeme(rec_hi, 0.90, 0.90, 0.0), ScoredMeme(rec_lo, 0.55, 0.55, 0.0)],
+        [],
+        threshold=0.45,
+    )
+    assert chosen is not None and chosen.meme_id == "m_hi" and reason == "ok"
+    assert "sess_sel_1" not in meme_selector._send_cooldowns
+
+    # 单张候选在纯表情模式下允许连续复用（不死锁）
+    commit_pick("sess_sel_1", "m_hi")
+    chosen_pure, _ = select_from_scored(
+        [ScoredMeme(rec_hi, 0.90, 0.90, 0.0)],
+        ["m_hi"],
+        threshold=0.45,
+        allow_immediate_repeat=True,
+    )
+    assert chosen_pure is not None and chosen_pure.meme_id == "m_hi"
+
+    async def _scenario() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="meme-v2-search.db"):
+
+            async def _no_embed(_text: str) -> list[float] | None:
+                return None
+
+            monkeypatch.setattr(meme_library, "_embed_text", _no_embed)
+
+            pack = await PackStore.create_pack("测试检索包")
+            await PackStore.replace_binds("测试人格", [pack.pack_id])
+            rec_on = AiMemeRecord(
+                meme_id="m_ocr_on",
+                file_path="common/on.png",
+                title="先吃饭吧",
+                ocr_text="事已至此先吃饭吧",
+                description="卡通角色端着饭碗淡定摆手",
+                emotion_tags=["摆烂", "淡定"],
+                usage_hint="适合用于聊不下去了顺势转移到吃饭",
+                status="tagged",
+                enabled=True,
+            )
+            rec_off = AiMemeRecord(
+                meme_id="m_ocr_off",
+                file_path="common/off.png",
+                title="先吃饭吧停用版",
+                ocr_text="事已至此先吃饭吧",
+                status="tagged",
+                enabled=False,
+            )
+            await AiMemeRecord.insert_record(rec_on)
+            await AiMemeRecord.insert_record(rec_off)
+            await PackStore.add_member(pack.pack_id, rec_on.meme_id)
+            await PackStore.add_member(pack.pack_id, rec_off.meme_id)
+
+            # exact ocr_text 穿透（即使向量模型离线），且停用表情严格被排除
+            hits = await MemeLibrary.search_scored(
+                "事已至此先吃饭吧",
+                pack_ids=(pack.pack_id,),
+                top_k=5,
+                score_threshold=0.45,
+                include_disabled=False,
+            )
+            assert [h.record.meme_id for h in hits] == ["m_ocr_on"]
+
+            # 管理端 include_disabled=True 可查到停用项
+            admin_hits = await MemeLibrary.search_scored(
+                "事已至此先吃饭吧",
+                pack_ids=(pack.pack_id,),
+                top_k=5,
+                score_threshold=0.45,
+                include_disabled=True,
+            )
+            assert {h.record.meme_id for h in admin_hits} == {"m_ocr_on", "m_ocr_off"}
+
+            # pick(commit=False) 命中但不消费冷却
+            meme_selector._send_cooldowns.clear()
+            meme_selector._recent_sent.clear()
+            picked, pick_reason = await pick(
+                "事已至此先吃饭吧",
+                persona="测试人格",
+                session_id="sess_pick_1",
+                commit=False,
+            )
+            assert picked is not None and picked.meme_id == "m_ocr_on" and pick_reason == "ok"
+            assert "sess_pick_1" not in meme_selector._send_cooldowns
+
+    asyncio.run(_scenario())

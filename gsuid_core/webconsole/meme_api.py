@@ -10,11 +10,11 @@ import io
 import json
 import asyncio
 import zipfile
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence
 from pathlib import Path
 from datetime import datetime, timezone
 
-from fastapi import File, Form, Depends, UploadFile
+from fastapi import Body, File, Form, Depends, UploadFile
 from pydantic import Field, BaseModel
 from fastapi.responses import StreamingResponse
 
@@ -28,10 +28,12 @@ from gsuid_core.ai_core.meme.library import (
     ext_for_mime,
     compute_meme_id,
     get_memes_base_path,
+    build_meme_index_text,
     write_member_payloads,
 )
-from gsuid_core.ai_core.meme.normalize import prepare_meme_image
+from gsuid_core.ai_core.meme.normalize import prepare_meme_image, evict_outbound_meme_cache
 from gsuid_core.webconsole.meme_pack_api import repo_pack_block
+from gsuid_core.webconsole.session_store import SessionRecord
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 from ._api_tags import MEME
@@ -40,20 +42,45 @@ from ._api_tags import MEME
 
 
 class MemeUpdateRequest(BaseModel):
-    """更新表情包标签/描述请求"""
+    """更新表情包元数据、归属包与启停请求"""
 
-    description: Optional[str] = Field(None, max_length=500, description="描述文本")
-    emotion_tags: Optional[List[str]] = Field(None, description="情绪标签列表")
-    scene_tags: Optional[List[str]] = Field(None, description="场景标签列表")
-    custom_tags: Optional[List[str]] = Field(None, description="自定义标签列表")
-    persona_hint: Optional[str] = Field(None, max_length=64, description="归属提示")
+    title: Optional[str] = Field(default=None, max_length=64, description="简短语义标题")
+    ocr_text: Optional[str] = Field(default=None, max_length=256, description="图中文字")
+    usage_hint: Optional[str] = Field(default=None, max_length=512, description="适用回应场景")
+    description: Optional[str] = Field(default=None, max_length=500, description="描述文本")
+    emotion_tags: Optional[List[str]] = Field(default=None, description="情绪标签列表")
+    scene_tags: Optional[List[str]] = Field(default=None, description="场景标签列表")
+    custom_tags: Optional[List[str]] = Field(default=None, description="自定义标签列表")
+    persona_hint: Optional[str] = Field(default=None, max_length=64, description="归属提示")
+    enabled: Optional[bool] = Field(default=None, description="是否允许检索使用")
+    pack_ids: Optional[List[str]] = Field(default=None, description="所属表情包 ID 列表")
     status: Optional[str] = Field(
-        None,
+        default=None,
         max_length=32,
         description=(
             "显式修改状态（如人工复核后从 rejected 恢复为 manual）；不传时 rejected 保持不变，其余状态置为 manual"
         ),
     )
+
+
+class MemeBatchRetagRequest(BaseModel):
+    """批量触发 VLM 识别请求"""
+
+    mode: Literal["incomplete", "pending_only", "selected"] = Field(
+        default="incomplete",
+        description="incomplete=待补全/未达标记录；pending_only=仅待手动处理；selected=指定 meme_ids",
+    )
+    pack_id: Optional[str] = Field(default=None, description="可选按表情包过滤")
+    meme_ids: Optional[List[str]] = Field(default=None, description="mode=selected 时必填的表情包 ID 列表")
+
+
+class MemeBatchUpdateRequest(BaseModel):
+    """批量启停或调整表情包归属请求"""
+
+    meme_ids: List[str] = Field(..., min_length=1, description="目标表情包 ID 列表")
+    enabled: Optional[bool] = Field(default=None, description="批量启用/停用")
+    add_pack_id: Optional[str] = Field(default=None, description="批量加入指定表情包")
+    remove_pack_id: Optional[str] = Field(default=None, description="批量移出指定表情包")
 
 
 # 允许通过 API 显式设置的状态
@@ -72,6 +99,7 @@ _RESERVED_MEME_IDS = frozenset(
         "export",
         "import",
         "batch_delete",
+        "batch_update",
         "purge",
         "purge_rejected",
         "batch_retag_pending",
@@ -145,8 +173,14 @@ MEME_FILES_DIR = "files"
 # --- 辅助函数 ---
 
 
-def _record_to_dict(record: AiMemeRecord) -> Dict[str, Any]:
+def _record_to_dict(
+    record: AiMemeRecord,
+    pack_ids: Sequence[str] | None = None,
+) -> Dict[str, Any]:
     """将 AiMemeRecord 转换为 API 响应字典"""
+    packs = list(pack_ids) if pack_ids is not None else []
+    if record.pending_pack_id and record.pending_pack_id not in packs:
+        packs.append(record.pending_pack_id)
     return {
         "meme_id": record.meme_id,
         "file_path": record.file_path,
@@ -157,11 +191,15 @@ def _record_to_dict(record: AiMemeRecord) -> Dict[str, Any]:
         "source_group": record.source_group,
         "folder": record.folder,
         "persona_hint": record.persona_hint,
+        "title": record.title,
+        "ocr_text": record.ocr_text,
+        "usage_hint": record.usage_hint,
         "emotion_tags": record.emotion_tags,
         "scene_tags": record.scene_tags,
         "description": record.description,
         "custom_tags": record.custom_tags,
         "status": record.status,
+        "enabled": record.enabled,
         "nsfw_score": record.nsfw_score,
         "use_count": record.use_count,
         "last_used_at": str(record.last_used_at) if record.last_used_at else None,
@@ -169,6 +207,7 @@ def _record_to_dict(record: AiMemeRecord) -> Dict[str, Any]:
         "created_at": str(record.created_at),
         "tagged_at": str(record.tagged_at) if record.tagged_at else None,
         "updated_at": str(record.updated_at),
+        "pack_ids": packs,
     }
 
 
@@ -212,19 +251,19 @@ async def get_meme_list(
             effective_folder = _folder_for_persona(persona_hint)
 
         if q:
-            # 语义向量检索
             records = await MemeLibrary.search_by_text(
                 q,
                 folder=effective_folder,
                 top_k=page_size * 5,
+                include_disabled=True,
             )
-            # 手动分页
+            if status:
+                records = [r for r in records if r.status == status]
             total = len(records)
             start = (page - 1) * page_size
             end = start + page_size
             page_records = records[start:end]
         elif effective_folder:
-            # 按文件夹查询（folder 与 persona_hint 都路由到这里）
             page_records, total = await AiMemeRecord.get_by_folder(
                 folder=effective_folder,
                 status=status,
@@ -233,7 +272,6 @@ async def get_meme_list(
                 page_size=page_size,
             )
         else:
-            # 查询所有记录
             page_records, total = await AiMemeRecord.get_all_records(
                 status=status,
                 sort=sort,
@@ -241,7 +279,10 @@ async def get_meme_list(
                 page_size=page_size,
             )
 
-        records_data = [_record_to_dict(r) for r in page_records]
+        from gsuid_core.ai_core.meme.pack_model import PackStore
+
+        pack_map = await PackStore.pack_ids_by_memes([r.meme_id for r in page_records])
+        records_data = [_record_to_dict(r, pack_map[r.meme_id] if r.meme_id in pack_map else ()) for r in page_records]
 
         return {
             "status": 0,
@@ -289,6 +330,27 @@ async def get_meme_personas(
         return {"status": 1, "msg": f"获取人格分类失败: {e}", "data": None}
 
 
+# 统计概览：必须在 /api/meme/{meme_id} 之前声明以防路径参数路由吞掉 /stats。
+
+
+@app.get("/api/meme/stats", summary="统计概览", tags=MEME)
+async def get_meme_stats(
+    _: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    """
+    获取表情包统计概览
+
+    Returns:
+        status: 0成功，1失败
+        data: 统计信息
+    """
+    try:
+        stats = await AiMemeRecord.get_stats()
+        return {"status": 0, "msg": "ok", "data": stats}
+    except Exception as e:
+        return {"status": 1, "msg": f"获取统计失败: {e}", "data": None}
+
+
 # --- 2. 获取单条记录详情 ---
 
 
@@ -319,7 +381,10 @@ async def get_meme_detail(
         if not record:
             return {"status": 1, "msg": "表情包不存在", "data": None}
 
-        return {"status": 0, "msg": "ok", "data": _record_to_dict(record)}
+        from gsuid_core.ai_core.meme.pack_model import PackStore
+
+        pack_ids = await PackStore.pack_ids_of_meme(meme_id)
+        return {"status": 0, "msg": "ok", "data": _record_to_dict(record, pack_ids)}
     except Exception as e:
         return {"status": 1, "msg": f"查询失败: {e}", "data": None}
 
@@ -435,45 +500,83 @@ async def update_meme(
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
-    更新表情包标签/描述/归属
+    更新表情包元数据、启停状态与所属表情包
 
-    - 编辑 persona_hint 会联动移动文件到对应归属文件夹并重新同步向量索引
-      （检索按 folder 过滤，仅改 persona_hint 字段对检索无效）；
+    - 仅改 enabled / pack_ids 时不强制改写 status，且仅刷新 Qdrant payload；
     - rejected 状态不会因编辑标签被静默解除，恢复需显式传 status 字段。
-
-    Args:
-        meme_id: 表情包 ID
-        req: 更新请求体
-
-    Returns:
-        status: 0成功，1失败
     """
     try:
         record = await AiMemeRecord.get_by_meme_id(meme_id)
         if not record:
             return {"status": 1, "msg": "表情包不存在", "data": None}
 
-        # 状态变更必须显式：rejected（如 NSFW 被拒）的图编辑标签不再被静默提升
+        semantic_changed = any(
+            val is not None
+            for val in (
+                req.title,
+                req.ocr_text,
+                req.usage_hint,
+                req.description,
+                req.emotion_tags,
+                req.scene_tags,
+                req.custom_tags,
+                req.persona_hint,
+            )
+        )
+
+        # 状态变更必须显式：rejected 的图编辑标签不再被静默提升
         if req.status is not None:
             if req.status not in _VALID_MEME_STATUSES:
                 return {"status": 1, "msg": f"无效的状态: {req.status}", "data": None}
             new_status: Optional[str] = req.status
-        elif record.status in ("rejected", "pending", "pending_manual"):
+        elif not semantic_changed or record.status in ("rejected", "pending", "pending_manual"):
             new_status = None
         else:
             new_status = "manual"
 
-        success = await MemeLibrary.update_tags(
-            meme_id=meme_id,
-            description=req.description,
-            emotion_tags=req.emotion_tags,
-            scene_tags=req.scene_tags,
-            custom_tags=req.custom_tags,
-            persona_hint=req.persona_hint,
-            status=new_status,
-        )
-        if not success:
+        packs_updated = False
+        if req.pack_ids is not None:
+            from gsuid_core.ai_core.meme.pack_model import PackStore
+
+            current_packs = set(await PackStore.pack_ids_of_meme(meme_id))
+            desired_packs = list(dict.fromkeys(pid.strip() for pid in req.pack_ids if pid.strip()))
+            desired_set = set(desired_packs)
+            for pid in desired_set - current_packs:
+                pack = await PackStore.get_pack(pid)
+                if pack is None:
+                    return {"status": 1, "msg": f"表情包不存在: {pid}", "data": None}
+                blocked = repo_pack_block(pack.name)
+                if blocked is not None:
+                    return blocked
+            for pid in current_packs - desired_set:
+                pack = await PackStore.get_pack(pid)
+                if pack is not None:
+                    blocked = repo_pack_block(pack.name)
+                    if blocked is not None:
+                        return blocked
+            await PackStore.set_meme_packs(meme_id, desired_packs)
+            packs_updated = True
+
+        has_field_updates = semantic_changed or req.enabled is not None or new_status is not None
+        if not has_field_updates and not packs_updated:
             return {"status": 1, "msg": "更新失败（没有需要更新的字段）", "data": None}
+
+        if has_field_updates:
+            success = await MemeLibrary.update_tags(
+                meme_id=meme_id,
+                title=req.title,
+                ocr_text=req.ocr_text,
+                usage_hint=req.usage_hint,
+                description=req.description,
+                emotion_tags=req.emotion_tags,
+                scene_tags=req.scene_tags,
+                custom_tags=req.custom_tags,
+                persona_hint=req.persona_hint,
+                enabled=req.enabled,
+                status=new_status,
+            )
+            if not success:
+                return {"status": 1, "msg": "更新失败（没有需要更新的字段）", "data": None}
 
         final_status = new_status or record.status
 
@@ -489,7 +592,12 @@ async def update_meme(
         if final_status in _INDEXABLE_STATUSES:
             updated_record = await AiMemeRecord.get_by_meme_id(meme_id)
             if updated_record:
-                await MemeLibrary.sync_to_qdrant(updated_record)
+                if semantic_changed or new_status is not None or not updated_record.qdrant_id:
+                    await MemeLibrary.sync_to_qdrant(updated_record)
+                elif req.enabled is not None or packs_updated:
+                    await write_member_payloads([meme_id], strict=False)
+        else:
+            await MemeLibrary.remove_from_index(meme_id)
 
         return {"status": 0, "msg": "更新成功", "data": None}
     except Exception as e:
@@ -641,7 +749,7 @@ async def upload_meme(
             await AiMemeRecord.update_record(record.meme_id, {"status": "manual"})
             await PackStore.apply_successful_tag(record.meme_id)
             updated = await AiMemeRecord.get_by_meme_id(record.meme_id)
-            if updated is not None and (updated.description or updated.all_tags):
+            if updated is not None and build_meme_index_text(updated):
                 await MemeLibrary.sync_to_qdrant(updated)
 
         return {
@@ -661,61 +769,28 @@ async def retag_meme(
     meme_id: str,
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """
-    重新触发 VLM 打标
-
-    Args:
-        meme_id: 表情包 ID
-
-    Returns:
-        status: 0成功，1失败
-    """
+    """主动强制重新打标（无视 meme_vlm_enable；在线记录保持可检索直至覆盖完成）。"""
     try:
         record = await AiMemeRecord.get_by_meme_id(meme_id)
         if not record:
             return {"status": 1, "msg": "表情包不存在", "data": None}
 
+        from gsuid_core.ai_core.meme.tagger import enqueue_tag
         from gsuid_core.ai_core.meme.pack_model import PackStore
 
-        await PackStore.prepare_retag(meme_id)
-        await AiMemeRecord.update_record(meme_id, {"status": "pending"})
+        if record.status == "rejected":
+            await PackStore.prepare_retag(meme_id)
+            await AiMemeRecord.update_record(meme_id, {"status": "pending"})
+        elif record.status == "pending_manual":
+            await AiMemeRecord.update_record(meme_id, {"status": "pending"})
 
-        from gsuid_core.ai_core.meme.tagger import enqueue_tag, is_tagging_enabled
+        enqueued = await enqueue_tag(meme_id, mode="retag_overwrite", force_run=True)
+        if not enqueued:
+            return {"status": 1, "msg": "打标队列已满，请稍后再试", "data": None}
 
-        if not is_tagging_enabled():
-            return {
-                "status": 0,
-                "msg": "VLM 打标当前已关闭，已标记为待打标，开启 meme_vlm_enable 后将自动处理",
-                "data": None,
-            }
-
-        # 加入打标队列
-        await enqueue_tag(meme_id)
-
-        return {"status": 0, "msg": "已加入打标队列", "data": None}
+        return {"status": 0, "msg": "已加入识别队列", "data": None}
     except Exception as e:
         return {"status": 1, "msg": f"操作失败: {e}", "data": None}
-
-
-# --- 9. 统计概览 ---
-
-
-@app.get("/api/meme/stats", summary="统计概览", tags=MEME)
-async def get_meme_stats(
-    _: Dict[str, Any] = Depends(require_auth),
-) -> Dict[str, Any]:
-    """
-    获取表情包统计概览
-
-    Returns:
-        status: 0成功，1失败
-        data: 统计信息
-    """
-    try:
-        stats = await AiMemeRecord.get_stats()
-        return {"status": 0, "msg": "ok", "data": stats}
-    except Exception as e:
-        return {"status": 1, "msg": f"获取统计失败: {e}", "data": None}
 
 
 # --- 10. 批量删除表情包 ---
@@ -892,76 +967,138 @@ async def purge_rejected_memes(
         return {"status": 1, "msg": f"清除失败: {e}", "data": None}
 
 
-# --- 10c. 批量重新打标（待手动处理状态） ---
+# --- 10c. 批量触发 VLM 识别（待补全 / 待手动 / 选中覆盖） ---
 
 
-@app.post("/api/meme/batch_retag_pending", summary="c. 批量重新打标（待手动处理状态）", tags=MEME)
+@app.post("/api/meme/batch_retag_pending", summary="c. 批量触发 VLM 识别", tags=MEME)
 async def batch_retag_pending(
+    req: Optional[MemeBatchRetagRequest] = Body(default=None),
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """
-    批量重新触发 VLM 打标，针对所有状态为 pending_manual 的表情包
-
-    将 pending_manual 状态的记录重置为 pending，并逐条加入打标队列。
-
-    Returns:
-        status: 0成功，1部分失败
-        data: 包含入队成功/失败详情
-    """
+    """批量触发强制识别（无视 meme_vlm_enable；在线记录保持在线热更新）。"""
     try:
-        # 获取所有 pending_manual 状态的记录（不分页）
-        records = await AiMemeRecord.get_all_by_status(status="pending_manual")
+        from gsuid_core.ai_core.meme.tagger import TagMode, enqueue_tag
+        from gsuid_core.ai_core.meme.pack_model import PackStore
+
+        mode = req.mode if req is not None else "incomplete"
+        pack_id = req.pack_id.strip() if req is not None and req.pack_id else None
+        tag_mode: TagMode = "complete_missing"
+
+        if mode == "selected":
+            wanted_ids = [mid.strip() for mid in (req.meme_ids or []) if mid.strip()] if req is not None else []
+            if not wanted_ids:
+                return {"status": 1, "msg": "请至少选择一张表情", "data": None}
+            records = list(await AiMemeRecord.get_by_meme_ids(wanted_ids))
+            tag_mode = "retag_overwrite"
+        elif mode == "pending_only":
+            records = list(await AiMemeRecord.get_all_by_status(status="pending_manual"))
+            if pack_id:
+                member_set = set(await PackStore.member_meme_ids(pack_id))
+                records = [r for r in records if r.meme_id in member_set or r.pending_pack_id == pack_id]
+            tag_mode = "complete_missing"
+        else:
+            records = list(await AiMemeRecord.list_incomplete_records(pack_id=pack_id))
+            tag_mode = "complete_missing"
 
         if not records:
             return {
                 "status": 0,
-                "msg": "没有待手动处理的表情包",
-                "data": {"retag_count": 0, "failed": []},
-            }
-
-        # VLM 打标关闭时，仅重置为 pending，由开启后台扫描自动补打标
-        from gsuid_core.ai_core.meme.tagger import enqueue_tag, is_tagging_enabled
-        from gsuid_core.ai_core.meme.pack_model import PackStore
-
-        if not is_tagging_enabled():
-            for record in records:
-                await PackStore.prepare_retag(record.meme_id)
-                await AiMemeRecord.update_record(record.meme_id, {"status": "pending"})
-            return {
-                "status": 0,
-                "msg": (
-                    f"VLM 打标当前已关闭，已将 {len(records)} 个表情包标记为待打标，开启 meme_vlm_enable 后将自动处理"
-                ),
-                "data": {"retag_count": len(records), "failed": []},
+                "msg": "没有待识别的表情",
+                "data": {"retag_count": 0, "skipped_full": 0, "failed": []},
             }
 
         success_ids: List[str] = []
+        skipped_full = 0
         failed_items: List[Dict[str, Any]] = []
 
         for record in records:
             try:
-                await PackStore.prepare_retag(record.meme_id)
-                await AiMemeRecord.update_record(record.meme_id, {"status": "pending"})
-                # 加入打标队列
-                await enqueue_tag(record.meme_id)
-                success_ids.append(record.meme_id)
+                if record.status == "rejected":
+                    await PackStore.prepare_retag(record.meme_id)
+                    await AiMemeRecord.update_record(record.meme_id, {"status": "pending"})
+                enqueued = await enqueue_tag(record.meme_id, mode=tag_mode, force_run=True)
+                if enqueued:
+                    success_ids.append(record.meme_id)
+                else:
+                    skipped_full += 1
             except Exception as e:
                 failed_items.append({"meme_id": record.meme_id, "reason": str(e)})
 
         if not failed_items:
+            suffix = f"（队列已满跳过 {skipped_full} 个）" if skipped_full else ""
             return {
                 "status": 0,
-                "msg": f"已将 {len(success_ids)} 个待手动处理的表情包加入打标队列",
-                "data": {"retag_count": len(success_ids), "failed": []},
+                "msg": f"已将 {len(success_ids)} 个表情加入识别队列{suffix}",
+                "data": {
+                    "retag_count": len(success_ids),
+                    "skipped_full": skipped_full,
+                    "failed": [],
+                },
             }
-        else:
-            return {
-                "status": 1,
-                "msg": f"操作完成：成功 {len(success_ids)} 个，失败 {len(failed_items)} 个",
-                "data": {"retag_count": len(success_ids), "failed": failed_items},
-            }
+        return {
+            "status": 1,
+            "msg": f"操作完成：成功 {len(success_ids)} 个，失败 {len(failed_items)} 个",
+            "data": {
+                "retag_count": len(success_ids),
+                "skipped_full": skipped_full,
+                "failed": failed_items,
+            },
+        }
     except Exception as e:
         return {"status": 1, "msg": f"操作失败: {e}", "data": None}
+
+
+# --- 10d. 批量启停与归属调整 ---
+
+
+@app.post("/api/meme/batch_update", summary="批量启停与归属调整", tags=MEME)
+async def batch_update_memes(
+    req: MemeBatchUpdateRequest,
+    _user: SessionRecord = Depends(require_auth),
+) -> dict[str, object]:
+    """批量修改启用状态或加入/移出表情包，并刷新对应向量 payload。"""
+    add_pid = req.add_pack_id.strip() if req.add_pack_id else ""
+    remove_pid = req.remove_pack_id.strip() if req.remove_pack_id else ""
+    if req.enabled is None and not add_pid and not remove_pid:
+        return {"status": 1, "msg": "请指定启停状态或目标表情包", "data": None}
+
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+
+    if add_pid:
+        pack = await PackStore.get_pack(add_pid)
+        if pack is None:
+            return {"status": 1, "msg": "目标表情包不存在", "data": None}
+        blocked = repo_pack_block(pack.name)
+        if blocked is not None:
+            return blocked
+    if remove_pid:
+        pack = await PackStore.get_pack(remove_pid)
+        if pack is None:
+            return {"status": 1, "msg": "目标表情包不存在", "data": None}
+        blocked = repo_pack_block(pack.name)
+        if blocked is not None:
+            return blocked
+
+    unique_ids = list(dict.fromkeys(mid.strip() for mid in req.meme_ids if mid.strip()))
+    existing_records = await AiMemeRecord.get_by_meme_ids(unique_ids)
+    valid_ids = [r.meme_id for r in existing_records]
+    if not valid_ids:
+        return {"status": 1, "msg": "未找到有效表情包记录", "data": None}
+
+    if req.enabled is not None:
+        await AiMemeRecord.batch_set_enabled(valid_ids, req.enabled)
+    if add_pid:
+        for mid in valid_ids:
+            await PackStore.add_member(add_pid, mid)
+    if remove_pid:
+        await PackStore.remove_members(remove_pid, valid_ids)
+
+    await write_member_payloads(valid_ids, strict=False)
+    return {
+        "status": 0,
+        "msg": f"已更新 {len(valid_ids)} 个表情",
+        "data": {"updated_count": len(valid_ids), "meme_ids": valid_ids},
+    }
 
 
 # --- 11. 批量导出表情包（.meme 格式） ---
@@ -978,11 +1115,15 @@ def _record_to_export_dict(record: AiMemeRecord) -> Dict[str, Any]:
         "height": record.height,
         "folder": record.folder,
         "persona_hint": record.persona_hint,
+        "title": record.title,
+        "ocr_text": record.ocr_text,
+        "usage_hint": record.usage_hint,
         "emotion_tags": record.emotion_tags,
         "scene_tags": record.scene_tags,
         "description": record.description,
         "custom_tags": record.custom_tags,
         "status": record.status,
+        "enabled": record.enabled,
         "nsfw_score": record.nsfw_score,
     }
 
@@ -1186,6 +1327,9 @@ async def import_memes(
                 found = await PackStore.get_pack(chosen_pack)
                 if found is None:
                     return {"status": 1, "msg": "表情包不存在", "data": None}
+                blocked = repo_pack_block(found.name)
+                if blocked is not None:
+                    return blocked
                 link_pack_id = found.pack_id
                 link_pack_name = found.name
             elif create_pack is True:
@@ -1200,6 +1344,9 @@ async def import_memes(
                     return {"status": 1, "msg": "包名无效或已被占用", "data": None}
                 if await PackStore.get_by_name(raw_pack_name) is not None:
                     return {"status": 1, "msg": "包名无效或已被占用", "data": None}
+                blocked = repo_pack_block(raw_pack_name)
+                if blocked is not None:
+                    return blocked
                 created = await PackStore.create_pack(raw_pack_name)
                 link_pack_id = created.pack_id
                 link_pack_name = created.name
@@ -1273,6 +1420,13 @@ async def import_memes(
                     status = "pending" if auto_tag else meta.get("status", "manual")
                     assign_default = not link_pack_id and bool(auto_tag)
 
+                    raw_title = meta["title"] if "title" in meta and isinstance(meta["title"], str) else ""
+                    raw_ocr = meta["ocr_text"] if "ocr_text" in meta and isinstance(meta["ocr_text"], str) else ""
+                    raw_usage = (
+                        meta["usage_hint"] if "usage_hint" in meta and isinstance(meta["usage_hint"], str) else ""
+                    )
+                    raw_enabled = meta["enabled"] if "enabled" in meta and isinstance(meta["enabled"], bool) else True
+
                     record_fields: Dict[str, Any] = {
                         "file_path": relative_path,
                         "file_size": len(image_data),
@@ -1282,11 +1436,15 @@ async def import_memes(
                         "source_group": "import",
                         "folder": folder,
                         "persona_hint": target_persona_hint,
+                        "title": raw_title[:64],
+                        "ocr_text": raw_ocr[:256],
+                        "usage_hint": raw_usage[:512],
                         "emotion_tags": meta.get("emotion_tags", []),
                         "scene_tags": meta.get("scene_tags", []),
                         "description": meta.get("description", ""),
                         "custom_tags": meta.get("custom_tags", []),
                         "status": status,
+                        "enabled": raw_enabled,
                         "nsfw_score": meta.get("nsfw_score", 0.0),
                         "pending_pack_id": link_pack_id if auto_tag and link_pack_id else "",
                         "assign_default_pack": assign_default,
@@ -1295,6 +1453,7 @@ async def import_memes(
                     if exists:
                         # skip_existing=False：覆盖更新既有记录，而非主键冲突中断
                         await AiMemeRecord.update_record(meme_id, record_fields)
+                        evict_outbound_meme_cache(meme_id)
                         record = await AiMemeRecord.get_by_meme_id(meme_id)
                     else:
                         record = AiMemeRecord(meme_id=meme_id, **record_fields)
@@ -1312,11 +1471,7 @@ async def import_memes(
                         from gsuid_core.ai_core.meme.tagger import enqueue_tag
 
                         await enqueue_tag(meme_id)
-                    elif (
-                        record is not None
-                        and record.status in _INDEXABLE_STATUSES
-                        and (record.description or record.all_tags)
-                    ):
+                    elif record is not None and record.status in _INDEXABLE_STATUSES and build_meme_index_text(record):
                         # 仅可检索状态入向量索引（rejected/pending 等不入）
                         try:
                             await MemeLibrary.sync_to_qdrant(record)

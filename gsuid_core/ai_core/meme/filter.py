@@ -1,16 +1,20 @@
 """表情包过滤器
 
-MemeFilter 负责去重、质量筛选和每日限额检查。
-在图片入库前进行过滤，不满足条件的图片直接丢弃。
+MemeFilter 负责预筛（MIME / 文件大小 / 尺寸 / 每日限额 / 磁盘空间）、
+400px 缩图后内容级哈希去重、归入独立「群聊采集」包并按开关触发 VLM 打标。
 """
+
+from __future__ import annotations
 
 import shutil
 import asyncio
 from datetime import date
 
 from gsuid_core.i18n import t
+from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.meme.library import compute_meme_id, get_memes_base_path
+from gsuid_core.ai_core.meme.normalize import prepare_meme_image, is_known_outbound_meme
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 
@@ -25,90 +29,74 @@ class MemeFilter:
     _lock = asyncio.Lock()
 
     @classmethod
-    async def check_and_filter(
+    async def _evaluate_filter(
         cls,
         image_data: bytes,
         file_mime: str,
         width: int,
         height: int,
         source_group: str,
-    ) -> bool:
-        """检查图片是否通过过滤条件
+        *,
+        meme_id: str | None = None,
+    ) -> str:
+        """返回 'ok' | 'reject'(永久不入库) | 'transient'(限额/磁盘不足等临时跳过)。"""
+        check_id = meme_id or compute_meme_id(image_data)
+        if check_id in cls._rejected_ids:
+            logger.debug(t("log.meme.image_previously_rejected_skipping", meme_id=check_id))
+            return "reject"
+        if await AiMemeRecord.exists_by_meme_id(check_id):
+            logger.debug(t("log.meme.image_exists_skipping", meme_id=check_id))
+            return "transient"
 
-        Args:
-            image_data: 图片二进制数据
-            file_mime: MIME 类型
-            width: 图片宽度
-            height: 图片高度
-            source_group: 来源群组 ID
-
-        Returns:
-            True 表示通过过滤，False 表示应丢弃
-        """
-        # 0. 内容级去重（群聊中重复表情包非常多，尽早跳过）
-        meme_id = compute_meme_id(image_data)
-        if meme_id in cls._rejected_ids:
-            logger.debug(t("log.meme.image_previously_rejected_skipping", meme_id=meme_id))
-            return False
-        if await AiMemeRecord.exists_by_meme_id(meme_id):
-            logger.debug(t("log.meme.image_exists_skipping", meme_id=meme_id))
-            return False
-
-        # 1. MIME 类型检查
-        from gsuid_core.ai_core.meme.config import MEME_ALLOWED_MIME
+        from gsuid_core.ai_core.meme.config import (
+            MEME_MAX_EDGE,
+            MEME_MIN_WIDTH,
+            MEME_MIN_HEIGHT,
+            MEME_MAX_FILE_KB,
+            MEME_ALLOWED_MIME,
+            MEME_DAILY_COLLECT_LIMIT,
+        )
 
         if file_mime not in MEME_ALLOWED_MIME:
             logger.debug(t("log.meme.mime_type_mismatch_file", file_mime=file_mime))
-            return False
-
-        # 2. 文件大小检查
-        from gsuid_core.ai_core.meme.config import MEME_MAX_FILE_KB
+            return "reject"
 
         max_bytes = MEME_MAX_FILE_KB * 1024
         if len(image_data) > max_bytes:
             logger.debug(t("log.meme.file_large_max_bytes", p0=len(image_data), max_bytes=max_bytes))
-            return False
+            return "reject"
 
-        # 3. 最大尺寸检查（表情包不应该太大）
-        if width > 512 or height > 512:
+        if width > MEME_MAX_EDGE or height > MEME_MAX_EDGE:
             logger.debug(t("log.meme.dimensions_large_width", width=width, height=height))
-            return False
+            return "reject"
 
-        # 4. 最小尺寸检查
-        from gsuid_core.ai_core.meme.config import MEME_MIN_WIDTH, MEME_MIN_HEIGHT
-
-        min_width = MEME_MIN_WIDTH
-        min_height = MEME_MIN_HEIGHT
-        if width < min_width or height < min_height:
+        if width < MEME_MIN_WIDTH or height < MEME_MIN_HEIGHT:
             logger.debug(
                 t(
                     "log.meme.dimensions_small_width_height",
                     width=width,
                     height=height,
-                    min_width=min_width,
-                    min_height=min_height,
+                    min_width=MEME_MIN_WIDTH,
+                    min_height=MEME_MIN_HEIGHT,
                 )
             )
-            return False
+            return "reject"
 
-        # 5. 每日每群采集上限检查
-        from gsuid_core.ai_core.meme.config import MEME_DAILY_COLLECT_LIMIT
-
-        daily_limit: int = MEME_DAILY_COLLECT_LIMIT
         today_str = date.today().isoformat()
-
-        # 内存计数缺失时（如进程重启后）从数据库回填，避免重启后限额重新计数
         async with cls._lock:
-            need_seed = today_str not in cls._daily_counts.get(source_group, {})
+            group_bucket = cls._daily_counts[source_group] if source_group in cls._daily_counts else {}
+            need_seed = today_str not in group_bucket
         if need_seed:
             db_count = await AiMemeRecord.count_daily_by_group(source_group, today_str)
             async with cls._lock:
-                cls._daily_counts.setdefault(source_group, {})[today_str] = db_count
+                if source_group not in cls._daily_counts:
+                    cls._daily_counts[source_group] = {}
+                cls._daily_counts[source_group][today_str] = db_count
 
         async with cls._lock:
-            group_counts = cls._daily_counts.get(source_group, {})
-            today_count = group_counts.get(today_str, 0)
-            if today_count >= daily_limit:
+            group_counts = cls._daily_counts[source_group] if source_group in cls._daily_counts else {}
+            today_count = group_counts[today_str] if today_str in group_counts else 0
+            if today_count >= MEME_DAILY_COLLECT_LIMIT:
                 logger.debug(
                     t(
                         "log.meme.group_source_reached_today",
@@ -116,43 +104,60 @@ class MemeFilter:
                         today_count=today_count,
                     )
                 )
-                return False
+                return "transient"
 
-        # 6. 磁盘空间检查（剩余 < 200MB 则停止采集）
         try:
             usage = shutil.disk_usage(str(get_memes_base_path()))
             free_mb = usage.free / (1024 * 1024)
             if free_mb < 200:
                 logger.warning(t("log.meme.insufficient_disk_space_free", free_mb=free_mb))
-                return False
+                return "transient"
         except OSError:
-            pass  # 磁盘检查失败不阻塞采集
+            pass
 
-        return True
+        return "ok"
+
+    @classmethod
+    async def check_and_filter(
+        cls,
+        image_data: bytes,
+        file_mime: str,
+        width: int,
+        height: int,
+        source_group: str,
+        *,
+        meme_id: str | None = None,
+    ) -> bool:
+        """检查图片是否通过入站采集过滤条件。"""
+        verdict = await cls._evaluate_filter(
+            image_data,
+            file_mime,
+            width,
+            height,
+            source_group,
+            meme_id=meme_id,
+        )
+        return verdict == "ok"
 
     @classmethod
     async def increment_daily_count(cls, group_id: str) -> None:
-        """递增某群今日的采集计数"""
+        """递增某群今日的采集计数。"""
         today_str = date.today().isoformat()
         async with cls._lock:
             if group_id not in cls._daily_counts:
                 cls._daily_counts[group_id] = {}
             group_counts = cls._daily_counts[group_id]
-            group_counts[today_str] = group_counts.get(today_str, 0) + 1
+            prev = group_counts[today_str] if today_str in group_counts else 0
+            group_counts[today_str] = prev + 1
 
-            # 清理过期数据（保留最近 3 天）
             expired_keys = [k for k in group_counts if k < today_str]
             for k in expired_keys:
                 del group_counts[k]
 
     @classmethod
     def _add_to_rejected(cls, meme_id: str) -> None:
-        """将不适合入库的 meme_id 加入拒绝缓存
-
-        缓存有上限，超过时清空一半（FIFO 近似）。
-        """
+        """将不适合入库的 meme_id 加入拒绝缓存。"""
         if len(cls._rejected_ids) >= cls._REJECTED_CACHE_MAX:
-            # 清空一半
             to_remove = cls._REJECTED_CACHE_MAX // 2
             for _ in range(to_remove):
                 cls._rejected_ids.pop()
@@ -169,46 +174,46 @@ class MemeFilter:
         source_user: str,
         source_url: str,
     ) -> None:
-        """过滤并入库图片
-
-        这是 MemeObserver 调用的入口方法。
-        通过过滤后调用 MemeLibrary.save_raw() 入库。
-
-        Args:
-            image_data: 图片二进制数据
-            file_mime: MIME 类型
-            width: 图片宽度
-            height: 图片高度
-            source_group: 来源群组 ID
-            source_user: 来源用户 ID
-            source_url: 原始 URL
-        """
+        """预筛 -> 400px 归一化后按落盘哈希去重 -> 归入「群聊采集」包并按需触发打标。"""
+        from gsuid_core.ai_core.meme.tagger import enqueue_tag, is_tagging_enabled
         from gsuid_core.ai_core.meme.library import MemeLibrary
+        from gsuid_core.ai_core.meme.pack_model import PackStore
 
-        # 计算 meme_id（用于去重和拒绝缓存）
-        meme_id = compute_meme_id(image_data)
-
-        # 过滤检查
-        passed = await cls.check_and_filter(
+        raw_id = compute_meme_id(image_data)
+        verdict = await cls._evaluate_filter(
             image_data,
             file_mime,
             width,
             height,
             source_group,
+            meme_id=raw_id,
         )
-        if not passed:
-            # 将不适合入库的图片加入拒绝缓存，避免重复检查
-            cls._add_to_rejected(meme_id)
+        if verdict != "ok":
+            if verdict == "reject":
+                cls._add_to_rejected(raw_id)
             return
 
-        # 入库
-        record = await MemeLibrary.save_raw(
-            image_data=image_data,
-            file_mime=file_mime,
+        prepared = await to_thread(prepare_meme_image)(image_data, file_mime)
+        normalized_id = compute_meme_id(prepared.data)
+        if await AiMemeRecord.exists_by_meme_id(normalized_id):
+            logger.debug(t("log.meme.image_exists_skipping", meme_id=normalized_id))
+            return
+        if await to_thread(is_known_outbound_meme)(prepared.data, prepared.width, prepared.height):
+            logger.debug(t("log.meme.image_exists_skipping", meme_id=normalized_id))
+            return
+
+        collected_pack = await PackStore.ensure_collected_pack()
+        record = await MemeLibrary.save_prepared(
+            prepared,
             source_group=source_group,
             source_user=source_user,
             source_url=source_url,
+            pending_pack_id=collected_pack.pack_id,
+            assign_default_pack=False,
+            enabled=True,
         )
 
         if record is not None:
             await cls.increment_daily_count(source_group)
+            if is_tagging_enabled():
+                await enqueue_tag(record.meme_id)

@@ -150,7 +150,7 @@ def build_autonomy_speak_user_prompt(
             "禁止「不用回我」「只是提醒一下」「说完我就走了」等单向通知收尾。"
         )
     )
-    meme_rule = "\n- 气氛合适时可按表情协议单独附一行 `<meme:情绪>`，不要每条硬加。" if allow_meme else ""
+    meme_rule = "\n- 气氛合适时可按表情协议单独附一行 `<meme:微表情或回应意图>`，不要每条硬加。" if allow_meme else ""
     return render_prompt(
         persona_name,
         "autonomy_speak",

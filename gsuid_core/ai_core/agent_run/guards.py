@@ -19,7 +19,7 @@ from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core import output_gate
 from gsuid_core.ai_core.control import angle_guard as angle_bracket_guard
-from gsuid_core.ai_core.delivery import send_chat_result
+from gsuid_core.ai_core.delivery import send_chat_result, extract_pure_meme_query
 from gsuid_core.ai_core.thinking import _split_embedded_thinking
 from gsuid_core.ai_core.control.lines import (
     TOOL_FAIL_FUSE_NUDGE,
@@ -301,6 +301,7 @@ class DeliveryGuard:
         resp_unsent: list[str],
         discard_preview: Callable[[str], None],
         try_send_gated: Callable[[str, str | None], Awaitable[bool]],
+        defer_pure_meme: bool = False,
     ) -> bool:
         """运行 pre_send_gate / 假完成 / 单轮出站上限并下发可见文本；返回更新后的 attempt 计数标识。"""
         if st.bot and text and st.return_mode in ["always", "by_bot"]:
@@ -415,6 +416,15 @@ class DeliveryGuard:
                     )
                 )
                 resp_unsent.append(text)
+                discard_preview(text)
+                return ab_attempt_counted
+
+            if (
+                defer_pure_meme
+                and not st.fake_done_retry
+                and st.ev is not None
+                and extract_pure_meme_query(text) is not None
+            ):
                 discard_preview(text)
                 return ab_attempt_counted
 

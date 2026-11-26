@@ -1,13 +1,15 @@
 """表情包消息流监听器
 
 MemeObserver 挂在 H00 ON_INBOUND 钩子上（默认预算 200ms），只做开关判断、
-URL 提取、去重标记与 ``put_nowait`` 入队；下载 / 过滤 / 入库由采集 worker
-后台消费。整条重活链绝不能在 hook 内内联 await——200ms 预算一到就会被
-``wait_for`` 掐死，且 ``_processed_urls`` 已提前标记会让同一 URL 永久跳采。
+图片来源提取（支持 URL 与 base64://）、去重标记与 ``put_nowait`` 入队；
+下载 / 解码 / 过滤 / 入库由采集 worker 后台消费。
 """
+
+from __future__ import annotations
 
 import io
 import asyncio
+import hashlib
 from typing import List, Optional, OrderedDict as TOrderedDict
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -19,76 +21,87 @@ from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.meme.config import meme_config
+from gsuid_core.ai_core.meme.config import MEME_MAX_FILE_KB, meme_config
+from gsuid_core.utils.image.image_io import sniff_image_mime, decode_data_or_base64_uri
 
-# URL 去重缓存（已处理的URL不再下载）：有界 FIFO，避免长期运行无界增长
+# 去重缓存（已处理的图片来源不再重复下载/解码）：有界 FIFO
 _PROCESSED_URLS_MAX = 4096
 _processed_urls: TOrderedDict[str, None] = OrderedDict()
 _processed_lock = asyncio.Lock()
 
-# 采集队列：hook 侧只入队，下载/入库由 worker 消费
+# 采集队列与 base64 总内存上限（防止高并发 base64 入队撑爆内存）
 _COLLECT_QUEUE_MAX = 500
+_COLLECT_MAX_QUEUED_B64_BYTES = 32 * 1024 * 1024
+_MAX_BASE64_SOURCE_CHARS = ((MEME_MAX_FILE_KB * 1024 + 2) // 3) * 4 + 64
+_B64_FINGERPRINT_SLICE = 4096
 _collect_queue: "asyncio.Queue[MemeCollectRecord]" = asyncio.Queue(maxsize=_COLLECT_QUEUE_MAX)
+_queued_b64_bytes = 0
 
 # 下载并发上限与在途任务集（stop 时统一取消）
 _COLLECT_CONCURRENCY = 4
 _collect_sem = asyncio.Semaphore(_COLLECT_CONCURRENCY)
-_collect_pending: set[asyncio.Task] = set()
-_collect_worker_task: Optional[asyncio.Task] = None
+_collect_pending: set[asyncio.Task[None]] = set()
+_collect_worker_task: Optional[asyncio.Task[None]] = None
 
-# worker 空转轮询间隔（秒）
 _COLLECT_POLL_SEC = 5
 
 
 @dataclass
 class MemeCollectRecord:
-    """采集队列单元：只带 URL，下载交给 worker。"""
+    """采集队列单元：携带 URL 或 base64:// 图片源与去重键。"""
 
-    url: str
+    source: str
+    dedupe_key: str
     source_group: str
     source_user: str
+    b64_bytes: int = 0
 
 
-def _mark_url_processed(url: str) -> None:
-    """记录已处理 URL，超过上限时淘汰最早的记录（调用方需持有 _processed_lock）"""
-    _processed_urls[url] = None
-    _processed_urls.move_to_end(url)
+def _source_dedupe_key(source: str) -> str:
+    """为 base64:// 生成 O(1) 采样指纹去重键，满足 H00 200ms 预算且不囤积大串。"""
+    if source.startswith(("base64://", "data:image/")):
+        n = len(source)
+        if n <= _B64_FINGERPRINT_SLICE * 3:
+            sample = source
+        else:
+            mid = n // 2 - _B64_FINGERPRINT_SLICE // 2
+            sample = (
+                f"{n}:{source[:_B64_FINGERPRINT_SLICE]}"
+                f":{source[mid : mid + _B64_FINGERPRINT_SLICE]}"
+                f":{source[-_B64_FINGERPRINT_SLICE:]}"
+            )
+        digest = hashlib.sha256(sample.encode("utf-8", errors="ignore")).hexdigest()[:24]
+        return f"b64:{digest}"
+    return source
+
+
+def _mark_url_processed(key: str) -> None:
+    """记录已处理来源键，超过上限时淘汰最早记录（调用方需持有 _processed_lock）。"""
+    _processed_urls[key] = None
+    _processed_urls.move_to_end(key)
     while len(_processed_urls) > _PROCESSED_URLS_MAX:
         _processed_urls.popitem(last=False)
 
 
 def _extract_image_urls(ev: Event) -> List[str]:
-    """从事件中提取图片 URL 列表
-
-    Args:
-        ev: 事件对象
-
-    Returns:
-        图片 URL 列表
-    """
-    image_urls: List[str] = []
+    """从事件消息段中提取图片来源列表（支持 URL 与未超限的 base64://、data:image/）。"""
+    image_sources: List[str] = []
 
     for segment in ev.content:
         if segment.type == "image" and isinstance(segment.data, str):
-            # segment.data 可能是 "link://http://..." 或 "base64://..."
-            if segment.data.startswith("link://"):
-                image_urls.append(segment.data[7:])
-            elif segment.data.startswith(("http://", "https://")):
-                image_urls.append(segment.data)
-            # base64 图片不处理（无法下载）
+            raw = segment.data.strip()
+            if raw.startswith("link://"):
+                image_sources.append(raw[7:])
+            elif raw.startswith(("http://", "https://")):
+                image_sources.append(raw)
+            elif raw.startswith(("base64://", "data:image/")) and len(raw) <= _MAX_BASE64_SOURCE_CHARS:
+                image_sources.append(raw)
 
-    return image_urls
+    return image_sources
 
 
 async def _download_image(url: str) -> Optional[tuple[bytes, str]]:
-    """下载图片并获取 MIME 类型
-
-    Args:
-        url: 图片 URL
-
-    Returns:
-        (图片数据, MIME 类型) 或 None
-    """
+    """下载图片并获取 MIME 类型。"""
     async with httpx2.AsyncClient(timeout=30.0) as client:
         logger.debug(t("log.meme.image_download_url_2", url=url))
         response = await client.get(url)
@@ -97,35 +110,52 @@ async def _download_image(url: str) -> Optional[tuple[bytes, str]]:
             return None
 
         content_type = response.headers.get("content-type", "")
-        # 提取 MIME 类型
         mime = content_type.split(";")[0].strip().lower()
         if not mime.startswith("image/"):
-            # 尝试从 URL 推断
-            url_lower = url.lower()
-            if url_lower.endswith((".jpg", ".jpeg")):
-                mime = "image/jpeg"
-            elif url_lower.endswith(".png"):
-                mime = "image/png"
-            elif url_lower.endswith(".gif"):
-                mime = "image/gif"
-            elif url_lower.endswith(".webp"):
-                mime = "image/webp"
+            sniffed = sniff_image_mime(response.content)
+            if sniffed is not None:
+                mime = sniffed
             else:
-                return None
+                url_lower = url.lower()
+                if url_lower.endswith((".jpg", ".jpeg")):
+                    mime = "image/jpeg"
+                elif url_lower.endswith(".png"):
+                    mime = "image/png"
+                elif url_lower.endswith(".gif"):
+                    mime = "image/gif"
+                elif url_lower.endswith(".webp"):
+                    mime = "image/webp"
+                else:
+                    return None
 
         return response.content, mime
 
 
+async def _materialize_image_source(source: str) -> Optional[tuple[bytes, str, str]]:
+    """把 URL 或 base64:// / data:image/ 物化为 (字节, mime, 落库 source_url)。"""
+    raw = source.strip()
+    if raw.startswith("link://"):
+        raw = raw[7:].strip()
+    if raw.startswith(("base64://", "data:image/")):
+        data, err = decode_data_or_base64_uri(raw)
+        if err is not None or data is None:
+            return None
+        mime = sniff_image_mime(data)
+        if mime is None:
+            return None
+        return data, mime, ""
+    if raw.startswith(("http://", "https://")):
+        downloaded = await _download_image(raw)
+        if downloaded is None:
+            return None
+        data, mime = downloaded
+        return data, mime, raw[:1024]
+    return None
+
+
 @to_thread
 def _get_image_dimensions(image_data: bytes) -> tuple[int, int]:
-    """获取图片尺寸（同步，通过 to_thread 异步化）
-
-    Args:
-        image_data: 图片二进制数据
-
-    Returns:
-        (宽度, 高度)
-    """
+    """获取图片尺寸（同步，通过 to_thread 异步化）。"""
     img = Image.open(io.BytesIO(image_data))
     return img.size
 
@@ -133,49 +163,55 @@ def _get_image_dimensions(image_data: bytes) -> tuple[int, int]:
 async def observe_message_for_memes(
     ev: Event,
 ) -> None:
-    """H00 入站观察：只做轻量预筛并把图片 URL 入队（远低于 200ms 钩子预算）
+    """H00 入站观察：只做轻量预筛并把图片来源入队（远低于 200ms 钩子预算）。"""
+    global _queued_b64_bytes
 
-    Args:
-        ev: 事件对象
-    """
     if not meme_config.get_config("meme_auto_collect").data:
         return
 
-    # 只处理群聊消息
     if not ev.group_id:
+        return
+
+    # 忽略适配器回显的机器人自身发言，避免采集自己发出的 128px 缩图
+    if ev.bot_self_id and ev.user_id == ev.bot_self_id:
         return
 
     logger.trace(t("log.meme.msg_observed_message_group_user", p0=ev.group_id, p1=ev.user_id))
 
-    # 提取图片 URL
-    image_urls = _extract_image_urls(ev)
-    if not image_urls:
+    image_sources = _extract_image_urls(ev)
+    if not image_sources:
         logger.trace(t("log.meme.image_url_found_skipping"))
         return
 
     start_collect_worker()
 
-    # 限制每次最多处理 5 张图片
-    logger.info(t("log.meme.found_images_ready_process", p0=len(image_urls)))
-    for url in image_urls[:5]:
-        # URL 去重：先标记再入队，队列满时撤销标记允许重发重试
+    logger.info(t("log.meme.found_images_ready_process", p0=len(image_sources)))
+    for source in image_sources[:5]:
+        dedupe_key = _source_dedupe_key(source)
+        b64_size = len(source) if source.startswith(("base64://", "data:image/")) else 0
         async with _processed_lock:
-            if url in _processed_urls:
-                logger.debug(t("log.meme.url_processed_skipping", url=url))
+            if dedupe_key in _processed_urls:
+                logger.debug(t("log.meme.url_processed_skipping", url=dedupe_key))
                 continue
-            _mark_url_processed(url)
+            if b64_size > 0 and _queued_b64_bytes + b64_size > _COLLECT_MAX_QUEUED_B64_BYTES:
+                logger.debug(t("log.meme.collect_queue_full_dropping", p0=_COLLECT_QUEUE_MAX, url=dedupe_key))
+                continue
+            _mark_url_processed(dedupe_key)
         try:
             _collect_queue.put_nowait(
                 MemeCollectRecord(
-                    url=url,
+                    source=source,
+                    dedupe_key=dedupe_key,
                     source_group=ev.group_id,
                     source_user=ev.user_id,
+                    b64_bytes=b64_size,
                 )
             )
+            _queued_b64_bytes += b64_size
         except asyncio.QueueFull:
             async with _processed_lock:
-                _processed_urls.pop(url, None)
-            logger.debug(t("log.meme.collect_queue_full_dropping", p0=_COLLECT_QUEUE_MAX, url=url))
+                _processed_urls.pop(dedupe_key, None)
+            logger.debug(t("log.meme.collect_queue_full_dropping", p0=_COLLECT_QUEUE_MAX, url=dedupe_key))
             break
 
 
@@ -198,8 +234,11 @@ async def stop_collect_worker() -> None:
             except asyncio.CancelledError:
                 pass
         _collect_worker_task = None
-    for task in _collect_pending:
+    pending = list(_collect_pending)
+    for task in pending:
         task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def _collect_worker_loop() -> None:
@@ -222,52 +261,47 @@ async def _collect_worker_loop() -> None:
 
 
 async def _bounded_process(record: MemeCollectRecord) -> None:
-    async with _collect_sem:
-        try:
-            await _process_image(record.url, record.source_group, record.source_user)
-        except Exception as e:
-            # 单张失败不拖垮 worker；撤销 URL 标记让重发可重试
-            async with _processed_lock:
-                _processed_urls.pop(record.url, None)
-            logger.warning(t("log.meme.collect_worker_exception", e=e))
+    global _queued_b64_bytes
+    try:
+        async with _collect_sem:
+            try:
+                await _process_image(record.source, record.dedupe_key, record.source_group, record.source_user)
+            except Exception as e:
+                async with _processed_lock:
+                    _processed_urls.pop(record.dedupe_key, None)
+                logger.warning(t("log.meme.collect_worker_exception", e=e))
+    finally:
+        if record.b64_bytes > 0:
+            _queued_b64_bytes = max(0, _queued_b64_bytes - record.b64_bytes)
 
 
 async def _process_image(
-    url: str,
+    source: str,
+    dedupe_key: str,
     source_group: str,
     source_user: str,
 ) -> None:
-    """处理单张图片：下载 -> 获取尺寸 -> 过滤入库（由采集 worker 调用）
-
-    Args:
-        url: 图片 URL
-        source_group: 来源群组 ID
-        source_user: 来源用户 ID
-    """
+    """处理单张图片：下载/解码 -> 获取尺寸 -> 过滤并归入「群聊采集」包。"""
     from gsuid_core.ai_core.meme.filter import MemeFilter
 
-    # 下载图片
-    result = await _download_image(url)
-    if result is None:
+    materialized = await _materialize_image_source(source)
+    if materialized is None:
         async with _processed_lock:
-            _processed_urls.pop(url, None)
+            _processed_urls.pop(dedupe_key, None)
         return
 
-    image_data, file_mime = result
-
-    # 获取图片尺寸（通过 to_thread 异步化）
+    image_data, file_mime, source_url = materialized
     width, height = await _get_image_dimensions(image_data)
     logger.info(
         t(
             "log.meme.image_download_succeeded_url",
-            url=url,
+            url=dedupe_key,
             file_mime=file_mime,
             width=width,
             height=height,
         )
     )
 
-    # 入队过滤
     await MemeFilter.enqueue(
         image_data=image_data,
         file_mime=file_mime,
@@ -275,5 +309,5 @@ async def _process_image(
         height=height,
         source_group=source_group,
         source_user=source_user,
-        source_url=url,
+        source_url=source_url,
     )

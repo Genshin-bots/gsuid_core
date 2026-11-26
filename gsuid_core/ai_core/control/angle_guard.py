@@ -335,7 +335,7 @@ def build_rewrite_warning(tags: Sequence[str], original: str) -> str:
         f"{NUDGE_MARKER}【{shown}】）\n"
         "原因：用户端 IM **不会**解析你自造的 XML/HTML 控制标记；"
         "字面量会原样显示（例如 ``<bubble/>`` / ``<br>`` / ``<report>``），破坏角色对白。\n"
-        "框架只认这些协议标签：``<SILENCE>``（整段沉默）、``<meme:情绪>``（表情）。\n"
+        "框架只认这些协议标签：``<SILENCE>``（整段沉默）、``<meme:微表情或回应意图>``（表情）。\n"
         '多项数据/报告出图请 ``create_subagent(agent_profile="render_agent")``，'
         "**禁止** ``<report>`` 文本块。\n"
         "连发多条短消息请用**空行**分隔，禁止 ``<bubble/>`` / ``<br>`` / 其它自造标签。\n"

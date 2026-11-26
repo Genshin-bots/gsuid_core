@@ -227,7 +227,7 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
     ),
     "allow_meme_reply": GsBoolConfig(
         "允许表情回复",
-        "打开后，系统提示里写入表情协议，回复可以用 <meme:情绪>。关掉后不写这段，也不发送表情。",
+        "打开后，系统提示里写入表情协议，回复可以用 <meme:微表情或回应意图>。关掉后不写这段，也不发送表情。",
         True,
     ),
     "meme_frequency": GsIntConfig(

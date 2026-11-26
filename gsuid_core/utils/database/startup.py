@@ -194,6 +194,10 @@ exec_list = [
     "ALTER TABLE aiknowledgechunk ADD COLUMN chunker_id VARCHAR(32) DEFAULT '';",
     "ALTER TABLE aimemerecord ADD COLUMN pending_pack_id VARCHAR(36) DEFAULT '';",
     "ALTER TABLE aimemerecord ADD COLUMN assign_default_pack BOOLEAN DEFAULT 0;",
+    "ALTER TABLE aimemerecord ADD COLUMN title VARCHAR(64) DEFAULT '';",
+    "ALTER TABLE aimemerecord ADD COLUMN ocr_text VARCHAR(256) DEFAULT '';",
+    "ALTER TABLE aimemerecord ADD COLUMN usage_hint VARCHAR(512) DEFAULT '';",
+    "ALTER TABLE aimemerecord ADD COLUMN enabled BOOLEAN DEFAULT TRUE;",
     # 旧库的自主行动审计没有会话号。create_all 不给已有表补列。
     "ALTER TABLE aiautonomyactivity ADD COLUMN session_id VARCHAR(256) DEFAULT '';",
     # 确认码审批。create_all 不给已有表补列。空哈希的旧行保持原行为。

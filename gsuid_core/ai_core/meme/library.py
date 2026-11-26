@@ -4,21 +4,161 @@ MemeLibrary 负责文件系统操作和数据库操作的封装。
 文件存储在 data/ai_core/memes/ 下，按文件夹分类。
 """
 
+import re
 import shutil
 import asyncio
 import hashlib
 from typing import Any, Dict, List, Tuple, Optional, Sequence
 from pathlib import Path
 from datetime import datetime, timezone
+from dataclasses import dataclass
 
 from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.path_safety import PathEscapeError, safe_join
-from gsuid_core.ai_core.rag.qmodels import Vector, Condition, SparseVector
-from gsuid_core.ai_core.meme.normalize import PreparedMeme, prepare_meme_image
+from gsuid_core.ai_core.rag.qmodels import (
+    Filter,
+    Vector,
+    Condition,
+    SparseVector,
+    VectorParams,
+    PayloadSchemaType,
+    SparseVectorParams,
+)
+from gsuid_core.ai_core.meme.normalize import (
+    PreparedMeme,
+    prepare_meme_image,
+    evict_outbound_meme_cache,
+)
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+_LEXICAL_STOPWORDS: frozenset[str] = frozenset(
+    {"表情", "表情包", "图片", "一个", "一下", "有点", "就是", "这个", "那个"}
+)
+_GENERIC_LEGACY_TAGS: frozenset[str] = frozenset({"日常", "卖萌", "可爱"})
+_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]+")
+_ALNUM_RUN_RE = re.compile(r"[a-z0-9]{2,}")
+_COMPACT_STRIP_RE = re.compile(r"[\s，,。！？!?、；;：:\"'`~·•…（）()\[\]【】<>《》\-—_]+")
+
+
+@dataclass(frozen=True, slots=True)
+class ScoredMeme:
+    """表情检索综合打分项。"""
+
+    record: AiMemeRecord
+    score: float
+    dense_score: float
+    lexical_score: float
+
+
+def build_meme_index_text(record: AiMemeRecord) -> str:
+    """构造正向结构化向量索引文本；已有标题与适用场景时限制画面长度，防冗长外貌稀释语义。"""
+    parts: list[str] = []
+    if record.title:
+        parts.append(f"名称：{record.title}")
+    if record.ocr_text:
+        parts.append(f"文字：{record.ocr_text}")
+    if record.emotion_tags:
+        parts.append(f"情绪：{'、'.join(record.emotion_tags)}")
+    if record.usage_hint:
+        parts.append(f"适用回应：{record.usage_hint}")
+    if record.custom_tags:
+        parts.append(f"标签：{'、'.join(record.custom_tags)}")
+    if record.description:
+        desc_text = record.description[:80] if (record.title and record.usage_hint) else record.description
+        parts.append(f"画面：{desc_text}")
+    return "\n".join(parts).strip()
+
+
+def _compact_norm(text: str) -> str:
+    return _COMPACT_STRIP_RE.sub("", text.lower())
+
+
+def extract_lexical_terms(query: str) -> tuple[str, list[str]]:
+    """提取 >=2 字中文词块/二元词与英文数字词，严格剔除单字噪声与停用词。"""
+    low = query.strip().lower()
+    compact = _compact_norm(low)
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def _add(tok: str) -> None:
+        if len(tok) < 2 or tok in _LEXICAL_STOPWORDS or tok in seen:
+            return
+        seen.add(tok)
+        terms.append(tok)
+
+    for run in _CJK_RUN_RE.findall(low):
+        if len(run) < 2:
+            continue
+        _add(run)
+        if len(run) > 2:
+            for idx in range(len(run) - 1):
+                _add(run[idx : idx + 2])
+    for tok in _ALNUM_RUN_RE.findall(low):
+        _add(tok)
+    return compact, terms
+
+
+def compute_lexical_score(
+    query: str,
+    record: AiMemeRecord,
+    *,
+    dense_passed: bool = False,
+) -> float:
+    """计算结构化词面分：标题/配字强匹配 + 二元词以上情绪/适用/画面加权，禁单字命中。"""
+    q_compact, terms = extract_lexical_terms(query)
+    if not q_compact and not terms:
+        return 0.0
+
+    score = 0.0
+    title_compact = _compact_norm(record.title)
+    ocr_compact = _compact_norm(record.ocr_text)
+
+    exact_title_ocr = False
+    if len(q_compact) >= 2:
+        for target in (title_compact, ocr_compact):
+            if len(target) >= 2 and (q_compact in target or target in q_compact):
+                exact_title_ocr = True
+                break
+    if exact_title_ocr:
+        score += 0.55
+
+    if not terms:
+        return score
+
+    title_ocr_blob = f"{record.title} {record.ocr_text}".lower()
+    title_ocr_hits = sum(1 for tok in terms if tok in title_ocr_blob)
+    if title_ocr_hits > 0:
+        score += 0.35 * (title_ocr_hits / len(terms))
+
+    non_generic_emotions = [tag.lower() for tag in record.emotion_tags if tag not in _GENERIC_LEGACY_TAGS]
+    generic_emotions = [tag.lower() for tag in record.emotion_tags if tag in _GENERIC_LEGACY_TAGS]
+    usage_low = record.usage_hint.lower()
+
+    emo_usage_hits = 0
+    generic_only_hit = False
+    for tok in terms:
+        if tok in _GENERIC_LEGACY_TAGS:
+            if tok in usage_low or any(tok in emo for emo in generic_emotions):
+                generic_only_hit = True
+            continue
+        if tok in usage_low or any(tok in emo for emo in non_generic_emotions):
+            emo_usage_hits += 1
+        elif any(tok in emo for emo in generic_emotions):
+            generic_only_hit = True
+    if emo_usage_hits > 0:
+        score += 0.30 * (emo_usage_hits / len(terms))
+    elif generic_only_hit and (score > 0.0 or dense_passed):
+        score += 0.03
+
+    desc_custom_blob = f"{record.description} {' '.join(record.custom_tags)}".lower()
+    desc_hits = sum(1 for tok in terms if tok in desc_custom_blob)
+    if desc_hits > 0:
+        score += 0.15 * (desc_hits / len(terms))
+
+    return score
 
 
 def get_memes_base_path() -> Path:
@@ -96,14 +236,21 @@ class MemeLibrary:
         source_group: str = "",
         source_user: str = "",
         source_url: str = "",
+        *,
+        pending_pack_id: str = "",
+        assign_default_pack: bool = True,
+        enabled: bool = True,
     ) -> Optional[AiMemeRecord]:
-        """缩到短边 156 后写入 inbox。已有同一张图时返回 None。"""
+        """缩到短边 400px 后写入 inbox。已有同一张图时返回 None。"""
         prepared = await to_thread(prepare_meme_image)(image_data, file_mime)
         return await MemeLibrary.save_prepared(
             prepared,
             source_group=source_group,
             source_user=source_user,
             source_url=source_url,
+            pending_pack_id=pending_pack_id,
+            assign_default_pack=assign_default_pack,
+            enabled=enabled,
         )
 
     @staticmethod
@@ -112,6 +259,10 @@ class MemeLibrary:
         source_group: str = "",
         source_user: str = "",
         source_url: str = "",
+        *,
+        pending_pack_id: str = "",
+        assign_default_pack: bool = True,
+        enabled: bool = True,
     ) -> Optional[AiMemeRecord]:
         """写入已归一化的图到 inbox。已有同一张图时返回 None。"""
         # 先缩放再算 id，磁盘上的字节和 meme_id 是同一张图。
@@ -148,11 +299,12 @@ class MemeLibrary:
             height=height,
             source_group=source_group,
             source_user=source_user,
-            source_url=source_url,
+            source_url=source_url[:1024],
             folder="inbox",
             status="pending",
-            assign_default_pack=True,
-            pending_pack_id="",
+            assign_default_pack=assign_default_pack if not pending_pack_id else False,
+            pending_pack_id=pending_pack_id,
+            enabled=enabled,
         )
         await AiMemeRecord.insert_record(record)
         logger.info(
@@ -264,6 +416,7 @@ class MemeLibrary:
 
         await PackStore.delete_members_of_meme(meme_id)
         await AiMemeRecord.delete_by_meme_id(meme_id)
+        evict_outbound_meme_cache(meme_id)
         logger.info(t("log.meme.meme_id_delete_2", meme_id=meme_id))
         return True
 
@@ -365,6 +518,8 @@ class MemeLibrary:
             from gsuid_core.ai_core.meme.pack_model import PackStore
 
             await PackStore.delete_members_of_memes(cleanup_ids)
+            for mid in cleanup_ids:
+                evict_outbound_meme_cache(mid)
 
             unlink_jobs: List[Tuple[str, Path]] = []
             for meme_id in cleanup_ids:
@@ -421,24 +576,22 @@ class MemeLibrary:
         custom_tags: Optional[List[str]] = None,
         persona_hint: Optional[str] = None,
         status: Optional[str] = None,
+        *,
+        title: Optional[str] = None,
+        ocr_text: Optional[str] = None,
+        usage_hint: Optional[str] = None,
+        enabled: Optional[bool] = None,
     ) -> bool:
-        """更新表情包标签信息
-
-        Args:
-            meme_id: 表情包 ID
-            description: 描述文本
-            emotion_tags: 情绪标签
-            scene_tags: 场景标签
-            custom_tags: 自定义标签
-            persona_hint: Persona 归属提示
-            status: 状态
-
-        Returns:
-            是否成功
-        """
-        update_data: dict = {}
+        """更新表情包结构化元数据与启停状态。"""
+        update_data: dict[str, object] = {}
+        if title is not None:
+            update_data["title"] = title[:64]
+        if ocr_text is not None:
+            update_data["ocr_text"] = ocr_text[:256]
+        if usage_hint is not None:
+            update_data["usage_hint"] = usage_hint[:512]
         if description is not None:
-            update_data["description"] = description
+            update_data["description"] = description[:512]
         if emotion_tags is not None:
             update_data["emotion_tags"] = emotion_tags
         if scene_tags is not None:
@@ -447,6 +600,8 @@ class MemeLibrary:
             update_data["custom_tags"] = custom_tags
         if persona_hint is not None:
             update_data["persona_hint"] = persona_hint
+        if enabled is not None:
+            update_data["enabled"] = enabled
         if status is not None:
             update_data["status"] = status
             if status == "tagged":
@@ -514,71 +669,132 @@ class MemeLibrary:
         return await AiMemeRecord.search_by_ids(meme_ids)
 
     @staticmethod
-    async def search_by_text(
+    async def search_scored(
         query_text: str,
         folder: Optional[str] = None,
         top_k: int = 5,
         score_threshold: Optional[float] = None,
         pack_ids: Optional[Sequence[str]] = None,
-    ) -> Sequence[AiMemeRecord]:
-        """通过文本语义 + 标签精确匹配搜索表情包
-
-        策略：
-        1. 将查询文本按空格拆分为关键词，做标签/描述精确匹配
-        2. 始终执行向量语义检索（description+tags 的语义近邻，
-           如"困"可命中"想睡觉"，不会被标签精确匹配短路）
-        3. 两路结果各占约一半名额合并去重，剩余名额互相回填，
-           保证语义结果始终进入候选池而非仅做兜底
-
-        Args:
-            query_text: 查询文本
-            folder: 可选的文件夹过滤
-            top_k: 返回数量
-            score_threshold: 最低相似度阈值，低于此值的结果将被过滤
-
-        Returns:
-            匹配的 AiMemeRecord 列表
-        """
-        # 将查询文本拆分为关键词用于标签匹配
+        *,
+        include_disabled: bool = False,
+    ) -> List[ScoredMeme]:
+        """真实稠密余弦分 + 二元词以上结构化词面加权检索（零 Reranker）。"""
         if folder is not None and pack_ids is not None:
             logger.warning(t("log.meme.pack_and_folder"))
             return []
         if pack_ids is not None and len(pack_ids) == 0:
             return []
 
-        keywords = [kw.strip() for kw in query_text.split() if kw.strip()]
+        from gsuid_core.ai_core.meme.config import meme_config
 
-        tag_results = await AiMemeRecord.search_by_tags(keywords, folder=folder, limit=top_k, pack_ids=pack_ids)
+        threshold = (
+            float(score_threshold)
+            if score_threshold is not None
+            else float(meme_config.get_config("meme_search_threshold").data)
+        )
 
-        vec_results = await _vector_search(query_text, folder, top_k, score_threshold, pack_ids)
+        dense_scores: dict[str, float] = {}
+        query_vector = await _embed_text(query_text)
+        if query_vector is not None:
+            dense_hits = await _search_qdrant_dense(
+                query_vector,
+                folder=folder,
+                top_k=max(top_k * 4, 16),
+                score_threshold=threshold,
+                pack_ids=pack_ids,
+                include_disabled=include_disabled,
+            )
+            for mid, score in dense_hits:
+                if mid not in dense_scores or score > dense_scores[mid]:
+                    dense_scores[mid] = score
 
-        # 合并去重：标签命中与向量命中各占约一半名额，剩余互相回填
-        seen_ids: set[str] = set()
-        merged: list[AiMemeRecord] = []
+        candidate_map: dict[str, AiMemeRecord] = {}
+        if dense_scores:
+            dense_records = await AiMemeRecord.search_by_ids(list(dense_scores.keys()))
+            if pack_ids is not None:
+                from gsuid_core.ai_core.meme.pack_model import PackStore
 
-        def _take(records: Sequence[AiMemeRecord], quota: int) -> None:
-            for record in records:
-                if quota <= 0:
-                    return
-                if record.meme_id in seen_ids:
-                    continue
-                seen_ids.add(record.meme_id)
-                merged.append(record)
-                quota -= 1
+                wanted_packs = set(pack_ids)
+                pack_map = await PackStore.pack_ids_by_memes([rec.meme_id for rec in dense_records])
+                for rec in dense_records:
+                    rec_packs = pack_map[rec.meme_id] if rec.meme_id in pack_map else []
+                    if any(pid in wanted_packs for pid in rec_packs):
+                        candidate_map[rec.meme_id] = rec
+            else:
+                for rec in dense_records:
+                    candidate_map[rec.meme_id] = rec
 
-        _take(tag_results, max(top_k // 2, 1))
-        _take(vec_results, top_k - len(merged))
-        _take(tag_results, top_k - len(merged))
-        return merged[:top_k]
+        _, lex_terms = extract_lexical_terms(query_text)
+        if lex_terms:
+            lexical_records = await AiMemeRecord.search_lexical_candidates(
+                lex_terms,
+                folder=folder,
+                pack_ids=pack_ids,
+                include_disabled=include_disabled,
+                limit=max(top_k * 20, 200),
+            )
+            for rec in lexical_records:
+                candidate_map[rec.meme_id] = rec
+
+        scored: List[ScoredMeme] = []
+        for meme_id, record in candidate_map.items():
+            if record.status not in ("tagged", "manual"):
+                continue
+            if not include_disabled and not record.enabled:
+                continue
+            if folder is not None and record.folder != folder:
+                continue
+
+            dense_score = dense_scores[meme_id] if meme_id in dense_scores else 0.0
+            dense_ok = meme_id in dense_scores and dense_score >= threshold
+            lexical_score = compute_lexical_score(query_text, record, dense_passed=dense_ok)
+
+            if dense_ok and lexical_score > 0.0:
+                final_score = dense_score + 0.45 * lexical_score
+            elif dense_ok:
+                final_score = dense_score
+            elif lexical_score >= 0.30:
+                final_score = threshold + 0.5 * lexical_score
+            else:
+                continue
+
+            scored.append(
+                ScoredMeme(
+                    record=record,
+                    score=final_score,
+                    dense_score=dense_score,
+                    lexical_score=lexical_score,
+                )
+            )
+
+        scored.sort(key=lambda item: (item.score, item.dense_score, item.lexical_score), reverse=True)
+        return scored[:top_k]
+
+    @staticmethod
+    async def search_by_text(
+        query_text: str,
+        folder: Optional[str] = None,
+        top_k: int = 5,
+        score_threshold: Optional[float] = None,
+        pack_ids: Optional[Sequence[str]] = None,
+        *,
+        include_disabled: bool = False,
+    ) -> Sequence[AiMemeRecord]:
+        """文本语义 + 二元词结构化检索（兼容既有签名）。"""
+        scored = await MemeLibrary.search_scored(
+            query_text=query_text,
+            folder=folder,
+            top_k=top_k,
+            score_threshold=score_threshold,
+            pack_ids=pack_ids,
+            include_disabled=include_disabled,
+        )
+        return [item.record for item in scored]
 
     @staticmethod
     async def sync_to_qdrant(record: AiMemeRecord) -> None:
-        """将表情包的描述和标签同步到 Qdrant 向量索引
-
-        Args:
-            record: 表情包记录
-        """
-        content = f"{record.description} {' '.join(record.all_tags)}".strip()
+        """将表情包的正向结构化文本和元数据同步到 Qdrant 向量索引。"""
+        content = build_meme_index_text(record)
         if not content:
             return
 
@@ -590,6 +806,8 @@ class MemeLibrary:
             status=record.status,
             use_count=record.use_count,
             file_mime=record.file_mime,
+            enabled=record.enabled,
+            existing_qdrant_id=record.qdrant_id,
         )
         if point_id:
             await AiMemeRecord.update_record(
@@ -610,49 +828,30 @@ class MemeLibrary:
         await AiMemeRecord.update_record(meme_id, {"qdrant_id": ""})
 
 
-async def _vector_search(
-    query_text: str,
-    folder: Optional[str],
-    top_k: int,
-    score_threshold: Optional[float],
-    pack_ids: Optional[Sequence[str]] = None,
-) -> Sequence[AiMemeRecord]:
-    """稀疏 + 稠密混合语义检索（内部辅助函数，供 search_by_text 调用）"""
-    from gsuid_core.ai_core.rag.sparse import sparse_embed_single
-
-    query_vector = await _embed_text(query_text)
-    if query_vector is None:
-        return []
-    query_sparse = await sparse_embed_single(query_text)
-    return await MemeLibrary.search(
-        query_vector,
-        folder,
-        top_k,
-        score_threshold,
-        query_sparse=query_sparse,
-        pack_ids=pack_ids,
-    )
-
-
 # ── Qdrant 操作辅助函数 ──
 
 MEME_COLLECTION_NAME = "ai_meme"
-MEME_PAYLOAD_INDEX_FIELDS = ("folder", "status", "meme_id", "pack_ids")
-# 命名 dense 向量名（旧库为单一**无名**向量；改名即触发结构迁移，与知识库一致：
-# 旧无名集合取 "dense" 命名向量维度得到 None ≠ dimension → 判定不匹配 → 重建为命名 dense + 稀疏）
+MEME_PAYLOAD_INDEX_FIELDS = ("folder", "status", "meme_id", "pack_ids", "enabled")
+# 命名 dense 向量名（旧库为单一**无名**向量；改名即触发结构迁移，与知识库一致）
 MEME_DENSE_VECTOR = "dense"
 
 
-def _meme_vectors_config(dimension: int) -> dict:
+def _payload_schema_for(field_name: str) -> PayloadSchemaType:
+    if field_name == "enabled":
+        return PayloadSchemaType.BOOL
+    return PayloadSchemaType.KEYWORD
+
+
+def _meme_vectors_config(dimension: int) -> dict[str, VectorParams]:
     """表情包 dense 命名向量配置。"""
-    from gsuid_core.ai_core.rag.qmodels import Distance, VectorParams
+    from gsuid_core.ai_core.rag.qmodels import Distance
 
     return {MEME_DENSE_VECTOR: VectorParams(size=dimension, distance=Distance.COSINE, on_disk=True)}
 
 
-def _meme_sparse_config() -> dict:
+def _meme_sparse_config() -> dict[str, SparseVectorParams]:
     """表情包 BM25 稀疏向量配置（IDF 服务端加权，与知识库一致）。"""
-    from gsuid_core.ai_core.rag.qmodels import Modifier, SparseVectorParams
+    from gsuid_core.ai_core.rag.qmodels import Modifier
 
     return {"sparse": SparseVectorParams(modifier=Modifier.IDF)}
 
@@ -691,15 +890,12 @@ async def _ensure_meme_collection() -> None:
                 )
                 should_reindex = True
             else:
-                # 既有 Collection 补建 payload 索引（幂等），覆盖历史部署缺少 meme_id 索引的情况
-                from gsuid_core.ai_core.rag.qmodels import PayloadSchemaType
-
                 for field_name in MEME_PAYLOAD_INDEX_FIELDS:
                     try:
                         await client.create_payload_index(
                             collection_name=MEME_COLLECTION_NAME,
                             field_name=field_name,
-                            field_schema=PayloadSchemaType.KEYWORD,
+                            field_schema=_payload_schema_for(field_name),
                         )
                     except Exception as e:
                         # 索引已存在或后端不支持，幂等场景下属预期
@@ -708,8 +904,6 @@ async def _ensure_meme_collection() -> None:
                 return
 
     if MEME_COLLECTION_NAME not in existing or should_reindex:
-        from gsuid_core.ai_core.rag.qmodels import PayloadSchemaType
-
         await force_recreate_collection(
             collection_name=MEME_COLLECTION_NAME,
             vectors_config=_meme_vectors_config(dimension),
@@ -720,13 +914,11 @@ async def _ensure_meme_collection() -> None:
 
         if refreshed_client is None:
             raise RuntimeError(t("log.meme.qdrant_client"))
-        # 为 folder / status / meme_id 建立 payload 索引
-        # （meme_id 索引用于幂等 upsert 前按 meme_id 删点，避免全量扫描）
         for field_name in MEME_PAYLOAD_INDEX_FIELDS:
             await refreshed_client.create_payload_index(
                 collection_name=MEME_COLLECTION_NAME,
                 field_name=field_name,
-                field_schema=PayloadSchemaType.KEYWORD,
+                field_schema=_payload_schema_for(field_name),
             )
         logger.info(
             t(
@@ -774,7 +966,7 @@ async def _backfill_missing_meme_vectors() -> None:
     restored = 0
     skipped = 0
     for record in missing:
-        content = f"{record.description} {' '.join(record.all_tags)}".strip()
+        content = build_meme_index_text(record)
         if not content:
             skipped += 1
             continue
@@ -810,7 +1002,7 @@ async def _reindex_meme_collection_from_db() -> None:
     restored = 0
     skipped = 0
     for record in records:
-        content = f"{record.description} {' '.join(record.all_tags)}".strip()
+        content = build_meme_index_text(record)
         if not content:
             skipped += 1
             continue
@@ -838,7 +1030,6 @@ async def _embed_text(text: str) -> Optional[List[float]]:
 async def _force_recreate_meme_collection() -> None:
     """强制重建表情包 Collection（命名 dense + BM25 稀疏），用于本地 Qdrant 旧维度 ndarray 残留自恢复。"""
     from gsuid_core.ai_core.rag.base import client, get_strict_dimension
-    from gsuid_core.ai_core.rag.qmodels import PayloadSchemaType
     from gsuid_core.ai_core.rag.collection_migration import force_recreate_collection
 
     if client is None:
@@ -859,7 +1050,7 @@ async def _force_recreate_meme_collection() -> None:
         await refreshed_client.create_payload_index(
             collection_name=MEME_COLLECTION_NAME,
             field_name=field_name,
-            field_schema=PayloadSchemaType.KEYWORD,
+            field_schema=_payload_schema_for(field_name),
         )
     logger.info(
         t(
@@ -878,16 +1069,13 @@ async def _upsert_to_qdrant(
     status: str,
     use_count: int,
     file_mime: str,
+    *,
+    enabled: bool = True,
+    existing_qdrant_id: str = "",
 ) -> Optional[str]:
-    """写入或更新 Qdrant 向量
-
-    point id 由 meme_id 派生（UUID5），保证多次 sync 幂等覆盖同一个点，
-    不会随每次编辑/重打标产生重复向量点。upsert 前先按 meme_id 清理
-    旧点，自愈历史版本随机 UUID 留下的重复点。
-    """
+    """写入或更新 Qdrant 向量（UUID5 幂等点 ID，含 enabled 与 pack_ids payload）。"""
 
     from gsuid_core.ai_core.rag.base import client, get_point_id
-    from gsuid_core.ai_core.rag.sparse import sparse_embed_single
     from gsuid_core.ai_core.rag.qmodels import PointStruct
 
     if client is None:
@@ -897,22 +1085,18 @@ async def _upsert_to_qdrant(
     if vector is None:
         return None
 
-    # BM25 稀疏向量（与 dense 一一对应；模型不可用时为 None → 仅写 dense，查询端自动降级）
-    sparse = await sparse_embed_single(content)
-
-    # 清理该 meme 既有的全部向量点（含历史随机 UUID 重复点），失败不阻塞写入
-    try:
-        await _remove_from_qdrant(meme_id)
-    except Exception as e:
-        logger.warning(t("log.meme.fail_cleanup_write_vector", meme_id=meme_id, e=e))
-
     point_id = get_point_id(meme_id)
+    # 仅在历史随机 UUID 点与确定性 UUID5 不一致时才先删旧点，避免并发 delete-then-upsert 丢点
+    if existing_qdrant_id and existing_qdrant_id != point_id:
+        try:
+            await _remove_from_qdrant(meme_id)
+        except Exception as e:
+            logger.warning(t("log.meme.fail_cleanup_write_vector", meme_id=meme_id, e=e))
     from gsuid_core.ai_core.meme.pack_model import PackStore
 
     member_pack_ids = await PackStore.pack_ids_of_meme(meme_id)
+    # 检索已改为 dense + SQL 二元词面，省略未消费的 sparse BM25 写入（保持集合 schema 兼容）
     named_vector: dict[str, Vector] = {MEME_DENSE_VECTOR: vector}
-    if sparse is not None:
-        named_vector["sparse"] = sparse
     point = PointStruct(
         id=point_id,
         vector=named_vector,
@@ -924,6 +1108,7 @@ async def _upsert_to_qdrant(
             "use_count": use_count,
             "file_mime": file_mime,
             "pack_ids": member_pack_ids,
+            "enabled": enabled,
         },
     )
     try:
@@ -949,38 +1134,18 @@ async def _upsert_to_qdrant(
     return point_id
 
 
-async def _search_qdrant(
-    query_dense: List[float],
-    query_sparse: Optional[SparseVector],
+def _build_meme_filter(
+    *,
     folder: Optional[str],
-    top_k: int,
-    score_threshold: Optional[float] = None,
-    pack_ids: Optional[Sequence[str]] = None,
-) -> List[str]:
-    """在 Qdrant 中做稀疏 + 稠密混合检索，返回 meme_id 列表
-
-    - dense（语义近邻，带余弦阈值门，过滤语义噪声）+ sparse（BM25 词项召回）→ Qdrant 原生 RRF 融合。
-    - 稀疏不可用时自动降级纯 dense。
-
-    Args:
-        query_dense: 查询稠密向量
-        query_sparse: 查询稀疏向量（BM25），None 时降级纯 dense
-        folder: 可选的文件夹过滤
-        top_k: 返回数量
-        score_threshold: 最低相似度阈值（仅作用于 dense 分支的余弦门）
-
-    Returns:
-        匹配的 meme_id 列表
-    """
-    from gsuid_core.ai_core.rag.hybrid import hybrid_query
+    pack_ids: Optional[Sequence[str]],
+    include_disabled: bool = False,
+) -> Filter:
     from gsuid_core.ai_core.rag.qmodels import (
-        Filter,
         MatchAny,
         MatchValue,
         FieldCondition,
     )
 
-    # 显式附带 status 过滤，避免检索到未索引或草稿状态的表情包。
     must_conditions: list[Condition] = [
         FieldCondition(
             key="status",
@@ -1002,34 +1167,94 @@ async def _search_qdrant(
                 match=MatchAny(any=list(pack_ids)),
             )
         )
-    query_filter = Filter(must=must_conditions)
+    must_not_conditions: list[Condition] | None = (
+        None if include_disabled else [FieldCondition(key="enabled", match=MatchValue(value=False))]
+    )
+    return Filter(must=must_conditions, must_not=must_not_conditions)
 
-    # 如果未指定阈值，从配置中读取
+
+async def _search_qdrant_dense(
+    query_dense: List[float],
+    *,
+    folder: Optional[str],
+    top_k: int,
+    score_threshold: Optional[float] = None,
+    pack_ids: Optional[Sequence[str]] = None,
+    include_disabled: bool = False,
+) -> List[Tuple[str, float]]:
+    """直查 Qdrant 命名 dense 向量，返回保留真实余弦相似度的 (meme_id, score) 列表。"""
+    from gsuid_core.ai_core.rag.base import client
+    from gsuid_core.ai_core.rag.collection_migration import is_vector_structure_error
+
+    if client is None:
+        return []
+
+    query_filter = _build_meme_filter(folder=folder, pack_ids=pack_ids, include_disabled=include_disabled)
     if score_threshold is None:
         from gsuid_core.ai_core.meme.config import meme_config
 
-        score_threshold = meme_config.get_config("meme_search_threshold").data
+        score_threshold = float(meme_config.get_config("meme_search_threshold").data)
 
-    # 混合检索：dense_score_threshold 仅下推至 dense 分支，异常时统一由 hybrid_query 降级。
-    points = await hybrid_query(
-        MEME_COLLECTION_NAME,
-        query_dense,
-        query_sparse,
-        limit=top_k,
-        dense_using=MEME_DENSE_VECTOR,
-        query_filter=query_filter,
-        dense_score_threshold=score_threshold,
-    )
+    try:
+        response = await client.query_points(
+            collection_name=MEME_COLLECTION_NAME,
+            query=query_dense,
+            using=MEME_DENSE_VECTOR,
+            query_filter=query_filter,
+            limit=top_k,
+            score_threshold=score_threshold,
+            with_payload=True,
+        )
+    except IndexError as e:
+        logger.critical(
+            t(
+                "log.rag.hybrid_collection_name_local_start",
+                collection_name=MEME_COLLECTION_NAME,
+                e=e,
+            )
+        )
+        return []
+    except Exception as e:
+        if is_vector_structure_error(str(e)):
+            logger.warning(
+                t(
+                    "log.rag.hybrid_collection_name_vector_fail",
+                    collection_name=MEME_COLLECTION_NAME,
+                    e=e,
+                )
+            )
+            return []
+        raise
 
-    meme_ids: list[str] = []
-    for point in points:
+    hits: list[tuple[str, float]] = []
+    for point in response.points:
         payload = point.payload
         if payload is None or "meme_id" not in payload:
             continue
         meme_id = payload["meme_id"]
         if isinstance(meme_id, str):
-            meme_ids.append(meme_id)
-    return meme_ids
+            hits.append((meme_id, float(point.score)))
+    return hits
+
+
+async def _search_qdrant(
+    query_dense: List[float],
+    query_sparse: Optional[SparseVector],
+    folder: Optional[str],
+    top_k: int,
+    score_threshold: Optional[float] = None,
+    pack_ids: Optional[Sequence[str]] = None,
+) -> List[str]:
+    """兼容旧接口：直查 dense 真实余弦分并返回 meme_id 列表。"""
+    del query_sparse
+    hits = await _search_qdrant_dense(
+        query_dense,
+        folder=folder,
+        top_k=top_k,
+        score_threshold=score_threshold,
+        pack_ids=pack_ids,
+    )
+    return [meme_id for meme_id, _ in hits]
 
 
 async def _remove_from_qdrant(meme_id: str) -> None:
@@ -1109,7 +1334,8 @@ async def write_member_payloads(meme_ids: Sequence[str] | None = None, *, strict
     else:
         records = list(await AiMemeRecord.get_by_meme_ids(list(meme_ids)))
     started = time.perf_counter()
-    groups: dict[tuple[str, ...], list[str]] = {}
+    pack_map = await PackStore.pack_ids_by_memes([r.meme_id for r in records])
+    groups: dict[tuple[tuple[str, ...], bool], list[str]] = {}
     for record in records:
         point_id = record.qdrant_id or get_point_id(record.meme_id)
         try:
@@ -1127,14 +1353,15 @@ async def write_member_payloads(meme_ids: Sequence[str] | None = None, *, strict
         if not found:
             logger.warning(t("log.meme.pack_payload_fail", meme_id=record.meme_id, e="missing"))
             continue
-        packs = tuple(await PackStore.pack_ids_of_meme(record.meme_id))
-        if packs not in groups:
-            groups[packs] = []
-        groups[packs].append(point_id)
+        packs = tuple(pack_map[record.meme_id] if record.meme_id in pack_map else ())
+        group_key = (packs, bool(record.enabled))
+        if group_key not in groups:
+            groups[group_key] = []
+        groups[group_key].append(point_id)
     calls = 0
     point_count = 0
-    for packs, points in groups.items():
-        payload: dict[str, object] = {"pack_ids": list(packs)}
+    for (packs, enabled), points in groups.items():
+        payload: dict[str, object] = {"pack_ids": list(packs), "enabled": enabled}
         for offset in range(0, len(points), 100):
             chunk = points[offset : offset + 100]
             try:

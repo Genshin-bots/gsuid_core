@@ -231,6 +231,7 @@ _REASON_TEXT: dict[str, str] = {
     "usage_limit_fallback_silence": "用量到顶后的补答不可发。",
     "no_material_reply_silence": "没有材料可答。",
     "already_sent_by_tool": "发送工具已经把话发给用户了，这句复述不再发。",
+    "pure_meme_no_match": "纯表情回复未匹配到可发图片，改用角色短台词补答。",
 }
 
 
