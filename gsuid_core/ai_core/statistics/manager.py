@@ -32,6 +32,7 @@ from .dataclass_models import BotState, TokenUsage, HourlyPerformanceEntry
 # 小时级性能统计的内存缓冲 key: (date, hour, provider, model_name)
 HourlyPerfKey = tuple[str, int, str, str]
 _TokenSliceRow = tuple[str, int, int, int, int]
+_TypeSliceRow = tuple[str, int, int, int, int, int]
 _ERROR_KEYS: tuple[str, ...] = (
     "timeout",
     "rate_limit",
@@ -58,6 +59,7 @@ class _TypeUsageRow(TypedDict):
     output_tokens: int
     cache_read_tokens: int
     cache_write_tokens: int
+    request_count: int
     total_tokens: NotRequired[int]
 
 
@@ -75,7 +77,7 @@ class _DayStatSlice:
     user_turn_input_tokens: int
     user_turn_output_tokens: int
     models: tuple[_TokenSliceRow, ...]
-    types: tuple[_TokenSliceRow, ...]
+    types: tuple[_TypeSliceRow, ...]
     latency_avg: float
     latency_p95: float
     latency_samples: int
@@ -162,6 +164,7 @@ def _type_usage_row(
     outp: int,
     cr: int,
     cw: int,
+    req_count: int = 0,
     *,
     include_total: bool = False,
 ) -> _TypeUsageRow:
@@ -171,6 +174,7 @@ def _type_usage_row(
         "output_tokens": outp,
         "cache_read_tokens": cr,
         "cache_write_tokens": cw,
+        "request_count": req_count,
     }
     if include_total:
         row["total_tokens"] = inp + outp
@@ -232,7 +236,7 @@ def _slice_from_live_state(b: BotState) -> _DayStatSlice:
             for m, u in b.token_by_model.items()
         ),
         types=tuple(
-            (t, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
+            (t, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens, u.request_count)
             for t, u in b.token_by_type.items()
         ),
         latency_avg=b.latencies.avg,
@@ -274,6 +278,7 @@ def _slice_from_db_rows(
                 row.output_tokens or 0,
                 row.cache_read_tokens or 0,
                 row.cache_write_tokens or 0,
+                row.request_count or 0,
             )
             for row in type_rows
         ),
@@ -435,13 +440,15 @@ class StatisticsManager:
         output_tokens: int,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
-    ):
-        """记录 Token 使用量"""
+        request_count: int = 1,
+    ) -> None:
+        """记录 Token 使用量与真实模型请求数"""
+        req_n = max(0, request_count)
         self._bot_state.token_by_model[model_name.lower()].add(
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, req_n
         )
         self._bot_state.token_by_type[chat_type.lower()].add(
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, req_n
         )
         self._bot_state.total_tokens.update(
             input=input_tokens,
@@ -603,7 +610,14 @@ class StatisticsManager:
             for m, u in b.token_by_model.items()
         ]
         by_type = [
-            _type_usage_row(t, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
+            _type_usage_row(
+                t,
+                u.input_tokens,
+                u.output_tokens,
+                u.cache_read_tokens,
+                u.cache_write_tokens,
+                u.request_count,
+            )
             for t, u in b.token_by_type.items()
         ]
         rag_hit = int(self._rag["hit"])
@@ -720,6 +734,7 @@ class StatisticsManager:
                         stats.output_tokens or 0,
                         stats.cache_read_tokens or 0,
                         stats.cache_write_tokens or 0,
+                        stats.request_count or 0,
                     )
 
             # 3. 加载 AIHeartbeatMetrics
@@ -880,13 +895,20 @@ class StatisticsManager:
                     output_tokens=usage.output_tokens,
                     cache_read_tokens=usage.cache_read_tokens,
                     cache_write_tokens=usage.cache_write_tokens,
+                    request_count=usage.request_count,
                 )
                 for chat_type, usage in s.token_by_type.items()
             ]
             if token_type_data:
                 await AITokenUsageByType.batch_insert_data_with_update(
                     datas=token_type_data,
-                    update_key=["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+                    update_key=[
+                        "input_tokens",
+                        "output_tokens",
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "request_count",
+                    ],
                     index_elements=["date", "chat_type"],
                 )
 
@@ -1072,6 +1094,7 @@ class StatisticsManager:
                     t.output_tokens,
                     t.cache_read_tokens or 0,
                     t.cache_write_tokens or 0,
+                    t.request_count or 0,
                 )
                 for t in token_by_type_data
             ]
@@ -1196,8 +1219,8 @@ class StatisticsManager:
                 err_acc[err_k] += err_v
             for model_name, m_in, m_out, m_cr, m_cw in sl.models:
                 model_acc[model_name].add(m_in, m_out, m_cr, m_cw)
-            for type_name, t_in, t_out, t_cr, t_cw in sl.types:
-                type_acc[type_name].add(t_in, t_out, t_cr, t_cw)
+            for type_name, t_in, t_out, t_cr, t_cw, t_req in sl.types:
+                type_acc[type_name].add(t_in, t_out, t_cr, t_cw, t_req)
 
         by_model = [
             _model_usage_row(
@@ -1221,6 +1244,7 @@ class StatisticsManager:
                 u.output_tokens,
                 u.cache_read_tokens,
                 u.cache_write_tokens,
+                u.request_count,
                 include_total=True,
             )
             for type_name, u in sorted(

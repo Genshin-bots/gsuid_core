@@ -549,6 +549,7 @@ async def _record_settle_usage_and_latency(
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
+                request_count=max(1, int(usage_obj.requests)),
             )
         statistics_manager.record_agent_run(
             owns_user_turn=bool(st.owns_user_turn),
@@ -900,6 +901,7 @@ async def _note_truncated_usage_for(
     output_tokens: int,
     cache_read_tokens: int,
     cache_write_tokens: int,
+    request_count: int = 1,
     count_run: bool,
     close_chat: bool,
 ) -> None:
@@ -925,6 +927,7 @@ async def _note_truncated_usage_for(
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
+            request_count=max(1, request_count),
         )
         if st.budget_scope is not None:
             try:
@@ -1038,6 +1041,7 @@ async def _salvage_capability_delivery_for(host: RunOnceHost, st: RunOnceState) 
     result = await _run_toolless_fallback_agent(host, prompt)
     if isinstance(result, AgentRunResult):
         usage = result.usage
+        st.usage_requests += max(1, int(usage.requests))
         st.usage_input_tokens += usage.input_tokens
         st.usage_output_tokens += usage.output_tokens
         st.usage_cache_read_tokens += usage.cache_read_tokens
@@ -1145,6 +1149,7 @@ class SettlePhase:
             output_tokens=st.usage_output_tokens,
             cache_read_tokens=st.usage_cache_read_tokens,
             cache_write_tokens=st.usage_cache_write_tokens,
+            request_count=max(1, st.usage_requests),
             count_run=True,
             close_chat=True,
         )

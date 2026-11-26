@@ -236,6 +236,7 @@ def _patch_task_model_env(
     high_2nd: str = "",
     low_2nd: str = "",
     overrides: Mapping[str, object] | None = None,
+    graph: Mapping[str, object] | None = None,
 ) -> None:
     from gsuid_core.ai_core.configs import provider_config_manager
     from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -251,9 +252,42 @@ def _patch_task_model_env(
         "high_level_2nd_provider_config_name": high_2nd,
         "low_level_2nd_provider_config_name": low_2nd,
         "task_model_overrides": {} if overrides is None else overrides,
+        "task_model_graph": {} if graph is None else graph,
     }
     for key, value in values.items():
         monkeypatch.setattr(ai_config.get_config(key), "data", value)
+
+
+def _install_save_cfg_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    stored: dict[str, list[str]],
+    stored_graph: dict[str, object],
+) -> None:
+    """把 ai_config.set_config 桩成内存写回：覆盖/图谱进给定 dict，四槽位就地 patching。"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    def _save_cfg(key: str, val: object) -> bool:
+        if key == "task_model_overrides" and isinstance(val, dict):
+            stored.clear()
+            for tk_k, tk_v in val.items():
+                if isinstance(tk_k, str) and isinstance(tk_v, list):
+                    stored[tk_k] = [str(x) for x in tk_v]
+            return True
+        if key == "task_model_graph" and isinstance(val, dict):
+            stored_graph.clear()
+            stored_graph.update(val)
+            return True
+        if key in {
+            "high_level_provider_config_name",
+            "low_level_provider_config_name",
+            "high_level_2nd_provider_config_name",
+            "low_level_2nd_provider_config_name",
+        }:
+            monkeypatch.setattr(ai_config.get_config(key), "data", val)
+            return True
+        return False
+
+    monkeypatch.setattr(ai_config, "set_config", _save_cfg)
 
 
 def test_task_model_override_routing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -330,16 +364,22 @@ def test_task_model_api_and_agent_refresh(tmp_path: Path, monkeypatch: pytest.Mo
     from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.ai_core.configs.task_kinds import TASK_TURN_ROUTER
     from gsuid_core.webconsole.ai_task_models_api import (
+        TaskGraphBody,
+        TaskGraphPosIn,
+        TaskGraphNodeIn,
         TaskOverrideBody,
         set_ai_task_model,
         get_ai_task_models,
         clear_ai_task_model,
+        clear_all_ai_task_models,
+        save_ai_task_model_graph,
     )
     from gsuid_core.ai_core.capability_agents.runner import reopen_capability_agent
 
     monkeypatch.setattr(slog_mod, "AI_SESSION_LOGS_PATH", tmp_path)
 
     stored: dict[str, list[str]] = {}
+    stored_graph: dict[str, object] = {}
     _patch_task_model_env(
         monkeypatch,
         openai_configs={"MiniMAX", "Backup", "RenderCfg"},
@@ -347,16 +387,10 @@ def test_task_model_api_and_agent_refresh(tmp_path: Path, monkeypatch: pytest.Mo
         low="openai++MiniMAX",
         low_2nd="openai++Backup",
         overrides=stored,
+        graph=stored_graph,
     )
 
-    def _save_cfg(key: str, val: dict[str, list[str]]) -> bool:
-        if key != "task_model_overrides":
-            return False
-        stored.clear()
-        stored.update(val)
-        return True
-
-    monkeypatch.setattr(ai_config, "set_config", _save_cfg)
+    _install_save_cfg_stub(monkeypatch, stored, stored_graph)
     admin = make_session_record("admin")
 
     async def scenario() -> None:
@@ -471,7 +505,144 @@ def test_task_model_api_and_agent_refresh(tmp_path: Path, monkeypatch: pytest.Mo
         assert cleaned["data"] is not None
         assert "capability_agent:test_cap_render" not in cleaned["data"]["orphans"]
 
+        # 存量同配置（high === low）默认合成仍保留 slot_high + slot_low 双星核
+        reset_resp = await clear_all_ai_task_models(admin)
+        assert reset_resp["data"] is not None
+        synth_same = reset_resp["data"]["graph"]
+        assert [n["id"] for n in synth_same["nodes"]] == ["slot_high", "slot_low"]
+        assert synth_same["nodes"][0]["primary"] == "openai++MiniMAX"
+        assert synth_same["nodes"][1]["primary"] == "openai++MiniMAX"
+        assert synth_same["nodes"][1]["secondary"] == "openai++Backup"
+
+        # 新增用户（high="" & low=""）合成两个未配置占位星核，连线已预置，但直接保存未选配置的连线会被拦截
+        monkeypatch.setattr(ai_config.get_config("high_level_provider_config_name"), "data", "")
+        monkeypatch.setattr(ai_config.get_config("low_level_provider_config_name"), "data", "")
+        monkeypatch.setattr(ai_config.get_config("low_level_2nd_provider_config_name"), "data", "")
+        new_user_resp = await get_ai_task_models(admin)
+        assert new_user_resp["data"] is not None
+        new_graph = new_user_resp["data"]["graph"]
+        assert [n["primary"] for n in new_graph["nodes"]] == ["", ""]
+        assert new_graph["edges"]["chat"] == "slot_high"
+        assert new_graph["edges"]["turn_router"] == "slot_low"
+
+        unconfigured_save = await save_ai_task_model_graph(
+            TaskGraphBody(
+                nodes=[
+                    TaskGraphNodeIn(id="slot_high", primary="MiniMAX", role="high"),
+                    TaskGraphNodeIn(id="slot_low", primary="", role="low"),
+                ],
+                edges={"chat": "slot_high", "turn_router": "slot_low"},
+            ),
+            admin,
+        )
+        assert unconfigured_save["status"] == 1 and "尚未选择模型配置" in unconfigured_save["msg"]
+
+        # 星型图谱原子保存：3 星核 + 内建备用配置 + 独立路由同步高低档及引用保护
+        saved_resp = await save_ai_task_model_graph(
+            TaskGraphBody(
+                nodes=[
+                    TaskGraphNodeIn(
+                        id="slot_high",
+                        primary="MiniMAX",
+                        secondary="Backup",
+                        role="high",
+                        pos=TaskGraphPosIn(x=-220.0, y=0.0),
+                    ),
+                    TaskGraphNodeIn(id="slot_low", primary="Backup", role="low"),
+                    TaskGraphNodeIn(id="hub_autonomy", primary="RenderCfg", role="custom"),
+                ],
+                edges={"chat": "slot_high", "turn_router": "slot_low", "autonomy": "hub_autonomy"},
+            ),
+            admin,
+        )
+        assert saved_resp["status"] == 0 and saved_resp["data"] is not None
+        assert ai_config.get_config("high_level_provider_config_name").data == "openai++MiniMAX"
+        assert ai_config.get_config("high_level_2nd_provider_config_name").data == "openai++Backup"
+        assert ai_config.get_config("low_level_provider_config_name").data == "openai++Backup"
+        assert models.resolve_task_route("high", "autonomy").primary == "openai++RenderCfg"
+        assert models.resolve_task_route("high", "chat").secondary == "openai++Backup"
+        active_refs = models.list_active_provider_config_refs("RenderCfg")
+        assert "autonomy" in active_refs and "图谱节点:hub_autonomy" in active_refs
+
+        # 校验重复默认角色与非有限坐标拒绝
+        dup_role_resp = await save_ai_task_model_graph(
+            TaskGraphBody(
+                nodes=[
+                    TaskGraphNodeIn(id="h1", primary="MiniMAX", role="high"),
+                    TaskGraphNodeIn(id="h2", primary="Backup", role="high"),
+                ],
+                edges={"chat": "h1", "turn_router": "h2"},
+            ),
+            admin,
+        )
+        assert dup_role_resp["status"] == 1 and "最多只能有一个" in dup_role_resp["msg"]
+
+        nan_pos_resp = await save_ai_task_model_graph(
+            TaskGraphBody(
+                nodes=[
+                    TaskGraphNodeIn(
+                        id="slot_high",
+                        primary="MiniMAX",
+                        role="high",
+                        pos=TaskGraphPosIn(x=float("nan"), y=0.0),
+                    ),
+                ],
+                edges={"chat": "slot_high", "turn_router": "slot_high"},
+            ),
+            admin,
+        )
+        assert nan_pos_resp["status"] == 1 and "有限数值" in nan_pos_resp["msg"]
+
+        # 单任务 PUT/DELETE 与已持久化图谱保持同步，后续再次保存图谱不会回滚单任务改动
+        single_put = await set_ai_task_model("scheduled_task", TaskOverrideBody(primary="RenderCfg"), admin)
+        assert single_put["status"] == 0 and single_put["data"] is not None
+        assert single_put["data"]["graph"]["edges"]["scheduled_task"] == "hub_autonomy"
+        single_del = await clear_ai_task_model("scheduled_task", admin)
+        assert single_del["status"] == 0 and single_del["data"] is not None
+        assert single_del["data"]["graph"]["edges"]["scheduled_task"] == "slot_high"
+
+        # 保留插件临时卸载期间的 orphan 覆盖，且当 chat 离开 role=high 时晚注册任务对齐 chat 锚点
+        stored["capability_agent:unloaded_plugin_agent"] = ["openai++RenderCfg", ""]
+        reanchor_resp = await save_ai_task_model_graph(
+            TaskGraphBody(
+                nodes=[
+                    TaskGraphNodeIn(id="slot_high", primary="MiniMAX", role="high"),
+                    TaskGraphNodeIn(id="slot_low", primary="Backup", role="low"),
+                    TaskGraphNodeIn(id="hub_chat", primary="RenderCfg", role="custom"),
+                ],
+                edges={"chat": "hub_chat", "turn_router": "slot_low", "autonomy": "slot_high"},
+            ),
+            admin,
+        )
+        assert reanchor_resp["status"] == 0 and reanchor_resp["data"] is not None
+        assert "capability_agent:unloaded_plugin_agent" in reanchor_resp["data"]["orphans"]
+        stored_edges = stored_graph["edges"]
+        assert isinstance(stored_edges, dict)
+        del stored_edges["scheduled_task"]
+        late_check = await get_ai_task_models(admin)
+        assert late_check["data"] is not None
+        assert late_check["data"]["graph"]["edges"]["scheduled_task"] == "hub_chat"
+        late_by_id = {k["id"]: k for k in late_check["data"]["kinds"]}
+        assert late_by_id["scheduled_task"]["effective"]["primary"] == "openai++RenderCfg"
+
     asyncio.run(scenario())
+
+    # 验证 TokenUsage.add 默认 request_count=0（聚合不虚增）且 record_token_usage 按真实请求数累加
+    from gsuid_core.ai_core.statistics.manager import StatisticsManager
+    from gsuid_core.ai_core.statistics.dataclass_models import BotState, TokenUsage
+
+    agg_bucket = TokenUsage()
+    agg_bucket.add(100, 20)
+    agg_bucket.add(200, 40)
+    assert agg_bucket.request_count == 0
+    stats_mgr = StatisticsManager()
+    prev_state = stats_mgr._bot_state
+    stats_mgr._bot_state = BotState()
+    try:
+        stats_mgr.record_token_usage("gpt-4o", "CapabilityAgent", 1200, 300, request_count=6)
+        assert stats_mgr._bot_state.token_by_type["capabilityagent"].request_count == 6
+    finally:
+        stats_mgr._bot_state = prev_state
 
     log_entries: list[SessionLogEntry] = [
         {
@@ -490,6 +661,151 @@ def test_task_model_api_and_agent_refresh(tmp_path: Path, monkeypatch: pytest.Mo
     usage = extract_session_usage(log_entries)
     by_model = {u["model"]: u["input_tokens"] for u in usage["models"]}
     assert by_model == {"m-pre": 10, "m-run": 50}
+
+
+def test_task_model_graph_anchor_materialization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """连锚点物化为档位引用或不写覆盖；显式快照只连非锚点节点；旧槽位写入后档位引用不漂移。"""
+    import gsuid_core.ai_core.session_logger as slog_mod
+    from gsuid_core.ai_core.configs import models
+    from gsuid_core.ai_core.agent_node import AgentNode, register_agent_node, unregister_agent_node
+    from gsuid_core.webconsole.ai_task_models_api import (
+        TaskGraphBody,
+        TaskGraphNodeIn,
+        TaskOverrideBody,
+        set_ai_task_model,
+        get_ai_task_models,
+        save_ai_task_model_graph,
+    )
+    from gsuid_core.webconsole.provider_config_api import set_task_config
+
+    monkeypatch.setattr(slog_mod, "AI_SESSION_LOGS_PATH", tmp_path)
+
+    stored: dict[str, list[str]] = {}
+    stored_graph: dict[str, object] = {}
+    _patch_task_model_env(
+        monkeypatch,
+        openai_configs={"MiniMAX", "Backup", "RenderCfg", "Fast"},
+        high="openai++MiniMAX",
+        low="openai++Backup",
+        overrides=stored,
+        graph=stored_graph,
+    )
+    _install_save_cfg_stub(monkeypatch, stored, stored_graph)
+    admin = make_session_record("admin")
+
+    def _base_nodes() -> list[TaskGraphNodeIn]:
+        return [
+            TaskGraphNodeIn(id="slot_high", primary="MiniMAX", role="high"),
+            TaskGraphNodeIn(id="slot_low", primary="Backup", role="low"),
+            TaskGraphNodeIn(id="hub_x", primary="Fast", role="custom"),
+        ]
+
+    async def scenario() -> None:
+        # 显式覆盖与高档配置同名时，合成仍冻结到独立 custom 节点而非连上 slot_high
+        put_exp = await set_ai_task_model("subagent", TaskOverrideBody(primary="MiniMAX"), admin)
+        assert put_exp["status"] == 0 and put_exp["data"] is not None
+        synth_nodes = {n["id"]: n for n in put_exp["data"]["graph"]["nodes"]}
+        sub_edge = put_exp["data"]["graph"]["edges"]["subagent"]
+        assert sub_edge != "slot_high" and synth_nodes[sub_edge]["role"] == "custom"
+        assert synth_nodes[sub_edge]["primary"] == "openai++MiniMAX"
+
+        # 跨档连锚点物化为档位引用；连本档锚点不写覆盖；连 custom 节点写显式快照
+        save1 = await save_ai_task_model_graph(
+            TaskGraphBody(
+                nodes=_base_nodes(),
+                edges={
+                    "chat": "slot_high",
+                    "turn_router": "slot_low",
+                    "subagent": "slot_low",
+                    "eval_judge": "slot_high",
+                    "autonomy": "slot_high",
+                    "scheduled_task": "hub_x",
+                },
+            ),
+            admin,
+        )
+        assert save1["status"] == 0
+        assert stored["subagent"] == ["@low", ""]
+        assert stored["eval_judge"] == ["@high", ""]
+        assert "autonomy" not in stored
+        assert stored["scheduled_task"] == ["openai++Fast", ""]
+
+        # 旧槽位接口改低档配置：锚点节点就地同步，@low 覆盖跟随而非漂移
+        legacy = await set_task_config("low", {"config_name": "openai++RenderCfg"}, {})
+        assert legacy["status"] == 0
+        assert models.resolve_task_route("high", "subagent").primary == "openai++RenderCfg"
+        assert models.resolve_task_route("high", "eval_judge").primary == "openai++MiniMAX"
+        graph_nodes = stored_graph["nodes"]
+        assert isinstance(graph_nodes, list)
+        slot_low_row = next(n for n in graph_nodes if isinstance(n, dict) and n["id"] == "slot_low")
+        assert slot_low_row["primary"] == "openai++RenderCfg"
+        # 连非锚点节点的显式快照不受档位写入影响
+        assert models.resolve_task_route("high", "scheduled_task").primary == "openai++Fast"
+
+        # 缺边任务按覆盖反推连线：删边后 GET 重建回 hub_x 而非默认锚点
+        stored_edges = stored_graph["edges"]
+        assert isinstance(stored_edges, dict) and "scheduled_task" in stored_edges
+        del stored_edges["scheduled_task"]
+        rebuild = await get_ai_task_models(admin)
+        assert rebuild["data"] is not None
+        assert rebuild["data"]["graph"]["edges"]["scheduled_task"] == "hub_x"
+
+        # follows_caller 任务 PUT 拒绝；存量覆盖在图谱保存后保留
+        rejected = await set_ai_task_model("image_understand", TaskOverrideBody(primary="RenderCfg"), admin)
+        assert rejected["status"] == 1 and "跟随调用方" in rejected["msg"]
+        stored["image_understand"] = ["openai++RenderCfg", ""]
+        save2 = await save_ai_task_model_graph(
+            TaskGraphBody(
+                nodes=_base_nodes(),
+                edges={"chat": "slot_high", "turn_router": "slot_low", "scheduled_task": "hub_x"},
+            ),
+            admin,
+        )
+        assert save2["status"] == 0
+        assert stored["image_understand"] == ["openai++RenderCfg", ""]
+
+        # 已拆分子代理连锚点物化为档位引用，连 custom 节点写快照
+        node_sub = AgentNode(
+            node_id="test_anchor_sub",
+            display_name="测试锚点子代理",
+            prompt="test",
+            when_to_use="测试锚点",
+            source="builtin",
+            plugin="core",
+        )
+        node_snap = AgentNode(
+            node_id="test_snap_sub",
+            display_name="测试快照子代理",
+            prompt="test",
+            when_to_use="测试快照",
+            source="builtin",
+            plugin="core",
+        )
+        register_agent_node(node_sub)
+        register_agent_node(node_snap)
+        try:
+            save3 = await save_ai_task_model_graph(
+                TaskGraphBody(
+                    nodes=_base_nodes(),
+                    edges={
+                        "chat": "slot_high",
+                        "turn_router": "slot_low",
+                        "scheduled_task": "hub_x",
+                        "capability_agent:test_anchor_sub": "slot_low",
+                        "capability_agent:test_snap_sub": "hub_x",
+                    },
+                    split_subagents=["capability_agent:test_anchor_sub", "capability_agent:test_snap_sub"],
+                ),
+                admin,
+            )
+            assert save3["status"] == 0
+            assert stored["capability_agent:test_anchor_sub"] == ["@low", ""]
+            assert stored["capability_agent:test_snap_sub"] == ["openai++Fast", ""]
+        finally:
+            unregister_agent_node("test_anchor_sub")
+            unregister_agent_node("test_snap_sub")
+
+    asyncio.run(scenario())
 
 
 def test_model_http_proxy_pool_isolation_and_leak_guard() -> None:

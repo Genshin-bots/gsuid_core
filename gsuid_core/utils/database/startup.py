@@ -148,6 +148,7 @@ exec_list = [
     "ALTER TABLE aidailystatistics ADD COLUMN user_turn_cache_write_tokens INTEGER DEFAULT 0;",
     "ALTER TABLE aitokenusagebytype ADD COLUMN cache_read_tokens INTEGER DEFAULT 0;",
     "ALTER TABLE aitokenusagebytype ADD COLUMN cache_write_tokens INTEGER DEFAULT 0;",
+    "ALTER TABLE aitokenusagebytype ADD COLUMN request_count INTEGER DEFAULT 0;",
     "ALTER TABLE aitokenusagebymodel ADD COLUMN cache_read_tokens INTEGER DEFAULT 0;",
     "ALTER TABLE aitokenusagebymodel ADD COLUMN cache_write_tokens INTEGER DEFAULT 0;",
     # 延迟样本数：区间平均延迟要按样本数加权（每日样本量实测能差两个数量级），

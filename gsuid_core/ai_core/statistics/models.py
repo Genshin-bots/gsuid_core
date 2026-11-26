@@ -200,6 +200,7 @@ class AITokenUsageByType(BaseIDModel, table=True):
     output_tokens: int = Field(default=0, title="输出Token")
     cache_read_tokens: int = Field(default=0, title="缓存读取Token")
     cache_write_tokens: int = Field(default=0, title="缓存写入Token")
+    request_count: int = Field(default=0, title="请求次数")
 
     @classmethod
     @with_session
@@ -261,6 +262,7 @@ class AITokenUsageByType(BaseIDModel, table=True):
         output_tokens: int,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
+        request_count: int = 1,
     ) -> bool:
         """创建或更新 Token 使用统计"""
         try:
@@ -273,6 +275,7 @@ class AITokenUsageByType(BaseIDModel, table=True):
                         "output_tokens": existing.output_tokens + output_tokens,
                         "cache_read_tokens": existing.cache_read_tokens + cache_read_tokens,
                         "cache_write_tokens": existing.cache_write_tokens + cache_write_tokens,
+                        "request_count": (existing.request_count or 0) + request_count,
                     },
                 )
             else:
@@ -283,6 +286,7 @@ class AITokenUsageByType(BaseIDModel, table=True):
                     output_tokens=output_tokens,
                     cache_read_tokens=cache_read_tokens,
                     cache_write_tokens=cache_write_tokens,
+                    request_count=request_count,
                 )
             return True
         except Exception as e:

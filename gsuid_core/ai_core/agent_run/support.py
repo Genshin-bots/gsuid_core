@@ -778,6 +778,7 @@ def add_response_usage(
     response_model: str | None,
 ) -> None:
     """按单次模型响应累加。超轮数没有 result.usage，会话日志靠这份合计。"""
+    st.usage_requests += 1
     st.usage_input_tokens += input_tokens
     st.usage_output_tokens += output_tokens
     st.usage_cache_read_tokens += cache_read_tokens

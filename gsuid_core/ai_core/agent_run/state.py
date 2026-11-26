@@ -186,6 +186,7 @@ class RunOnceState:
     # 已开始的模型请求次数。超轮数拿不到 result.usage，用量按请求累加。
     model_requests: int = 0
     iter_nudged: bool = False
+    usage_requests: int = 0
     usage_input_tokens: int = 0
     usage_output_tokens: int = 0
     usage_cache_read_tokens: int = 0

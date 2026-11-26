@@ -69,6 +69,11 @@ AI_CONFIG: Dict[str, GSC] = {
         ),
         {},
     ),
+    "task_model_graph": GsDictConfig(
+        "任务模型节点图谱",
+        "存储 AI 配置页星型节点路由图谱的星核节点、任务连线、已拆分能力代理与布局坐标。",
+        {},
+    ),
     "embedding_provider": GsStrConfig(
         "嵌入模型服务提供方",
         "指定嵌入模型提供方",

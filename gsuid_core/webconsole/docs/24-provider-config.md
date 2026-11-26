@@ -687,15 +687,15 @@ Provider 代表 AI 服务提供方的格式类型：
 
 默认情况下，每个任务按「高级 / 低级」两档取配置。用户可为单个任务类型改档或指定任意配置文件，也可为单个能力代理（`capability_agent:<node_id>`）单独覆盖。覆盖存在 `ai_config.task_model_overrides`（`{任务ID: [主配置, 备用配置]}`），主配置为 `@high` / `@low` 表示改用该档位，为 `provider++name` 表示指定配置文件。子任务按「自身覆盖 → 父任务（`capability_agent`）覆盖 → 调用方档位」三级回退；覆盖指向的配置文件被删除时自动跳过并回退下一级。
 
-> 这些接口即时落库。前端的整包保存必须跳过 `task_model_overrides`，否则旧值会覆盖新值。
+> 这些接口即时落库。前端的整包保存必须跳过 `task_model_overrides` 与 `task_model_graph`，否则旧值会覆盖新值。
 
-### 获取全部任务类型
+### 获取全部任务类型与路由图谱
 
 ```
 GET /api/ai_task_models
 ```
 
-返回 `groups`（分组顺序）、`levels`（两档当前主/备配置）、`kinds`（任务列表，含动态投影的可委派能力代理节点）、`orphans`（已保存但未登记的任务 ID）。`kinds[]` 的字段：
+返回 `groups`（分组顺序）、`levels`（两档当前主/备配置）、`kinds`（任务列表，含动态投影的可委派能力代理节点）、`orphans`（已保存但当前未登记的任务 ID）、`graph`（星型任务路由图谱拓扑：配置枢纽节点 `nodes`、任务连线 `edges`、已拆分子代理列表 `split_subagents`、任务坐标 `task_positions`）。`kinds[]` 的字段：
 
 | 字段 | 说明 |
 |------|------|
@@ -716,13 +716,34 @@ PUT /api/ai_task_models/{task_kind}
 {"primary": "@low" | "provider++name", "secondary": "" | "provider++name"}
 ```
 
-主配置为档位记号时忽略 `secondary`（备用随档位走）。未知任务、配置不存在、备用与主配置相同都返回 `status: 1`。
+主配置为档位记号时忽略 `secondary`（备用随档位走）。未知任务、`follows_caller` 任务（固定跟随调用方，不可覆盖）、配置不存在、备用与主配置相同都返回 `status: 1`。
+
+### 保存任务路由图谱
+
+```
+PUT /api/ai_task_models/graph
+{
+    "nodes": [
+        {"id": "slot_high", "primary": "openai++gpt-4o", "secondary": "", "role": "high", "pos": {"x": -295, "y": 0}},
+        {"id": "slot_low", "primary": "openai++gpt-4o-mini", "secondary": "", "role": "low", "pos": {"x": 295, "y": 0}}
+    ],
+    "edges": {"chat": "slot_high", "turn_router": "slot_low"},
+    "split_subagents": [],
+    "task_positions": {}
+}
+```
+
+- `nodes[].role` 取值为 `"high"` / `"low"` / `"custom"`（`"high"` 与 `"low"` 各最多一个）；`pos` 与 `task_positions` 坐标必须为有限浮点数。
+- 校验所有被连线的配置枢纽均已绑定有效配置（未配置的空枢纽被任务引用时返回 `status: 1`），以 `chat` 所在枢纽同步 `high_level_*`、以 `turn_router` 所在枢纽同步 `low_level_*`（这两个枢纽下称「锚点」），并保留插件临时卸载期间的 `orphans` 覆盖与 `follows_caller` 任务的存量覆盖。
+- 覆盖物化按节点身份而非配置值：任务连本档锚点不写覆盖（随槽位动态解析），连对方档位锚点写 `@high` / `@low` 档位引用，连其余节点写显式配置快照。显式配置的显式语义是「冻结」——它只匹配非锚点节点，避免锚点配置随档位变更时误跟随。
+- 缺边任务（晚注册 / orphan 重装在先、所连枢纽后被删）在 `GET` 时按覆盖反推连线：档位引用回锚点，显式配置匹配或新建非锚点枢纽；覆盖已失效时回退默认锚点，与运行时解析口径一致。
+- 单任务 `PUT / DELETE /api/ai_task_models/{task_kind}` 写入时也会同步更新已持久化的 `task_model_graph`，保持 `GET` 与下次图谱保存一致。
 
 ### 清除覆盖
 
 ```
-DELETE /api/ai_task_models/{task_kind}   # 单个任务恢复默认
-DELETE /api/ai_task_models               # 全部恢复默认
+DELETE /api/ai_task_models/{task_kind}   # 单个任务恢复默认（同步更新 task_model_graph）
+DELETE /api/ai_task_models               # 全部恢复默认（同时清空 task_model_graph）
 ```
 
-三个写接口都需要管理员权限，成功时返回与 GET 相同结构的最新数据。
+四个写接口都需要管理员权限，成功时返回与 GET 相同结构的最新数据。
