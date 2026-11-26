@@ -11,6 +11,10 @@
   "log.register.plugin_name_privileged_category": "[Register] {plugin_name} tool [{p0}] privileged category [{reg_category}] → common",
   "log.register.reg_category": "[Register] +{p0} ({reg_category})",
   "log.register.timeout_sec_aborted": "[Register] Tool [{p0}] execution timed out (>{timeout_sec}s), aborted",
+  "log.register.tool_bg_delivery_fallback": "[Register] Background tool [{p0}] delivery fallback ({reason})",
+  "log.register.tool_bg_failed": "[Register] Background tool [{p0}] execution or delivery failed: {e}",
+  "log.register.tool_bg_shutdown_cancelled": "[Register] Shutdown cleanup: cancelled {count} in-flight background tool task(s)",
+  "log.register.tool_detached_background": "[Register] Tool [{p0}] exceeded {grace}s grace window; detached to background and released main session",
   "log.register.tool_inner_timeout": "[Register] Tool [{p0}] internal timeout/failure (not wrapper timeout): {e}",
   "log.register.unregistered_tool": "Unregistered tool {name}"
 }

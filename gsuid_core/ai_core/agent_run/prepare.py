@@ -208,6 +208,7 @@ class PreparePhase:
             "speech_policy": "free",
             "has_status_tool": False,
             "parent_create_by": self.create_by,
+            "return_mode": st.return_mode,
             MODEL_DECLARES_VIDEO_KEY: self._model_declares_video(),
         }
         # 记录原始用户问题，供话术策略与后续总结共用
@@ -262,7 +263,11 @@ class PreparePhase:
             if _probe_for_policy.lstrip().startswith("[框架·任务未完成]"):
                 st.run_extra["delivery_failed"] = True
             remember_outbound_topic(st.run_extra, _probe_for_policy)
-            if "主图：`" in _probe_for_policy:
+            if (
+                "主图：`" in _probe_for_policy
+                or "图片，资源ID:" in _probe_for_policy
+                or "[已生成图片，资源ID:" in _probe_for_policy
+            ):
                 st.run_extra["delivery_has_image"] = True
         st.in_flight_short = (not st.fw_msg) and st.has_active_task and spoken_user_body_len(_probe_for_policy) <= 48
         if self.route_decision is not None:

@@ -263,31 +263,31 @@ REG_TIME = ApiEndpoint(
 
 # --- BBS ---
 BBS_TASKS = ApiEndpoint(
-    cn=f"{BBS_URL}/apihub/sapi/getUserMissionsState",
+    cn=f"{NEW_BBS_URL}/apihub/sapi/getUserMissionsState",
     name="BBS_TASKS",
 )
 BBS_SIGN = ApiEndpoint(
-    cn=f"{BBS_URL}/apihub/app/api/signIn",
+    cn=f"{NEW_BBS_URL}/apihub/app/api/signIn",
     name="BBS_SIGN",
 )
 BBS_LIST = ApiEndpoint(
-    cn=BBS_URL + "/post/api/getForumPostList?forum_id={}&is_good=false&is_hot=false&page_size=20&sort_type=1",
+    cn=NEW_BBS_URL + "/post/api/getForumPostList?forum_id={}&is_good=false&is_hot=false&page_size=20&sort_type=1",
     name="BBS_LIST",
 )
 BBS_COLLECTION = ApiEndpoint(
-    cn=BBS_URL + "/post/wapi/getPostFullInCollection",
+    cn=NEW_BBS_URL + "/post/wapi/getPostFullInCollection",
     name="BBS_COLLECTION",
 )
 BBS_DETAIL = ApiEndpoint(
-    cn=BBS_URL + "/post/api/getPostFull?post_id={}",
+    cn=NEW_BBS_URL + "/post/api/getPostFull?post_id={}",
     name="BBS_DETAIL",
 )
 BBS_SHARE = ApiEndpoint(
-    cn=BBS_URL + "/apihub/api/getShareConf?entity_id={}&entity_type=1",
+    cn=NEW_BBS_URL + "/apihub/api/getShareConf?entity_id={}&entity_type=1",
     name="BBS_SHARE",
 )
 BBS_LIKE = ApiEndpoint(
-    cn=f"{BBS_URL}/apihub/sapi/upvotePost",
+    cn=f"{NEW_BBS_URL}/apihub/sapi/upvotePost",
     name="BBS_LIKE",
 )
 

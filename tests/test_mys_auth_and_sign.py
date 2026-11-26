@@ -14,7 +14,13 @@ from gsuid_core.bot import Bot, _Bot
 from tests._support import isolated_sqlite_db
 from gsuid_core.models import Event
 from gsuid_core.utils.sign.sign import sign_in, sign_error
-from gsuid_core.utils.api.mys.api import EXCHANGE_TOKEN
+from gsuid_core.utils.api.mys.api import (
+    BBS_LIKE,
+    BBS_SIGN,
+    BBS_TASKS,
+    NEW_BBS_URL,
+    EXCHANGE_TOKEN,
+)
 from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.database.models import GsUID, GsUser
 from gsuid_core.utils.cookie_manager.add_ck import build_cn_account_cookie
@@ -98,6 +104,10 @@ def _exchange_token_response(
 
 
 def test_cn_stoken_exchange_and_v2_cookie_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert BBS_TASKS.get().startswith(NEW_BBS_URL)
+    assert BBS_SIGN.get().startswith(NEW_BBS_URL)
+    assert BBS_LIKE.get().startswith(NEW_BBS_URL)
+
     def _respond(req: _CapturedRequest) -> dict[str, object]:
         assert req.url == EXCHANGE_TOKEN.get()
         assert req.method == "POST"

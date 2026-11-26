@@ -127,6 +127,10 @@ class ResourceManager:
         self._put(resource_id, data)
         return resource_id
 
+    def has(self, resource_id: str) -> bool:
+        """检查资源 ID 是否仍在内存缓存中。"""
+        return resource_id in self._store
+
     def peek(self, resource_id: str) -> Union[str, bytes]:
         """取回登记时的原始值，不下载、不解码。"""
         if resource_id not in self._store:

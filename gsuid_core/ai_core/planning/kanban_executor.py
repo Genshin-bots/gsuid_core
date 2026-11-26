@@ -33,11 +33,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.proactive import emit_proactive_message
-from gsuid_core.ai_core.control.lines import (
-    CODE_FENCE_RE,
-    MEDIA_HANDLE_RE,
-    INTERNAL_ARTIFACT_TOKEN_PATTERN,
-)
+from gsuid_core.ai_core.control.lines import MEDIA_HANDLE_RE
 
 from . import kanban
 from .models import AIAgentTask, AIAgentTaskLog, AIAgentArtifact, RecurringStatus
@@ -77,45 +73,26 @@ def _node_tool_names(profile: Optional[str]) -> set[str]:
     return set(resolve_pack_tool_names(node.tool_packs)) | set(node.tool_names)
 
 
-_RELAY_META_LINE_RE = re.compile(rf"(?im)^.*(?:artifact|{INTERNAL_ARTIFACT_TOKEN_PATTERN}|主人格|句柄|Kanban).*$")
-
-
 def _sanitize_fallback_spoken(text: str) -> str:
-    """无主 session 后台兜底播报清洗：剥离代码块、内部句柄/元流程词并过 OOC。"""
-    from gsuid_core.ai_core.control.outbound_detectors import inspect_outbound_ooc
+    """无主 session 后台兜底播报清洗：委托共享异步回灌内核。"""
+    from gsuid_core.ai_core.async_delivery import sanitize_fallback_spoken
 
-    raw = (text or "").strip()
-    if not raw:
-        return ""
-    sanitized = CODE_FENCE_RE.sub("〔代码已省略〕", raw)
-    if "```" in sanitized:
-        sanitized = sanitized.split("```", 1)[0].rstrip() + " 〔代码已省略〕"
-    cleaned = _RELAY_META_LINE_RE.sub("", sanitized[:600])
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-    if not cleaned:
-        return "搞定了。"
-    if inspect_outbound_ooc(cleaned) is not None:
-        cleaned2 = _RELAY_META_LINE_RE.sub("", cleaned).strip()
-        if not cleaned2 or inspect_outbound_ooc(cleaned2) is not None:
-            return "搞定了，图里有。"
-        return cleaned2[:400]
-    return cleaned[:600]
+    return sanitize_fallback_spoken(text)
 
 
 def _build_event(task: AIAgentTask) -> Event:
-    user_type = task.user_type if task.user_type in _VALID_USER_TYPES else "direct"
-    return Event(
+    from gsuid_core.ai_core.async_delivery import build_delivery_event
+
+    # 还原派活时的权限等级，否则退回 Event 默认 6（非管理员）
+    return build_delivery_event(
         bot_id=task.bot_id,
         user_id=task.owner_user_id,
         bot_self_id=task.bot_self_id,
-        user_type=user_type,
+        user_type=task.user_type,
         group_id=task.group_id,
         real_bot_id=task.bot_id,
-        msg_id="",
-        # 还原派活时的权限等级，否则退回 Event 默认 6（非管理员），pm 门控工具
-        # （check_pm，如 plugin_dev 全家）会拒绝主人本人派出的子代理。
         user_pm=task.user_pm,
-        WS_BOT_ID=task.WS_BOT_ID,
+        ws_bot_id=task.WS_BOT_ID,
     )
 
 
@@ -824,14 +801,14 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
     ev = _build_event(task)
     bot = _get_bot(task, ev)
 
-    from gsuid_core.ai_core.session_registry import get_ai_session_registry
+    from gsuid_core.ai_core.async_delivery import (
+        build_delivery_hints,
+        resolve_live_session,
+        note_delivery_followup_if_sent,
+    )
 
     session_id = (task.session_id or "").strip()
-    session = get_ai_session_registry().get_ai_session(session_id) if session_id else None
-    if session is None and session_id and bot is not None:
-        from gsuid_core.ai_core.ai_router import get_ai_session
-
-        session = await get_ai_session(ev)
+    session = await resolve_live_session(session_id, ev, bot)
 
     if session is None or bot is None:
         logger.warning(
@@ -854,16 +831,12 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
     root_id = (task.root_task_id or task.id).strip()
     owner = (task.owner_user_id or "").strip()
     _user_type = task.user_type if task.user_type in _VALID_USER_TYPES else "direct"
-    at_hint = f"收尾时 @发起人 `<@{owner}>`。" if owner and _user_type != "direct" else ""
-    title_ban = ""
-    if owner:
-        from gsuid_core.ai_core.utils import _is_master_user
-        from gsuid_core.ai_core.persona.settings import get_master_title
-
-        if not _is_master_user(owner):
-            title = get_master_title(task.persona_name or "")
-            if title:
-                title_ban = f"发起人不是主人，禁止称「{title}」。"
+    is_group = _user_type != "direct"
+    at_hint, title_ban = build_delivery_hints(
+        owner=owner,
+        is_group=is_group,
+        persona_name=task.persona_name,
+    )
     from gsuid_core.ai_core.control.lines import failure_wake_line, delivery_wake_line
 
     frame_text = (
@@ -891,10 +864,13 @@ async def _wake_main_agent_for_delivery_now(task: AIAgentTask, raw_result: str) 
         reset_delivery_root(root_token)
     if session.last_run_sent_visible_reply or session.last_run_sent_image:
         mark_root_delivered(root_id)
-    if (session.last_run_sent_visible_reply or session.last_run_sent_image) and owner and _user_type != "direct":
-        from gsuid_core.ai_core.followup_window import note_delivery_followup_from_config
-
-        note_delivery_followup_from_config(session_id or ev.session_id, owner)
+    note_delivery_followup_if_sent(
+        session,
+        session_id=session_id,
+        ev=ev,
+        owner=owner,
+        is_group=is_group,
+    )
     logger.info(t("log.ai.kanban_deferred_main_delivery_done", task=task.id[:8]))
 
 

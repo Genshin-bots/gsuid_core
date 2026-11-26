@@ -1,4 +1,5 @@
 {
+  "log.sv.ai_opts_ignored_without_to_ai": "触发器【{keyword}】未声明 to_ai，传入的 timeout/background 仅对 AI 工具生效，本次已忽略。",
   "log.sv.error_occurred_executing": "[SV] {p0} 执行时出现错误!",
   "log.sv.name_module_initializing": "【{name}】模块初始化中...",
   "log.sv.type_trigger_k_load": "载入{type}触发器【{_k}】!",

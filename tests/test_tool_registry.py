@@ -2680,3 +2680,627 @@ def test_soft_latency_opening_line_ack(monkeypatch: pytest.MonkeyPatch, tmp_path
             assert sent[-1] == "先查一下稍等。"
 
     asyncio.run(_check_soft_ack())
+
+
+def test_background_tool_grace_detach_wake_and_guards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic_ai import RunContext
+    from pydantic_ai.messages import BinaryContent
+
+    from gsuid_core.bot import Bot, _Bot
+    from gsuid_core.gss import gss
+    from gsuid_core.ai_core import tool_health as th_mod, background_tools as bg_mod
+    from gsuid_core.ai_core.register import (
+        _TOOL_REGISTRY,
+        unregister_tool,
+        execute_guarded_tool,
+        unregister_tools_of_plugin,
+    )
+    from gsuid_core.ai_core.agent_run import opening_line as ol
+    from gsuid_core.ai_core.control.lines import (
+        PENDING_BACKGROUND_TOOL_HOLD,
+        BACKGROUND_TOOL_PENDING_PREFIX,
+        PENDING_BACKGROUND_TOOL_OPENING,
+        PENDING_BACKGROUND_TOOL_MIXED_NOTE,
+    )
+    from gsuid_core.ai_core.async_delivery import resolve_live_session, sanitize_fallback_spoken
+    from gsuid_core.ai_core.session_logger import AISessionLogger
+    from gsuid_core.ai_core.trigger_bridge import _register_trigger_as_ai_tool
+    from gsuid_core.ai_core.approval.models import APPROVAL_HOLD_MARK
+    from gsuid_core.ai_core.history_compact import lean_delivery_frame
+    from gsuid_core.ai_core.agent_run.guards import DeliveryGuard, ToolCircuitBreaker
+    from gsuid_core.ai_core.control.policy_ring import evaluate_speech_ring
+    from gsuid_core.ai_core.agent_run.speech_policy import SpeechContext, normalize_speech_policy
+    from gsuid_core.ai_core.buildin_tools.call_tool import call_tool
+
+    monkeypatch.setattr("gsuid_core.ai_core.session_logger.AI_SESSION_LOGS_PATH", tmp_path)
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.persona_name: str | None = None
+            self.last_run_sent_visible_reply = True
+            self.last_run_sent_image = False
+            self.wakes: list[tuple[str, bool, Event]] = []
+
+        async def run(
+            self,
+            *,
+            user_message: str,
+            bot: Bot,
+            ev: Event,
+            return_mode: str,
+            is_framework_injection: bool,
+        ) -> str:
+            _ = (bot, return_mode)
+            self.wakes.append((user_message, is_framework_injection, ev))
+            return ""
+
+    class _FakeSv:
+        enabled = True
+        pm = 6
+        plugins = None
+
+    async def _scenario() -> None:
+        ws_id = "test_ws_bg_live"
+        live_raw_bot = _Bot(ws_id)
+        ev = Event(
+            "OneBot",
+            "900000001",
+            "orig_msg_999",
+            "group",
+            "group_1",
+            "100000001",
+            {},
+            6,
+            raw_text="测试后台任务原话",
+            image_id="img_old_attach",
+            WS_BOT_ID=ws_id,
+        )
+        bot = Bot(live_raw_bot, ev)
+        fake_session = _FakeSession()
+
+        async def _resolve_stub(_sid: str, _ev: Event, _bot: Bot | None) -> _FakeSession:
+            return fake_session
+
+        async def _deliver_opening(_tc: ToolContext, _text: str) -> bool:
+            return True
+
+        with monkeypatch.context() as mp:
+            mp.setattr(th_mod, "_HEALTH", {})
+            mp.setitem(gss.active_bot, ws_id, live_raw_bot)
+            mp.setattr(bg_mod, "resolve_live_session", _resolve_stub)
+            mp.setattr(ol, "_deliver", _deliver_opening)
+
+            # 1) 宽限内完成与内部 TimeoutError 捕获（与同步路径一致记健康度不炸环）
+            ctx_fast = make_run_ctx(bot=bot, ev=ev, parent_session_id="sess_bg_1", allow_user_outbound=True)
+
+            async def _fast_call() -> str:
+                return "立即完成结果"
+
+            fast_res = await execute_guarded_tool(
+                "bg_fast_demo",
+                ctx_fast,
+                _fast_call,
+                timeout=30.0,
+                background=True,
+                background_grace=0.5,
+                raw_passthrough=True,
+            )
+            assert fast_res == "立即完成结果" and fake_session.wakes == []
+
+            async def _inner_timeout_call() -> str:
+                raise asyncio.TimeoutError("upstream connect timeout")
+
+            inner_to_res = await execute_guarded_tool(
+                "bg_inner_to_demo",
+                ctx_fast,
+                _inner_timeout_call,
+                timeout=30.0,
+                background=True,
+                background_grace=0.5,
+                raw_passthrough=True,
+            )
+            assert isinstance(inner_to_res, str) and "内部超时/失败" in inner_to_res
+
+            # 2) 超宽限转后台：释放开场句、同会话同参去重、异参/跨群不误吞、回灌 Event 剥旧附件与 msg_id
+            release_slow = asyncio.Event()
+            call_count = 0
+
+            async def _slow_call() -> str:
+                nonlocal call_count
+                call_count += 1
+                await release_slow.wait()
+                return "后台任务最终产出\n[已生成 1 张图片，资源ID: img_aa11bb22。请调用 send_message_by_ai 发送]"
+
+            ctx_slow = make_run_ctx(
+                bot=bot,
+                ev=ev,
+                parent_session_id="sess_bg_1",
+                allow_user_outbound=True,
+                extra={"run_sent_texts": set(), "run_sent_order": []},
+            )
+            ol.arm_opening_line(ctx_slow.deps.extra, text="这就帮你去跑，稍等一下。", deliver=True)
+
+            ack1 = await execute_guarded_tool(
+                "bg_slow_demo",
+                ctx_slow,
+                _slow_call,
+                timeout=30.0,
+                background=True,
+                background_grace=0.02,
+                background_label="长耗时操作",
+                background_args_key="arg=A",
+                raw_passthrough=True,
+            )
+            assert isinstance(ack1, str) and ack1.startswith(BACKGROUND_TOOL_PENDING_PREFIX)
+            assert "这就帮你去跑，稍等一下。" in ack1 and not th_mod.is_tool_frozen("bg_slow_demo")
+
+            # 同会话同参重入：去重；异参或跨群：独立执行不误吞
+            ctx_dup = make_run_ctx(bot=bot, ev=ev, parent_session_id="sess_bg_1", allow_user_outbound=True)
+            ol.arm_opening_line(ctx_dup.deps.extra, text="", deliver=True)
+            ack_dup = await execute_guarded_tool(
+                "bg_slow_demo",
+                ctx_dup,
+                _slow_call,
+                timeout=30.0,
+                background=True,
+                background_grace=0.02,
+                background_args_key="arg=A",
+                raw_passthrough=True,
+            )
+            assert isinstance(ack_dup, str) and "无需重复发起" in ack_dup and call_count == 1
+
+            diff_arg_res = await execute_guarded_tool(
+                "bg_slow_demo",
+                ctx_dup,
+                _fast_call,
+                timeout=30.0,
+                background=True,
+                background_grace=0.5,
+                background_args_key="arg=B",
+                raw_passthrough=True,
+            )
+            assert diff_arg_res == "立即完成结果"
+
+            ev_other_group = Event(
+                "OneBot", "900000001", "g2_msg", "group", "group_2", "100000001", {}, 6, WS_BOT_ID=ws_id
+            )
+            ctx_other = make_run_ctx(
+                bot=Bot(live_raw_bot, ev_other_group),
+                ev=ev_other_group,
+                parent_session_id="sess_bg_2",
+                allow_user_outbound=True,
+            )
+            other_grp_res = await execute_guarded_tool(
+                "bg_slow_demo",
+                ctx_other,
+                _fast_call,
+                timeout=30.0,
+                background=True,
+                background_grace=0.5,
+                background_args_key="arg=A",
+                raw_passthrough=True,
+            )
+            assert other_grp_res == "立即完成结果"
+
+            # 验证 DeliveryGuard：纯后台用后台专属 OPENING/HOLD，发图不清 pending_background_tool，混合批不压同伴结果
+            st_guard = make_run_state("测试", bot=bot, ev=ev, context=ctx_dup.deps)
+            req = ModelRequest(parts=[ToolReturnPart(tool_name="bg_slow_demo", content=ack_dup, tool_call_id="c_bg")])
+            sess_log = AISessionLogger(session_id="test_bg_guard")
+            try:
+                summary = await ToolCircuitBreaker.process_tool_returns(
+                    st_guard,
+                    req,
+                    create_by="Chat",
+                    session_id="test_bg_guard",
+                    persona_name=None,
+                    session_logger=sess_log,
+                    emit_trace=lambda _k, _v: None,
+                )
+                DeliveryGuard.absorb_opening_line(st_guard, session_logger=sess_log)
+                ToolCircuitBreaker.inject_post_return_nudges(
+                    st_guard,
+                    req,
+                    summary,
+                    create_by="Chat",
+                    session_id="test_bg_guard",
+                    capability_node_id="",
+                )
+                assert st_guard.pending_async_delivery is True and st_guard.pending_background_tool is True
+                assert st_guard.speech_policy == "silence_only" and st_guard.opening_missed is True
+                assert any(
+                    isinstance(p, UserPromptPart) and p.content == PENDING_BACKGROUND_TOOL_OPENING for p in req.parts
+                )
+                assert not any(
+                    isinstance(p, UserPromptPart) and p.content == PENDING_BACKGROUND_TOOL_HOLD for p in req.parts
+                )
+
+                # 同轮 send_message_by_ai 发图不能清除后台工具在途态
+                ctx_dup.deps.extra["image_sent_this_run"] = True
+                DeliveryGuard.apply_send_message_return(st_guard)
+                assert st_guard.image_sent_this_run is True and st_guard.pending_async_delivery is True
+                assert st_guard.speech_policy == "silence_only"
+
+                # 同轮混合（普通工具 + 后台工具）：不强切 silence_only，出站话术闸放行兄弟结果回答
+                st_mix = make_run_state("混合", bot=bot, ev=ev, context=make_run_ctx(bot=bot, ev=ev).deps)
+                req_mix = ModelRequest(
+                    parts=[
+                        ToolReturnPart(tool_name="fast_tool", content="天气晴 25度", tool_call_id="c1"),
+                        ToolReturnPart(tool_name="bg_slow_demo", content=ack_dup, tool_call_id="c2"),
+                    ]
+                )
+                mix_sum = await ToolCircuitBreaker.process_tool_returns(
+                    st_mix,
+                    req_mix,
+                    create_by="Chat",
+                    session_id="test_bg_guard",
+                    persona_name=None,
+                    session_logger=sess_log,
+                    emit_trace=lambda _k, _v: None,
+                )
+                ToolCircuitBreaker.inject_post_return_nudges(
+                    st_mix,
+                    req_mix,
+                    mix_sum,
+                    create_by="Chat",
+                    session_id="test_bg_guard",
+                    capability_node_id="",
+                )
+                assert st_mix.pending_background_tool is True and st_mix.pending_background_with_sibling is True
+                assert st_mix.speech_policy == "free"
+                assert any(
+                    isinstance(p, UserPromptPart) and p.content == PENDING_BACKGROUND_TOOL_MIXED_NOTE
+                    for p in req_mix.parts
+                )
+                mix_speech_ctx = SpeechContext(
+                    policy=normalize_speech_policy(st_mix.speech_policy),
+                    pending_async=st_mix.blocks_user_speech,
+                    image_sent=False,
+                    has_status_tool=False,
+                    tool_calls_so_far=("fast_tool", "bg_slow_demo"),
+                    wait_comfort_sent=True,
+                )
+                mix_blocked, mix_why = evaluate_speech_ring(mix_speech_ctx, "上海今天晴，25度。")
+                assert mix_blocked is False, f"混合批兄弟结果不应被拦: {mix_why}"
+
+                # 混合批暂扣原文在 settle 时仍允许 INV-4 补发；纯后台则禁止补发；泄漏补发图不清后台在途态
+                from gsuid_core.ai_core.outbound import note_run_image_delivered
+                from gsuid_core.ai_core.agent_run.settle import _should_deliver_withheld
+                from gsuid_core.ai_core.agent_run.support import absorb_run_image_delivered
+
+                st_mix.presentation_withheld.append("长结构兄弟答案")
+                st_mix.saw_structured_return = True
+                assert _should_deliver_withheld(st_mix, skip_report_exit=True, replacement_visible=False) is True
+                st_guard.presentation_withheld.append("纯后台拦截句")
+                assert _should_deliver_withheld(st_guard, skip_report_exit=True, replacement_visible=False) is False
+
+                note_run_image_delivered("img_leak_1")
+                absorb_run_image_delivered(st_guard)
+                assert st_guard.image_sent_this_run is True and st_guard.pending_async_delivery is True
+                assert st_guard.speech_policy == "silence_only"
+
+                pure_speech_ctx = SpeechContext(
+                    policy=normalize_speech_policy(st_guard.speech_policy),
+                    pending_async=st_guard.blocks_user_speech,
+                    image_sent=False,
+                    has_status_tool=False,
+                    tool_calls_so_far=("bg_slow_demo",),
+                    wait_comfort_sent=True,
+                )
+                pure_blocked, pure_why = evaluate_speech_ring(pure_speech_ctx, "上海今天晴，25度。")
+                assert pure_blocked is True and pure_why == "silence_only_or_async"
+            finally:
+                sess_log.close()
+
+            # 放行后台任务：检验回灌 Event 剥离旧 msg_id/附件/raw_text、lean_delivery_frame 保留句柄与标点
+            release_slow.set()
+            if bg_mod._WATCHERS:
+                await asyncio.gather(*list(bg_mod._WATCHERS))
+            assert len(fake_session.wakes) == 1
+            wake_text, is_fw, wake_ev = fake_session.wakes[0]
+            assert is_fw is True and "【后台操作完成】" in wake_text and "后台任务最终产出" in wake_text
+            assert wake_ev.msg_id == "" and wake_ev.raw_text == "" and wake_ev.image_id is None
+            assert wake_ev.task_event is None and wake_ev.group_id == "group_1" and wake_ev.user_id == "100000001"
+            lean = lean_delivery_frame(wake_text)
+            assert "【后台操作完成】" in lean and "img_aa11bb22" in lean and "。，" not in lean and "任务#?" not in lean
+            lean_aud = lean_delivery_frame(
+                "[框架·任务完成]\n【后台操作完成】「语音合成」已执行完毕。\n资源ID: aud_12ab34cd"
+            )
+            assert "aud_12ab34cd" in lean_aud and "。，" not in lean_aud
+
+            # 未绑定 persona 返回 None 不抛 ValueError；无会话失败时不直发原始报错
+            ev_unbound = Event(
+                "OneBot", "900000001", "", "group", "group_unbound_99", "100000001", {}, 6, WS_BOT_ID=ws_id
+            )
+            emitted_fallback: list[str] = []
+
+            async def _fake_emit(
+                _ev: Event,
+                text: str,
+                *,
+                source: str,
+                trigger_reason: str,
+                bot: Bot | None = None,
+                suppress_when_heartbeat_recent: bool = True,
+                at_user_id: str | None = None,
+            ) -> bool:
+                _ = (_ev, source, trigger_reason, bot, suppress_when_heartbeat_recent, at_user_id)
+                emitted_fallback.append(text)
+                return True
+
+            def _no_persona(_sid: str) -> str | None:
+                return None
+
+            with monkeypatch.context() as mp_unbound:
+                mp_unbound.setattr(
+                    "gsuid_core.ai_core.persona.config.persona_config_manager.get_persona_for_session",
+                    _no_persona,
+                )
+                assert await resolve_live_session("sess_unbound_99", ev_unbound, bot) is None
+                mp_unbound.setattr(bg_mod, "resolve_live_session", resolve_live_session)
+                mp_unbound.setattr("gsuid_core.ai_core.proactive.emit_proactive_message", _fake_emit)
+                await bg_mod._deliver_background_result(
+                    tool_name="bg_err_nosess",
+                    tool_label="错误测试",
+                    session_id="sess_unbound_99",
+                    ev=ev_unbound,
+                    fallback_bot=bot,
+                    result_text="❌ 执行命令 [测试] 时发生错误: upstream 500",
+                    is_failed=True,
+                )
+                assert emitted_fallback == []
+
+            # 无 session 降级清洗剥离资源ID与内部提示词，且严禁罐头文案（§1.9）
+            assert "img_aa11bb22" not in sanitize_fallback_spoken(wake_text, empty_fallback="")
+            assert "send_message_by_ai" not in sanitize_fallback_spoken(wake_text, empty_fallback="")
+            assert sanitize_fallback_spoken("[已生成 1 张图片，资源ID: img_aa11bb22]") == ""
+
+            # 超长后台输出截断时保留尾部 RM 资源 ID，防止丢失图片句柄
+            from gsuid_core.ai_core.control.lines import format_rm_resource_hint, background_tool_wake_line
+
+            long_body = ("详细执行日志条目\n" * 400) + format_rm_resource_hint("image", ["img_deadbeef1234"])
+            long_wake = background_tool_wake_line(
+                tool_label="长日志出图",
+                result_body=long_body,
+                owner="100000001",
+                at_hint="",
+                title_ban="",
+            )
+            assert "img_deadbeef1234" in long_wake and "过长已截断" in long_wake
+
+            # soft_latency_ack 抢先占槽但被闸拦截时，后台剥离升级为 opening_missed 避免整轮静音
+            ctx_soft_miss = make_run_ctx(
+                bot=bot,
+                ev=ev,
+                parent_session_id="sess_bg_1",
+                allow_user_outbound=True,
+                extra={ol.OPENING_RESULT_KEY: ol.OpeningResult(text="", delivered=False, source="soft_latency_ack")},
+            )
+            soft_spoken, soft_missed = await bg_mod._release_or_peek_opening(ctx_soft_miss.deps)
+            assert soft_spoken == "" and soft_missed is True
+            upgraded_res = ctx_soft_miss.deps.extra[ol.OPENING_RESULT_KEY]
+            assert isinstance(upgraded_res, ol.OpeningResult) and upgraded_res.source == "background_tool"
+
+            # 3) HTTP / 评测通道（return_mode="return"、task_event、无 WS 存活连接）保持同步不进黑洞
+            ev_http = Event("HTTP", "900000001", "h1", "direct", None, "100000001", {}, 6)
+            ctx_http = make_run_ctx(
+                bot=Bot(_Bot("HTTP"), ev_http),
+                ev=ev_http,
+                parent_session_id="eval_sess_1",
+                allow_user_outbound=True,
+                extra={"return_mode": "return"},
+            )
+            assert bg_mod.should_detach_background(ctx_http.deps) is False
+
+            ev_task = Event("OneBot", "900000001", "h2", "group", "group_1", "100000001", {}, 6, WS_BOT_ID=ws_id)
+            ev_task.task_event = asyncio.Event()
+            ctx_task = make_run_ctx(bot=Bot(live_raw_bot, ev_task), ev=ev_task, allow_user_outbound=True)
+            assert bg_mod.should_detach_background(ctx_task.deps) is False
+
+            ctx_ret = make_run_ctx(
+                bot=bot, ev=ev, parent_session_id="sess_bg_1", allow_user_outbound=True, extra={"return_mode": "return"}
+            )
+            assert bg_mod.should_detach_background(ctx_ret.deps) is False
+
+            async def _eval_call() -> str:
+                await asyncio.sleep(0.05)
+                return "评测同步结果"
+
+            eval_res = await execute_guarded_tool(
+                "bg_eval_demo",
+                ctx_http,
+                _eval_call,
+                timeout=5.0,
+                background=True,
+                background_grace=0.01,
+                raw_passthrough=True,
+            )
+            assert eval_res == "评测同步结果"
+
+            # 4) 后台硬超时 / 后台内部 TimeoutError / 后台 ❌ 返回均走失败回灌，不裸发报错
+            async def _hang_timeout() -> str:
+                await asyncio.sleep(5.0)
+                return "never"
+
+            ctx_to = make_run_ctx(bot=bot, ev=ev, parent_session_id="sess_bg_1", allow_user_outbound=True)
+            ack_to = await execute_guarded_tool(
+                "bg_timeout_demo",
+                ctx_to,
+                _hang_timeout,
+                timeout=0.08,
+                background=True,
+                background_grace=0.01,
+                raw_passthrough=True,
+            )
+            assert isinstance(ack_to, str) and ack_to.startswith(BACKGROUND_TOOL_PENDING_PREFIX)
+            if bg_mod._WATCHERS:
+                await asyncio.gather(*list(bg_mod._WATCHERS))
+            assert len(fake_session.wakes) == 2 and "[框架·任务未完成]" in fake_session.wakes[1][0]
+
+            async def _bg_inner_timeout() -> str:
+                await asyncio.sleep(0.03)
+                raise asyncio.TimeoutError("downstream read timeout")
+
+            ack_bg_ito = await execute_guarded_tool(
+                "bg_inner_to_late",
+                ctx_to,
+                _bg_inner_timeout,
+                timeout=30.0,
+                background=True,
+                background_grace=0.01,
+                raw_passthrough=True,
+            )
+            assert isinstance(ack_bg_ito, str) and ack_bg_ito.startswith(BACKGROUND_TOOL_PENDING_PREFIX)
+            if bg_mod._WATCHERS:
+                await asyncio.gather(*list(bg_mod._WATCHERS))
+            assert len(fake_session.wakes) == 3
+            assert "[框架·任务未完成]" in fake_session.wakes[2][0] and "内部超时/失败" in fake_session.wakes[2][0]
+
+            async def _bg_err_str() -> str:
+                await asyncio.sleep(0.03)
+                return "❌ 执行命令 [测试] 时发生错误: upstream 500"
+
+            ack_bg_err = await execute_guarded_tool(
+                "bg_err_str_demo",
+                ctx_to,
+                _bg_err_str,
+                timeout=30.0,
+                background=True,
+                background_grace=0.01,
+                raw_passthrough=True,
+            )
+            assert isinstance(ack_bg_err, str) and ack_bg_err.startswith(BACKGROUND_TOOL_PENDING_PREFIX)
+            if bg_mod._WATCHERS:
+                await asyncio.gather(*list(bg_mod._WATCHERS))
+            assert len(fake_session.wakes) == 4 and "[框架·任务未完成]" in fake_session.wakes[3][0]
+
+            # approval 冻结闭包含后台宽限与超时，保留 ToolContext 作用域并把新上下文传给 call_with_ctx
+            captured_bodies: list[Callable[[], Awaitable[object]]] = []
+
+            async def _fake_gate(
+                _ev: object,
+                _name: str,
+                _tier: str,
+                _args: str,
+                run_body: Callable[[], Awaitable[object]] | None = None,
+            ) -> str:
+                assert run_body is not None
+                captured_bodies.append(run_body)
+                return "审批已提交"
+
+            mp.setattr("gsuid_core.ai_core.approval.tool_call_gate", _fake_gate)
+            seen_approved_blocked: list[set[str]] = []
+            seen_approved_stale: list[bool] = []
+
+            async def _hang_with_ctx(run_ctx: RunContext[ToolContext]) -> str:
+                seen_approved_blocked.append(set(run_ctx.deps.blocked_tool_names))
+                seen_approved_stale.append(ol.OPENING_RESULT_KEY in run_ctx.deps.extra)
+                await asyncio.sleep(5.0)
+                return "never"
+
+            ctx_app = make_run_ctx(
+                bot=bot,
+                ev=ev,
+                parent_session_id="sess_bg_1",
+                allow_user_outbound=True,
+                extra={ol.OPENING_RESULT_KEY: ol.OpeningResult(text="旧轮残留开场句", delivered=True)},
+            )
+            ctx_app.deps.blocked_tool_names.add("secret_blocked_tool")
+            gate_ret = await execute_guarded_tool(
+                "bg_approval_demo",
+                ctx_app,
+                _hang_timeout,
+                call_with_ctx=_hang_with_ctx,
+                timeout=30.0,
+                approval="user",
+                background=True,
+                background_grace=0.01,
+                raw_passthrough=True,
+            )
+            assert gate_ret == "审批已提交" and len(captured_bodies) == 1
+            approved_out = await captured_bodies[0]()
+            assert isinstance(approved_out, str) and approved_out.startswith(APPROVAL_HOLD_MARK)
+            assert BACKGROUND_TOOL_PENDING_PREFIX in approved_out and "旧轮残留开场句" not in approved_out
+            assert seen_approved_blocked == [{"secret_blocked_tool"}] and seen_approved_stale == [False]
+            cancelled = await bg_mod.shutdown_background_tools()
+            assert cancelled == 1 and not bg_mod._INFLIGHT and not bg_mod._WATCHERS
+
+            # 后台纯归一化：bytes/list[Message]/ToolReturn 不触发 bot.send 且区分媒体类型
+            from gsuid_core.segment import Message as _SegMsg
+
+            bg_img_hint = await bg_mod._normalize_bg_output(b"\x89PNG\r\n\x1a\n", raw_passthrough=False)
+            assert "资源ID:" in bg_img_hint and "send_message_by_ai" in bg_img_hint
+            bg_list_hint = await bg_mod._normalize_bg_output(
+                [_SegMsg("text", "附图说明"), _SegMsg("image", b"\x89PNG\r\n\x1a\n")],
+                raw_passthrough=False,
+            )
+            assert "附图说明" in bg_list_hint and "资源ID:" in bg_list_hint and "img_" in bg_list_hint
+            tr_norm = await bg_mod._normalize_bg_output(
+                ToolReturn(
+                    return_value="摘要信息",
+                    content=["补充文本", BinaryContent(data=b"ID3test", media_type="audio/mpeg")],
+                ),
+                raw_passthrough=False,
+            )
+            assert "摘要信息" in tr_norm and "补充文本" in tr_norm and "audio_id" in tr_norm and "aud_" in tr_norm
+
+            # 关机钩子遇到忽略 CancelledError 的不配合任务时按超时快速返回，不挂死关机
+            uncoop_release = asyncio.Event()
+
+            async def _uncoop_task() -> str:
+                try:
+                    await uncoop_release.wait()
+                except asyncio.CancelledError:
+                    await uncoop_release.wait()
+                return "done"
+
+            stub_task: asyncio.Task[object] = asyncio.create_task(_uncoop_task())
+            bg_mod._INFLIGHT["uncoop_key"] = bg_mod._RunningBgTool(
+                key="uncoop_key", tool_name="uncoop_demo", started_at=0.0, task=stub_task
+            )
+            try:
+                await asyncio.sleep(0)
+                t0 = asyncio.get_running_loop().time()
+                stopped = await bg_mod.shutdown_background_tools(timeout=0.05)
+                assert stopped == 1 and (asyncio.get_running_loop().time() - t0) < 0.8
+            finally:
+                uncoop_release.set()
+                await asyncio.gather(stub_task, return_exceptions=True)
+
+            # 5) 触发器桥接透传 background=True（禁用 code_callable）、支持 call_tool 路径、热重载卸载取消在途任务
+            trigger_gate = asyncio.Event()
+
+            async def _demo_bg_trigger(t_bot: Bot, t_ev: Event) -> None:
+                _ = t_ev
+                await trigger_gate.wait()
+                await t_bot.send("触发器完成")
+
+            _demo_bg_trigger.__module__ = "gsuid_core.plugins.demo_bg_plugin.cmd"
+            _register_trigger_as_ai_tool(
+                func=_demo_bg_trigger,
+                keyword="演示后台命令",
+                to_ai_doc="演示后台触发器",
+                sv=_FakeSv(),
+                trigger_type="fullmatch",
+                timeout=300.0,
+                background=True,
+                background_grace=0.02,
+            )
+            try:
+                tb = _TOOL_REGISTRY["by_trigger"]["_demo_bg_trigger"]
+                assert tb.plugin == "demo_bg_plugin" and tb.code_callable is False
+                ctx_ct = make_run_ctx(bot=bot, ev=ev, parent_session_id="sess_bg_1", allow_user_outbound=True)
+                ct_ack = await call_tool(ctx_ct, tool_name="_demo_bg_trigger", arguments_json='{"text": ""}')
+                assert isinstance(ct_ack, str) and ct_ack.startswith(BACKGROUND_TOOL_PENDING_PREFIX)
+                assert any(entry.tool_name == "_demo_bg_trigger" for entry in bg_mod._INFLIGHT.values())
+                unregistered = unregister_tools_of_plugin("demo_bg_plugin")
+                assert unregistered == 1
+                assert not any(entry.tool_name == "_demo_bg_trigger" for entry in bg_mod._INFLIGHT.values())
+            finally:
+                trigger_gate.set()
+                unregister_tool("_demo_bg_trigger")
+                await bg_mod.shutdown_background_tools()
+
+    asyncio.run(_scenario())

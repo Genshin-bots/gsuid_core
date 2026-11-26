@@ -11,6 +11,10 @@
   "log.register.plugin_name_privileged_category": "[Register] {plugin_name} 工具 [{p0}] 特权分类 [{reg_category}] → common",
   "log.register.reg_category": "[Register] +{p0} ({reg_category})",
   "log.register.timeout_sec_aborted": "[Register] 工具 [{p0}] 执行超时（>{timeout_sec}s），已中断",
+  "log.register.tool_bg_delivery_fallback": "[Register] 后台工具 [{p0}] 回灌降级（{reason}）",
+  "log.register.tool_bg_failed": "[Register] 后台工具 [{p0}] 执行或回灌异常: {e}",
+  "log.register.tool_bg_shutdown_cancelled": "[Register] 关机清理：已取消 {count} 个在途后台工具任务",
+  "log.register.tool_detached_background": "[Register] 工具 [{p0}] 超过 {grace}s 宽限，已转后台继续执行并释放主会话",
   "log.register.tool_inner_timeout": "[Register] 工具 [{p0}] 内部超时/失败（非包装超时）: {e}",
   "log.register.unregistered_tool": "已从注册表移除工具 {name}"
 }

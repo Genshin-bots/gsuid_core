@@ -188,13 +188,13 @@ def _gated_opening(text: str, tool_ctx: ToolContext, *, source: str = "create_su
 
     _allow_render = persona_allows_capability_agent(persona or None, "render_agent")
     _is_group = bool(ev is not None and ev.group_id)
-    is_subagent_src = source == "create_subagent"
+    is_async_src = source in ("create_subagent", "background_tool")
     speech_ctx = SpeechContext(
         policy="silence_only",
-        pending_async=is_subagent_src,
+        pending_async=is_async_src,
         image_sent=False,
         has_status_tool=False,
-        tool_calls_so_far=("create_subagent",) if is_subagent_src else (),
+        tool_calls_so_far=("create_subagent",) if source == "create_subagent" else (),
         speech_len_hard=resolve_chat_style(persona).hard if persona else 0,
         forbid_title=non_master_title(addr, persona or None),
         user_text=user_text,

@@ -138,7 +138,7 @@ def _should_deliver_withheld(
         return False
     if st.return_mode not in ("always", "by_bot"):
         return False
-    if st.image_sent_this_run or st.delegated_render or st.pending_async_delivery:
+    if st.image_sent_this_run or st.delegated_render or st.blocks_user_speech:
         return False
     if skip_report_exit:
         return True

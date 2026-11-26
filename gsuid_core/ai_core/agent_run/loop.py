@@ -669,7 +669,7 @@ def _build_speech_context(host: RunOnceHost, st: RunOnceState, *, hard: int) -> 
     )
     return SpeechContext(
         policy=normalize_speech_policy(st.speech_policy),
-        pending_async=st.pending_async_delivery,
+        pending_async=st.blocks_user_speech,
         image_sent=st.image_sent_this_run,
         has_status_tool=st.has_status_tool_call,
         tool_calls_so_far=st.tool_call_list,

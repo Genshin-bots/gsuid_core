@@ -19,8 +19,14 @@ def ai_tools(
     aliases: Optional[List[str]] = None,
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 60.0,
+    background: bool = False,
+    background_grace: float = 5.0,
     approval: Optional[str] = None,
+    brief: str = "",
     code_callable: bool = True,
+    track_health: bool = True,
+    raw_passthrough: bool = False,
+    hide_from_main: Optional[bool] = None,
     **check_kwargs,
 ) -> Callable[[F], F]: ...
 ```
@@ -36,12 +42,19 @@ def ai_tools(
 | `covers` | `List[str]` | `None` | **数据/能力覆盖面**（2026-08）。如 `["A股/港股/美股/指数/期货/现货贵金属/外汇的报价与K线"]`。拼进向量检索文本（`ToolBase.retrieval_text`），是跨措辞召回的关键面；能力节点 roster 的「数据覆盖」行也由本字段聚合。插件工具应如实声明能解析什么标的/数据域/时效 |
 | `aliases` | `List[str]` | `None` | **领域内同义表述**（2026-08）。**必须带领域前缀**，如 `["原神·深渊阵容查询"]`；禁止裸写通用词（`"深渊查询"`），否则与同名能力的其它插件撞车。撞车时由语境标签 + 语义路由裁决 |
 | `visible_when` | `Callable` | `None` | 可见性谓词：每 step 求值，返回 False 时该工具 schema 不下发给模型（源头减噪）。必须是廉价内存判定 |
-| `timeout` | `float` | `60.0` | 工具单次执行超时秒数；超时返回错误字符串，Agent 可继续。需长时间等待的工具应显式声明更大值或 `None`（如 `ask_user` 用 `None`；`web_search_tool` / `web_fetch_tool` 用 `100` 覆盖多源 failover；`run_command` 用 `600`） |
-| `approval` | `str` | `None` | **强制审批级别**（`"user"` / `"master"`）。声明后每次调用先过统一审批中心策略门：无有效放行时自动提交审批并拦截，批准后重新调用即执行——不依赖 LLM 自觉。`"user"` 级可被「完全访问」豁免（照常留审计记录）；`"master"` 级永不可豁免。详见 [§7.10 审批与授权](./07-builtin-tools.md#710-审批与授权统一审批中心) |
-| `code_callable` | `bool` | `True` | 为 True 时，本轮 schema 里已经有的该工具可被 `run_code` 里的 Python `await`。默认打开，插件只读工具不必声明。发消息、写入、委派必须显式 `False`。打开后多次调用仍走原工具的超时、审批和权限 |
+| `timeout` | `float \| None` | `60.0` | 工具单次执行超时秒数；超时返回错误字符串，Agent 可继续。需长时间等待的工具应显式声明更大值或 `None`（如 `ask_user` 用 `None`；`web_search_tool` / `web_fetch_tool` 用 `100` 覆盖多源 failover；`run_command` 用 `600`） |
+| `background` | `bool` | `False` | 长耗时工具是否支持「短宽限同步 → 超限转后台执行 → 完成后回灌主会话」。开启后自动将 `code_callable` 置为 `False`；需配合足够大的 `timeout`（如 `600.0` / `1800.0`） |
+| `background_grace` | `float` | `5.0` | `background=True` 时的同步等待宽限秒数。宽限内完成（如参数校验、凭据失效或任务已完成）直接同步返回；超出宽限后不取消协程，转后台跑并立即释放主会话锁 |
+| `approval` | `str` | `None` | **强制审批级别**（`"user"` / `"master"`）。声明后每次调用先过统一审批中心策略门：无有效放行时自动提交审批并拦截，批准后重新调用即执行——不依赖 LLM 自觉。`"user"` 级可被「完全访问」豁免（照常留审计记录）；`"master"` 级永不可豁免。与 `background=True` 组合时，批准后仍走完整的超时/后台执行与回灌链。详见 [§7.10 审批与授权](./07-builtin-tools.md#710-审批与授权统一审批中心) |
+| `code_callable` | `bool` | `True` | 为 True 时，本轮 schema 里已经有的该工具可被 `run_code` 里的 Python `await`。默认打开，插件只读工具不必声明。发消息、写入、委派必须显式 `False`（`background=True` 时框架自动置为 `False`）。打开后多次调用仍走原工具的超时、审批和权限 |
 | `**check_kwargs` | `Any` | — | 额外传递给 `check_func` 的参数 |
 
-> **超时语义**：外层用 `asyncio.create_task` + `wait_for` 包装。工具内部（如 aiohttp）抛出的 `TimeoutError` 会记为「内部超时」，不会误报成「包装超时超过 N 秒」。
+> **超时语义**：外层用 `asyncio.create_task` + `wait_for` 包装。工具内部（如 aiohttp / httpx）抛出的 `TimeoutError`（含 `background=True` 宽限期内）会记为「内部超时」并计入健康度，不会误报成「包装超时超过 N 秒」。
+>
+> **后台执行语义（`background=True`）**：
+> - **仅在具备存活 WS 推送通道的交互式主会话转后台**；HTTP 同步入口、评测端点（`TEST` / `return_mode="return"`）、`mcp_server` 与子代理均保持同步等待至 `timeout`。
+> - 按 `(tool_name, session_id, user_id, args_hash)` 去重防连点，不同参数或跨群/私聊调用互不吞噬。
+> - 后台完成后的媒体返回值（`bytes` / `Image.Image` / `Message` / `ToolReturn`）只登记 RM 资源 ID、不提前 `bot.send()`，交由主会话回灌统一发图与播报，避免重复发图。
 
 ### 2.2.1 检索面：`retrieval_text` = name + docstring + covers + aliases
 

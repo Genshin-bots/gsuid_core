@@ -391,6 +391,18 @@ async def close_monty_pool_on_shutdown() -> None:
     await close_monty_pool()
 
 
+@on_core_shutdown(priority=-10)
+async def cancel_background_tools_on_shutdown() -> None:
+    """框架关闭时先于会话落盘取消在途后台长耗时工具，避免关机挂起或孤儿协程。"""
+    import sys
+
+    if "gsuid_core.ai_core.background_tools" not in sys.modules:
+        return
+    from gsuid_core.ai_core.background_tools import shutdown_background_tools
+
+    await shutdown_background_tools()
+
+
 @on_core_shutdown
 async def flush_ai_sessions_on_shutdown() -> None:
     """框架关闭时，强制把所有活跃 AI 会话的日志落盘。

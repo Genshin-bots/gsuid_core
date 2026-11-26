@@ -21,7 +21,13 @@ from gsuid_core.ai_core import output_gate
 from gsuid_core.ai_core.control import angle_guard as angle_bracket_guard
 from gsuid_core.ai_core.delivery import send_chat_result
 from gsuid_core.ai_core.thinking import _split_embedded_thinking
-from gsuid_core.ai_core.control.lines import TOOL_FAIL_FUSE_NUDGE
+from gsuid_core.ai_core.control.lines import (
+    TOOL_FAIL_FUSE_NUDGE,
+    PENDING_BACKGROUND_TOOL_HOLD,
+    BACKGROUND_TOOL_PENDING_PREFIX,
+    PENDING_BACKGROUND_TOOL_OPENING,
+    PENDING_BACKGROUND_TOOL_MIXED_NOTE,
+)
 from gsuid_core.ai_core.protocol_text import is_silence_marker, remainder_after_protocol_tags
 from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.utils.resource_manager import RM
@@ -95,6 +101,11 @@ _CAPABILITY_DELIVERY_TOOLS: frozenset[str] = frozenset(
 )
 
 
+def _is_background_tool_pending(content: object) -> bool:
+    """长耗时工具超宽限转后台后的非终态回执判定（与 check_delegation 进度汇报隔离）。"""
+    return isinstance(content, str) and content.lstrip().startswith(BACKGROUND_TOOL_PENDING_PREFIX)
+
+
 @dataclass(frozen=True)
 class ToolReturnSummary:
     """单次 ModelRequest 中所有 ToolReturnPart 处理完后的汇总信号。"""
@@ -147,9 +158,11 @@ class DeliveryGuard:
         if "image_sent_this_run" not in extra or extra["image_sent_this_run"] is not True:
             return
         st.image_sent_this_run = True
-        st.pending_async_delivery = False
-        if st.speech_policy == "silence_only":
-            st.speech_policy = "framework_deliver" if st.fw_msg else "free"
+        # 发图仅清偿出图委派；同轮仍有后台工具在跑时必须保持在途状态
+        if not st.pending_background_tool:
+            st.pending_async_delivery = False
+            if st.speech_policy == "silence_only":
+                st.speech_policy = "framework_deliver" if st.fw_msg else "free"
 
     @staticmethod
     def apply_create_subagent_return(st: RunOnceState, part: ToolReturnPart, body: str) -> None:
@@ -173,6 +186,7 @@ class DeliveryGuard:
         st.speech_policy = policy
         st.render_ack_seen = ack
         if async_ack:
+            st.pending_background_with_sibling = False
             _require_context(st).extra[_DELEGATION_INFLIGHT_KEY] = True
         if (
             not _tool_return_looks_failed(part)
@@ -182,6 +196,17 @@ class DeliveryGuard:
             and content_is_render_candidate(tool_name="create_subagent", content=body, fileos_folded=False)
         ):
             st.saw_structured_return = True
+
+    @staticmethod
+    def apply_background_tool_return(st: RunOnceState, *, has_actionable_sibling: bool = False) -> None:
+        """长耗时工具转后台后的状态转移：记录在途标记；无同轮可交付工具时锁静默策略。"""
+        st.pending_background_tool = True
+        st.pending_async_delivery = True
+        if has_actionable_sibling and st.speech_policy != "silence_only":
+            st.pending_background_with_sibling = True
+        else:
+            st.pending_background_with_sibling = False
+            st.speech_policy = "silence_only"
 
     @staticmethod
     def absorb_opening_line(
@@ -195,7 +220,7 @@ class DeliveryGuard:
         if result is None:
             return ""
         if not result.text:
-            if result.source == "create_subagent":
+            if result.source in ("create_subagent", "background_tool"):
                 st.opening_missed = True
             return ""
         restored = ""
@@ -527,6 +552,12 @@ class ToolCircuitBreaker:
         tripped_fail_streak = 0
         tripped_tools: list[str] = []
         batch_failed_tools: set[str] = set()
+        has_non_pending_return = any(
+            isinstance(p, ToolReturnPart)
+            and not _tool_return_is_async_pending(p)
+            and not _is_background_tool_pending(p.content)
+            for p in request.parts
+        )
 
         for part in request.parts:
             if not isinstance(part, ToolReturnPart):
@@ -537,7 +568,9 @@ class ToolCircuitBreaker:
                 if part.tool_call_id and part.tool_call_id in st.effective_tool_names
                 else (part.tool_name or "")
             )
-            if eff_name == "create_subagent" and _tool_return_is_async_pending(part):
+            if (eff_name == "create_subagent" and _tool_return_is_async_pending(part)) or _is_background_tool_pending(
+                part.content
+            ):
                 st.pending_async_delivery = True
             elif not _tool_return_is_async_pending(part):
                 if tool_return_is_hard_error(part):
@@ -673,8 +706,11 @@ class ToolCircuitBreaker:
                         part.content = _summarize_structured_data(part.content) + fold_suffix
                     elif content_is_render_candidate(tool_name=eff_name, content=part.content, fileos_folded=False):
                         st.saw_structured_return = True
+                    raw_bg_body = raw_tr if raw_tr is not None else part.content
                     if eff_name == "create_subagent":
                         DeliveryGuard.apply_create_subagent_return(st, part, part.content)
+                    elif _is_background_tool_pending(raw_bg_body):
+                        DeliveryGuard.apply_background_tool_return(st, has_actionable_sibling=has_non_pending_return)
                     if eff_name == "send_message_by_ai":
                         DeliveryGuard.apply_send_message_return(st)
             elif type(part) is ToolReturnPart and eff_name == "create_subagent":
@@ -682,6 +718,10 @@ class ToolCircuitBreaker:
                     raw_tr if isinstance(raw_tr, str) else (part.content if isinstance(part.content, str) else "")
                 )
                 DeliveryGuard.apply_create_subagent_return(st, part, body_raw)
+            elif type(part) is ToolReturnPart and _is_background_tool_pending(
+                raw_tr if raw_tr is not None else part.content
+            ):
+                DeliveryGuard.apply_background_tool_return(st, has_actionable_sibling=has_non_pending_return)
             elif type(part) is ToolReturnPart and eff_name == "send_message_by_ai":
                 DeliveryGuard.apply_send_message_return(st)
 
@@ -757,22 +797,37 @@ class ToolCircuitBreaker:
             for part in request.parts:
                 if type(part) is not ToolReturnPart:
                     continue
-                if _tool_return_is_async_pending(part):
+                if _tool_return_is_async_pending(part) or _is_background_tool_pending(part.content):
                     continue
                 any_actionable = True
                 if _tool_return_looks_failed(part):
                     any_fail = True
             if st.pending_async_delivery:
-                any_actionable = False
-                hold = _PENDING_DELEGATION_HOLD
-                if st.opening_missed and st.main_channel_sends == 0 and not st.wait_comfort_sent:
-                    hold = _PENDING_DELEGATION_OPENING
-                if not any(
-                    isinstance(p, UserPromptPart)
-                    and p.content in (_PENDING_DELEGATION_HOLD, _PENDING_DELEGATION_OPENING)
-                    for p in request.parts
-                ):
-                    request.parts = [*request.parts, UserPromptPart(content=hold)]
+                extra = _require_context(st).extra
+                has_delegation_pending = st.delegated_render or (
+                    _DELEGATION_INFLIGHT_KEY in extra and extra[_DELEGATION_INFLIGHT_KEY] is True
+                )
+                if st.pending_background_tool and not has_delegation_pending and any_actionable:
+                    if not any(
+                        isinstance(p, UserPromptPart) and p.content == PENDING_BACKGROUND_TOOL_MIXED_NOTE
+                        for p in request.parts
+                    ):
+                        request.parts = [*request.parts, UserPromptPart(content=PENDING_BACKGROUND_TOOL_MIXED_NOTE)]
+                else:
+                    any_actionable = False
+                    use_bg_hold = st.pending_background_tool and not has_delegation_pending
+                    if st.opening_missed and st.main_channel_sends == 0 and not st.wait_comfort_sent:
+                        hold = PENDING_BACKGROUND_TOOL_OPENING if use_bg_hold else _PENDING_DELEGATION_OPENING
+                    else:
+                        hold = PENDING_BACKGROUND_TOOL_HOLD if use_bg_hold else _PENDING_DELEGATION_HOLD
+                    hold_markers = (
+                        _PENDING_DELEGATION_HOLD,
+                        _PENDING_DELEGATION_OPENING,
+                        PENDING_BACKGROUND_TOOL_HOLD,
+                        PENDING_BACKGROUND_TOOL_OPENING,
+                    )
+                    if not any(isinstance(p, UserPromptPart) and p.content in hold_markers for p in request.parts):
+                        request.parts = [*request.parts, UserPromptPart(content=hold)]
             if any_actionable:
                 ok_c, fail_c = _post_tool_contracts_for(
                     create_by,

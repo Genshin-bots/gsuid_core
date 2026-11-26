@@ -1031,7 +1031,7 @@ def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool) -> bo
 def _voice_block_reason(st: RunOnceState, result_msg: str) -> str:
     if st.main_channel_sends > 0 or st.image_sent_this_run:
         return ""
-    if st.pending_async_delivery or st.delegated_render:
+    if st.blocks_user_speech or st.delegated_render:
         return ""
     if "numeric_recitation" in st.presentation_withheld_reasons:
         return ""
@@ -1349,7 +1349,7 @@ _SETTLE_PRE_RING: tuple[_SettlePreRule, ...] = (
         lambda ctx: (
             not ctx.non_silence_msg
             and not ctx.host.sent_texts
-            and not ctx.st.pending_async_delivery
+            and not ctx.st.blocks_user_speech
             and ctx.non_capability_interactive
             and ctx.st.tg is not None
             and ctx.st.tg.call_to_self
@@ -1415,7 +1415,7 @@ _SETTLE_PRE_RING: tuple[_SettlePreRule, ...] = (
         lambda ctx: (
             ctx.render_obligation
             and not ctx.st.delegated_render
-            and not ctx.st.pending_async_delivery
+            and not ctx.st.blocks_user_speech
             and not ctx.st.image_sent_this_run
             and not bool(_RENDER_TOOL_NAMES & set(ctx.st.tool_call_list))
             and ctx.non_capability_interactive
@@ -1479,7 +1479,7 @@ async def run_settle_policy_ring(host: SettleRingHost, inp: SettleRingInput) -> 
     if rs not in host.sent_texts:
         exit_ctx = SpeechContext(
             policy="free",
-            pending_async=st.pending_async_delivery,
+            pending_async=st.blocks_user_speech,
             image_sent=st.image_sent_this_run,
             has_status_tool=st.has_status_tool_call,
             tool_calls_so_far=st.tool_call_list,

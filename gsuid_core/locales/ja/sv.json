@@ -1,4 +1,5 @@
 {
+  "log.sv.ai_opts_ignored_without_to_ai": "トリガー【{keyword}】には to_ai が未設定のため、timeout/background（AI ツール専用）は無視されました。",
   "log.sv.error_occurred_executing": "[SV] {p0} の実行中にエラーが発生しました！",
   "log.sv.name_module_initializing": "【{name}】モジュールを初期化しています...",
   "log.sv.type_trigger_k_load": "{type} トリガー【{_k}】を読み込みました！",

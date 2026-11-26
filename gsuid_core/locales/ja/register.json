@@ -11,6 +11,10 @@
   "log.register.plugin_name_privileged_category": "[Register] {plugin_name} ツール [{p0}] 特権分類 [{reg_category}] → common",
   "log.register.reg_category": "[Register] +{p0} ({reg_category})",
   "log.register.timeout_sec_aborted": "[Register] ツール [{p0}] の実行がタイムアウトしました（>{timeout_sec} 秒）。中断しました",
+  "log.register.tool_bg_delivery_fallback": "[Register] バックグラウンドツール [{p0}] の配信フォールバック（{reason}）",
+  "log.register.tool_bg_failed": "[Register] バックグラウンドツール [{p0}] の実行または配信に失敗しました: {e}",
+  "log.register.tool_bg_shutdown_cancelled": "[Register] 終了クリーンアップ: 実行中のバックグラウンドツール {count} 件をキャンセルしました",
+  "log.register.tool_detached_background": "[Register] ツール [{p0}] が {grace} 秒を超過したためバックグラウンド実行へ移行し、メインセッションを解放しました",
   "log.register.tool_inner_timeout": "[Register] ツール [{p0}] 内部タイムアウト/失敗（ラッパー超時ではない）: {e}",
   "log.register.unregistered_tool": "ツール {name} をレジストリから削除しました"
 }

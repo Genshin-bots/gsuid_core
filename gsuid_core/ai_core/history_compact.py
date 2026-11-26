@@ -561,6 +561,17 @@ def lean_delivery_frame(full: str) -> str:
         return ""
     ordinal = "?"
     m_ord = re.search(r"任务#(\d+)", s)
+    if m_ord is None and "【后台操作完成】" in s:
+        bg_line = ""
+        for line in s.splitlines():
+            trimmed = line.strip()
+            if trimmed.startswith("【后台操作完成】"):
+                bg_line = trimmed[:80]
+                break
+        bg_handles = re.findall(r"(?:res|img|aud|vid|fil)_[0-9a-fA-F]{3,}", s)
+        handle_tail = f"，句柄 {bg_handles[0]}" if bg_handles else ""
+        head = (bg_line or "后台操作已完成").rstrip("。")
+        return f"[框架·任务完成] {head}{handle_tail}"
     if m_ord is not None:
         ordinal = m_ord.group(1)
     handles = re.findall(r"res_[0-9a-fA-F]{3,}", s)

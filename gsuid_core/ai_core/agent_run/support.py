@@ -69,9 +69,11 @@ def absorb_run_image_delivered(st: RunOnceState) -> None:
     if not take_run_image_delivered():
         return
     st.image_sent_this_run = True
-    st.pending_async_delivery = False
-    if st.speech_policy == "silence_only":
-        st.speech_policy = "framework_deliver" if st.fw_msg else "free"
+    # 发图仅清偿出图委派；同轮仍有后台工具在跑时保持在途状态
+    if not st.pending_background_tool:
+        st.pending_async_delivery = False
+        if st.speech_policy == "silence_only":
+            st.speech_policy = "framework_deliver" if st.fw_msg else "free"
 
 
 def _tool_return_is_effectual_write(name: str, content: str, *, failed: bool) -> bool:

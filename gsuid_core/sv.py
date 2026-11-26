@@ -363,6 +363,9 @@ class SV:
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
         aside: bool | None = None,
+        timeout: float | None = 60.0,
+        background: bool = False,
+        background_grace: float = 5.0,
     ):
         def deco(func: Callable) -> Callable:
             if isinstance(keyword, str):
@@ -419,7 +422,7 @@ class SV:
                     # 触发器集合变了，候选索引下次访问时据此重建
                     bump_registry_version()
 
-            # 声明 to_ai 时注册为 AI 工具；懒加载 + enable 网关，避免 sv 在 AI 关闭时拉入 pydantic_ai
+            # 声明 to_ai 时注册为 AI 工具；timeout/background 仅对 AI 工具生效
             if to_ai.strip():
                 from gsuid_core.ai_core.configs.ai_config import ai_config
 
@@ -436,7 +439,12 @@ class SV:
                         trigger_type=type,
                         covers=covers,
                         aliases=aliases,
+                        timeout=timeout,
+                        background=background,
+                        background_grace=background_grace,
                     )
+            elif background or timeout != 60.0 or background_grace != 5.0:
+                logger.warning(t("log.sv.ai_opts_ignored_without_to_ai", keyword=keyword))
 
             @wraps(func)
             async def wrapper(bot: Bot, msg) -> Optional[Callable]:
@@ -457,9 +465,23 @@ class SV:
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
         aside: bool | None = None,
+        timeout: float | None = 60.0,
+        background: bool = False,
+        background_grace: float = 5.0,
     ) -> Callable:
         return self._on(
-            "fullmatch", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+            "fullmatch",
+            keyword,
+            block,
+            to_me,
+            prefix,
+            to_ai=to_ai,
+            covers=covers,
+            aliases=aliases,
+            aside=aside,
+            timeout=timeout,
+            background=background,
+            background_grace=background_grace,
         )
 
     def on_prefix(
@@ -472,9 +494,23 @@ class SV:
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
         aside: bool | None = None,
+        timeout: float | None = 60.0,
+        background: bool = False,
+        background_grace: float = 5.0,
     ) -> Callable:
         return self._on(
-            "prefix", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+            "prefix",
+            keyword,
+            block,
+            to_me,
+            prefix,
+            to_ai=to_ai,
+            covers=covers,
+            aliases=aliases,
+            aside=aside,
+            timeout=timeout,
+            background=background,
+            background_grace=background_grace,
         )
 
     def on_suffix(
@@ -487,9 +523,23 @@ class SV:
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
         aside: bool | None = None,
+        timeout: float | None = 60.0,
+        background: bool = False,
+        background_grace: float = 5.0,
     ) -> Callable:
         return self._on(
-            "suffix", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+            "suffix",
+            keyword,
+            block,
+            to_me,
+            prefix,
+            to_ai=to_ai,
+            covers=covers,
+            aliases=aliases,
+            aside=aside,
+            timeout=timeout,
+            background=background,
+            background_grace=background_grace,
         )
 
     def on_keyword(
@@ -502,9 +552,23 @@ class SV:
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
         aside: bool | None = None,
+        timeout: float | None = 60.0,
+        background: bool = False,
+        background_grace: float = 5.0,
     ) -> Callable:
         return self._on(
-            "keyword", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+            "keyword",
+            keyword,
+            block,
+            to_me,
+            prefix,
+            to_ai=to_ai,
+            covers=covers,
+            aliases=aliases,
+            aside=aside,
+            timeout=timeout,
+            background=background,
+            background_grace=background_grace,
         )
 
     def on_command(
@@ -517,9 +581,23 @@ class SV:
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
         aside: bool | None = None,
+        timeout: float | None = 60.0,
+        background: bool = False,
+        background_grace: float = 5.0,
     ) -> Callable:
         return self._on(
-            "command", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+            "command",
+            keyword,
+            block,
+            to_me,
+            prefix,
+            to_ai=to_ai,
+            covers=covers,
+            aliases=aliases,
+            aside=aside,
+            timeout=timeout,
+            background=background,
+            background_grace=background_grace,
         )
 
     def on_file(
@@ -532,9 +610,23 @@ class SV:
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
         aside: bool | None = None,
+        timeout: float | None = 60.0,
+        background: bool = False,
+        background_grace: float = 5.0,
     ) -> Callable:
         return self._on(
-            "file", file_type, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+            "file",
+            file_type,
+            block,
+            to_me,
+            prefix,
+            to_ai=to_ai,
+            covers=covers,
+            aliases=aliases,
+            aside=aside,
+            timeout=timeout,
+            background=background,
+            background_grace=background_grace,
         )
 
     def on_regex(
@@ -547,9 +639,23 @@ class SV:
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
         aside: bool | None = None,
+        timeout: float | None = 60.0,
+        background: bool = False,
+        background_grace: float = 5.0,
     ) -> Callable:
         return self._on(
-            "regex", keyword, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+            "regex",
+            keyword,
+            block,
+            to_me,
+            prefix,
+            to_ai=to_ai,
+            covers=covers,
+            aliases=aliases,
+            aside=aside,
+            timeout=timeout,
+            background=background,
+            background_grace=background_grace,
         )
 
     def on_message(
@@ -562,11 +668,25 @@ class SV:
         covers: list[str] | None = None,
         aliases: list[str] | None = None,
         aside: bool | None = None,
+        timeout: float | None = 60.0,
+        background: bool = False,
+        background_grace: float = 5.0,
     ) -> Callable:
         if unique_id is None:
             unique_id = str(uuid.uuid4())
         return self._on(
-            "message", unique_id, block, to_me, prefix, to_ai=to_ai, covers=covers, aliases=aliases, aside=aside
+            "message",
+            unique_id,
+            block,
+            to_me,
+            prefix,
+            to_ai=to_ai,
+            covers=covers,
+            aliases=aliases,
+            aside=aside,
+            timeout=timeout,
+            background=background,
+            background_grace=background_grace,
         )
 
     def on_meta(
