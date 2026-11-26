@@ -10,10 +10,12 @@ import json
 from typing import Dict, List, Tuple, Union, Literal, Optional, Sequence
 
 from pydantic_ai.messages import (
+    ImageUrl,
     UserContent,
     ModelMessage,
     ModelRequest,
     ToolCallPart,
+    BinaryContent,
     ToolReturnPart,
     UserPromptPart,
 )
@@ -655,6 +657,61 @@ def wall_clock_budget_action(
 
 
 _STALE_TOOL_FOLD_MARK = "…[前轮长输出已折叠"
+_STALE_IMAGE_PRUNE_MARK = "[前轮图片已省略]"
+
+
+def _is_inline_image_item(item: object) -> bool:
+    if isinstance(item, ImageUrl):
+        return True
+    return isinstance(item, BinaryContent) and str(item.media_type or "").startswith("image/")
+
+
+def prune_stale_capability_images(
+    messages: Sequence[ModelMessage],
+    *,
+    max_groups: int = 3,
+    keep_first: int = 1,
+    keep_recent: int = 1,
+) -> int:
+    """能力代理视觉长跑护栏：历史内联图按注入分组超 ``max_groups`` 组时成批剪枝。
+
+    同一 ``UserPromptPart`` 的图片属同一组（read_image 动图合帧/大图切片一次注入多张），
+    整组保留或整组剪除；保最初 ``keep_first`` 组（初始任务参考图）与最近 ``keep_recent``
+    组，中间组图片移除并在首图位置留单条省略标记。与 ``fold_stale_capability_tool_returns``
+    同采用高水位成批剪枝，避免每轮改写前缀破坏 KV 缓存。
+    """
+    keep_first = max(0, keep_first)
+    keep_recent = max(0, keep_recent)
+    max_groups = max(keep_first + keep_recent, max_groups)
+    image_parts: list[UserPromptPart] = []
+    for msg in messages:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if not isinstance(part, UserPromptPart) or isinstance(part.content, str):
+                continue
+            if any(_is_inline_image_item(item) for item in part.content):
+                image_parts.append(part)
+    if len(image_parts) <= max_groups:
+        return 0
+    tail_parts = image_parts[-keep_recent:] if keep_recent > 0 else []
+    protected_ids = {id(p) for p in image_parts[:keep_first] + tail_parts}
+    pruned = 0
+    for part in image_parts:
+        if id(part) in protected_ids or isinstance(part.content, str):
+            continue
+        new_items: list[UserContent] = []
+        marked = False
+        for item in part.content:
+            if _is_inline_image_item(item):
+                if not marked:
+                    new_items.append(_STALE_IMAGE_PRUNE_MARK)
+                    marked = True
+                pruned += 1
+            else:
+                new_items.append(item)
+        part.content = new_items
+    return pruned
 
 
 def fold_stale_capability_tool_returns(

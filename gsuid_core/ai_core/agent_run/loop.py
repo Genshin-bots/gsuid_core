@@ -56,6 +56,7 @@ from gsuid_core.ai_core.agent_run.support import (
     turn_reply_metadata,
     wall_clock_budget_action,
     absorb_run_image_delivered,
+    prune_stale_capability_images,
     fold_stale_capability_tool_returns,
 )
 from gsuid_core.ai_core.agent_run.opening_line import (
@@ -109,9 +110,11 @@ class LoopPhase:
 
         _inject_iter_wrap_if_due(self, st, node)
         _enforce_wall_clock_budget(self, st, node)
-        # §1.7 显式豁免：仅 CapabilityAgent 单次长跑、且旧段可折叠总量超 120k 才成批折叠
+        # §1.7 显式豁免：仅 CapabilityAgent 单次长跑、且旧段可折叠总量超 120k 才成批折叠；
+        # 连续视觉截图同理，内联图按注入分组超 3 组时整组成批剪枝，保最初 1 组与最近 1 组。
         if self.create_by == "CapabilityAgent":
             fold_stale_capability_tool_returns(agent_run.ctx.state.message_history)
+            prune_stale_capability_images(agent_run.ctx.state.message_history)
         DeliveryGuard.track_post_final_request(st)
 
         from gsuid_core.ai_core.mcp.pii import apply_context_mask

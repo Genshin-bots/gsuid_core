@@ -18,10 +18,12 @@ from pydantic import BaseModel
 from pydantic_ai import ToolReturn
 from pydantic_ai.tools import Tool
 from pydantic_ai.messages import (
+    ImageUrl,
     TextPart,
     ModelMessage,
     ModelRequest,
     ToolCallPart,
+    BinaryContent,
     ModelResponse,
     ToolReturnPart,
     UserPromptPart,
@@ -2109,8 +2111,10 @@ def test_kanban_wall_clock_routing_artifact_priority_and_stale_guard(
     """墙钟门控、折叠阈值、弱匹配防 URL/跨节点误触、产物超限最新优先与过期群聊回灌拦截。"""
     from gsuid_core.ai_core.agent_node import TASK_BASICS_PACK, AgentNode, registry as node_reg
     from gsuid_core.ai_core.agent_run.support import (
+        _STALE_IMAGE_PRUNE_MARK,
         request_limit_for,
         wall_clock_budget_action,
+        prune_stale_capability_images,
         fold_stale_capability_tool_returns,
     )
     from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -2178,6 +2182,68 @@ def test_kanban_wall_clock_routing_artifact_priority_and_stale_guard(
     assert fold_stale_capability_tool_returns(tail_heavy, keep_tail=4, trigger_chars=5000, item_cap=1200) == 0
     head_untouched = tail_heavy[0].parts[0]
     assert isinstance(head_untouched, ToolReturnPart) and head_untouched.content == big_old
+
+    # 能力代理视觉剪枝：按注入分组计水位，保最初+最近各 1 组，中间整组剪除且每组只留单条标记
+    def _img_req(*urls: str) -> ModelRequest:
+        items = [ImageUrl(url=f"data:image/png;base64,{u}") for u in urls]
+        return ModelRequest(parts=[UserPromptPart(content=items)])
+
+    img_hist = [
+        _img_req("first"),
+        ModelRequest(
+            parts=[
+                UserPromptPart(
+                    content=[
+                        ImageUrl(url="data:image/png;base64,multiA"),
+                        "说明文本",
+                        BinaryContent(data=b"abc", media_type="image/png"),
+                    ]
+                )
+            ]
+        ),
+        _img_req("mid1"),
+        _img_req("mid2"),
+        ModelRequest(
+            parts=[
+                UserPromptPart(
+                    content=[
+                        "末尾文本",
+                        BinaryContent(data=b"def", media_type="image/png"),
+                        BinaryContent(data=b"pdf", media_type="application/pdf"),
+                    ]
+                )
+            ]
+        ),
+    ]
+    assert prune_stale_capability_images(img_hist[:3], max_groups=3, keep_first=1, keep_recent=1) == 0
+    assert prune_stale_capability_images(img_hist, max_groups=3, keep_first=1, keep_recent=1) == 4
+    assert prune_stale_capability_images(img_hist, max_groups=3, keep_first=1, keep_recent=1) == 0
+    first_img_part = img_hist[0].parts[0]
+    assert isinstance(first_img_part, UserPromptPart) and isinstance(first_img_part.content, list)
+    assert isinstance(first_img_part.content[0], ImageUrl) and first_img_part.content[0].url.endswith("first")
+    victim_multi = img_hist[1].parts[0]
+    assert isinstance(victim_multi, UserPromptPart)
+    assert victim_multi.content == [_STALE_IMAGE_PRUNE_MARK, "说明文本"]
+    for victim_msg in (img_hist[2], img_hist[3]):
+        victim_part = victim_msg.parts[0]
+        assert isinstance(victim_part, UserPromptPart)
+        assert victim_part.content == [_STALE_IMAGE_PRUNE_MARK]
+    last_img_part = img_hist[-1].parts[0]
+    assert isinstance(last_img_part, UserPromptPart) and isinstance(last_img_part.content, list)
+    assert last_img_part.content[0] == "末尾文本"
+    assert isinstance(last_img_part.content[1], BinaryContent) and last_img_part.content[1].media_type == "image/png"
+    assert (
+        isinstance(last_img_part.content[2], BinaryContent) and last_img_part.content[2].media_type == "application/pdf"
+    )
+
+    solo = [_img_req("solo") for _ in range(4)]
+    assert prune_stale_capability_images(solo, max_groups=3, keep_first=0, keep_recent=1) == 3
+    solo_first = solo[0].parts[0]
+    assert isinstance(solo_first, UserPromptPart) and solo_first.content == [_STALE_IMAGE_PRUNE_MARK]
+    no_tail = [_img_req("nt") for _ in range(4)]
+    assert prune_stale_capability_images(no_tail, max_groups=3, keep_first=1, keep_recent=0) == 3
+    no_tail_last = no_tail[-1].parts[0]
+    assert isinstance(no_tail_last, UserPromptPart) and no_tail_last.content == [_STALE_IMAGE_PRUNE_MARK]
 
     fake_nodes = {
         "alpha_agent": AgentNode(
