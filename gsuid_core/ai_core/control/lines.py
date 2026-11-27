@@ -465,13 +465,21 @@ MEMORY_TIMELINE_ORDER_NOTE = (
     "（以下记忆片段已按真实发生时间从早到晚严格升序排列；回答事件先后顺序时直接依据序号与时间戳，不要按重要性重排。）"
 )
 MEMORY_CONFLICT_NOTE = (
-    "（标记 [存在未消解矛盾] 的两条记录来自不同时间或不同发言者，尚未确认哪一条仍成立，请结合时间如实说明。）"
+    "（标记 [存在未消解矛盾/已被否认] 的成对记录来自不同时间或不同发言者，"
+    "尚未确认哪一条仍成立，请结合双方说法如实说明。）"
 )
-MEMORY_STAGING_NOTE = "（标记 [待证实传闻] 的边仅作线索参考，不可当作既成事实断言。）"
+MEMORY_STAGING_NOTE = "（标记 [群友传闻·本人未证实] 的边仅作转述线索参考，不可当作既成事实断言。）"
 MEMORY_SPEAKER_ISOLATION_NOTE = (
     "（注意主体隔离：未绑定到具体群成员的自我/全局记录仅代表你自己的过往认知或发言，"
     "严禁将其归为群内任何当前说话人的特征或昵称；涉及他人事实必须核对明确的用户账号。）"
 )
+ANCHOR_LORE_HEADER = "[人物档案锚点]"
+MEMORY_RUMOR_UNCONFIRMED_TAG = "[群友传闻·本人未证实] "
+MEMORY_RUMOR_DENIED_TAG = "⚠️[存在未消解矛盾/已被否认] "
+MEMORY_RETRACTED_EDGE_TAG = "[已撤回/取消] "
+MEMORY_SUPERSEDED_EDGE_TAG = "[已于后续更新] "
+MEMORY_RETRACTED_EPISODE_PREFIX = "[注：此条所述后续已撤回/变更] "
+MEMORY_UPDATED_EPISODE_PREFIX = "[注：此条所述后续已更新] "
 SYSTEM_ECHO_PREFIXES: tuple[str, ...] = ("⛔", "（系统：", "（系统提示：", "（系统校验：")
 
 

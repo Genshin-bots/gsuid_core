@@ -247,7 +247,7 @@ async def _apply_intent_edges(
         filtered = [
             e
             for e in ranked_edges
-            if ("resolution_state" not in e or e["resolution_state"] in ("active", "contradicted"))
+            if ("resolution_state" not in e or e["resolution_state"] in ("active", "contradicted", "staging"))
         ]
         blocking: set[tuple[str, str]] = set()
         for e in filtered:
@@ -266,7 +266,12 @@ async def _apply_intent_edges(
         ]
 
     if intent == "broad_summary":
-        return [e for e in ranked_edges if ("edge_kind" not in e or e["edge_kind"] in ("attribute", "relation"))]
+        return [
+            e
+            for e in ranked_edges
+            if ("resolution_state" not in e or e["resolution_state"] not in ("superseded", "retracted"))
+            and ("edge_kind" not in e or e["edge_kind"] in ("attribute", "relation"))
+        ]
 
     if intent == "version_diff":
         from gsuid_core.ai_core.memory.database.models import AIMemEdge
@@ -294,7 +299,7 @@ async def _apply_intent_edges(
 
         threads: list[tuple[str, str]] = []
         for sk in scope_keys:
-            for th in await AIMemThread.list_active(sk, limit=20):
+            for th in await AIMemThread.list_by_scope(sk, limit=40):
                 threads.append((sk, th.id))
         extra_edges: list[Edge] = []
         milestone_names: dict[str, str] = {}
@@ -466,6 +471,32 @@ async def _fetch_temporal_episodes(
     return merged
 
 
+async def _prefetch_episode_vectors(episodes: list[Episode], *, limit: int = 120) -> None:
+    """单链接聚类前批量补齐 Qdrant 稠密向量，避免因缺向量退化为无语义均分。"""
+    if not episodes:
+        return
+    missing: list[str] = []
+    for ep in episodes[:limit]:
+        eid = ep["id"] if "id" in ep else ""
+        emb = ep["embedding"] if "embedding" in ep else []
+        if eid and not emb:
+            missing.append(eid)
+    if not missing:
+        return
+    from gsuid_core.ai_core.memory.vector.ops import retrieve_episode_dense_vectors
+
+    try:
+        vecs = await retrieve_episode_dense_vectors(missing)
+    except (OSError, RuntimeError, ValueError):
+        return
+    if not vecs:
+        return
+    for ep in episodes:
+        eid = ep["id"] if "id" in ep else ""
+        if eid and eid in vecs:
+            ep["embedding"] = vecs[eid]
+
+
 async def _select_order_stages(
     query: str,
     episodes: list[Episode],
@@ -473,7 +504,7 @@ async def _select_order_stages(
     *,
     reranker_factory: Callable[[], RerankerProvider | None] | None = None,
 ) -> list[Episode]:
-    from gsuid_core.ai_core.memory.retrieval.event_time import temporal_search_query
+    from gsuid_core.ai_core.memory.retrieval.event_time import effective_event_at, temporal_search_query
     from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
         _embedding_map,
         pack_first_mention_episodes,
@@ -499,16 +530,8 @@ async def _select_order_stages(
     topic = temporal_search_query(query) or query
     if topic and len(user) > 120:
         user = sorted(user, key=lambda e: -_topic_hit_count(topic, e["content"] or ""))[:120]
-        user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
-    missing = [e["id"] for e in user if "id" in e and not (e["embedding"] if "embedding" in e else [])]
-    if missing:
-        from gsuid_core.ai_core.memory.vector.ops import retrieve_episode_dense_vectors
-
-        vecs = await retrieve_episode_dense_vectors(missing)
-        for e in user:
-            eid = e["id"] if "id" in e else ""
-            if eid and eid in vecs:
-                e["embedding"] = vecs[eid]
+    user.sort(key=effective_event_at)
+    await _prefetch_episode_vectors(user, limit=120)
     rr = reranker_factory() if reranker_factory is not None else get_reranker()
     pool = user
     if rr is not None and topic:

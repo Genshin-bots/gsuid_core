@@ -17,7 +17,7 @@ from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
 from gsuid_core.ai_core.rag.reranker import RerankerProvider, get_reranker
 from gsuid_core.ai_core.memory.config import memory_config
 
-from .types import Entity, Episode, MemoryEventCue
+from .types import Entity, Episode, ThreadSummary, MemoryEventCue
 from .system1 import System1Result, system1_search
 from .event_time import (
     query_time_window,
@@ -49,6 +49,7 @@ from .route_helpers import (
     _load_document_coverage,
     _fetch_temporal_episodes,
     _expand_document_siblings,
+    _prefetch_episode_vectors,
 )
 
 __all__ = [
@@ -369,6 +370,96 @@ async def _gather_candidate_episodes(
                 _ = task.exception()
 
 
+async def _annotate_retracted_episodes(episodes: list[Episode]) -> None:
+    """为关联事实边已被撤回或覆盖的旧 Episode 挂载行首注记，防止复读失效说法。"""
+    from sqlmodel import col, select
+
+    from gsuid_core.ai_core.control.lines import (
+        MEMORY_UPDATED_EPISODE_PREFIX,
+        MEMORY_RETRACTED_EPISODE_PREFIX,
+    )
+    from gsuid_core.utils.database.base_models import async_maker
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge
+
+    if async_maker is None or not episodes:
+        return
+    ep_ids = list({ep["id"] for ep in episodes if "id" in ep and ep["id"]})
+    if not ep_ids:
+        return
+    async with async_maker() as session:
+        rows = (
+            await session.execute(
+                select(col(AIMemEdge.source_episode_id), col(AIMemEdge.resolution_state)).where(
+                    col(AIMemEdge.source_episode_id).in_(ep_ids)
+                )
+            )
+        ).all()
+    states_by_ep: dict[str, set[str]] = {}
+    for src_id, state in rows:
+        if isinstance(src_id, str) and isinstance(state, str):
+            states_by_ep.setdefault(src_id, set()).add(state)
+    for ep in episodes:
+        eid = ep["id"] if "id" in ep else ""
+        if not eid or eid not in states_by_ep:
+            continue
+        states = states_by_ep[eid]
+        if "active" in states:
+            continue
+        if "retracted" in states:
+            ep["retraction_note"] = MEMORY_RETRACTED_EPISODE_PREFIX
+        elif "superseded" in states:
+            ep["retraction_note"] = MEMORY_UPDATED_EPISODE_PREFIX
+
+
+async def _load_thread_summaries(
+    scope_keys: list[str],
+    *,
+    is_private: bool,
+    user_id: str,
+    query: str = "",
+) -> list[ThreadSummary]:
+    """加载故事线滚动摘要脊柱（含命中归档线，私聊严格仅放行本人参与线）。"""
+    from gsuid_core.utils.database.base_models import async_maker
+    from gsuid_core.ai_core.memory.database.models import AIMemThread
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
+
+    if async_maker is None or not scope_keys:
+        return []
+    terms = [tok.lower() for tok in query_tokens(query) if len(tok.strip()) >= 2]
+    scored: list[tuple[int, int, str, ThreadSummary]] = []
+    seen: set[str] = set()
+    uid = user_id.strip()
+    user_scope = f"user_global:{uid}" if uid else ""
+    for sk in scope_keys:
+        if sk.startswith("self:"):
+            continue
+        rows = await AIMemThread.list_by_scope(sk, limit=60)
+        for th in rows:
+            if th.id in seen:
+                continue
+            participants = th.get_participant_uids()
+            if is_private and sk != user_scope and (not uid or uid not in participants):
+                continue
+            seen.add(th.id)
+            blob = f"{th.title} {' '.join(th.aliases)} {th.summary}".lower()
+            hits = sum(1 for tok in terms if tok in blob) if terms else 0
+            last_str = th.last_at.strftime("%Y-%m-%d %H:%M") if th.last_at else ""
+            item: ThreadSummary = {
+                "id": th.id,
+                "title": th.title,
+                "summary": th.summary,
+                "status": th.status,
+                "milestone_count": th.milestone_count,
+                "last_active_at": last_str,
+                "participant_uids": participants,
+                "episode_count": th.episode_count,
+            }
+            is_live = 1 if th.status != "archived" else 0
+            scored.append((hits, is_live, last_str, item))
+    scored.sort(key=lambda pair: (pair[0], pair[1], pair[2]), reverse=True)
+    return [item for _, _, _, item in scored[:10]]
+
+
 async def _finalize_memory_context(
     *,
     query: str,
@@ -398,6 +489,9 @@ async def _finalize_memory_context(
         looks_like_sum_query,
         looks_like_count_query,
     )
+
+    if memory_intent in ("timeline_order", "broad_summary") and episodes:
+        await _prefetch_episode_vectors(episodes, limit=120)
 
     order_stages: list[Episode] = []
     if memory_intent == "timeline_order" and episodes:
@@ -441,6 +535,11 @@ async def _finalize_memory_context(
     ranked_edges = await _rerank_edges(query, s1.edges, top_k * 2, reranker_factory=reranker_factory)
     ranked_edges = await _apply_intent_edges(memory_intent, ranked_edges, scope_keys, clock_at=clock_at)
     ranked_edges = _cap_self_scope_edges(ranked_edges, scope_keys)
+    thread_summaries = (
+        await _load_thread_summaries(scope_keys, is_private=is_private, user_id=user_id, query=query)
+        if memory_intent in ("broad_summary", "timeline_order")
+        else []
+    )
 
     # 统一由 privacy.enforce_memory_privacy 执行群聊水位线与私聊按人隔离，避免双处漂移
     cover_ids = frozenset(str(ep["id"]) for ep in covered if "id" in ep) if covered else frozenset()
@@ -449,6 +548,7 @@ async def _finalize_memory_context(
         entities=ranked_entities,
         edges=ranked_edges,
         conflicts=[],
+        threads=thread_summaries,
         covered=bool(covered),
         cover_ids=cover_ids,
         preferences=preference_items,
@@ -471,6 +571,7 @@ async def _finalize_memory_context(
         dm_group_scopes_hint=dm_group_scopes,
         dm_user_entity_ids=dm_user_eids if is_private else None,
     )
+    await _annotate_retracted_episodes(mem.episodes)
     mem.pool_ids = [e["id"] for e in mem.episodes if "id" in e]
 
     edge_ids = [e["id"] for e in mem.edges if e["id"]]

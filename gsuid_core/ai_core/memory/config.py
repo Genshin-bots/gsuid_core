@@ -202,6 +202,32 @@ class MemoryConfig:
         """
         return mrc.get_config("memory_session").data
 
+    @property
+    def external_bot_ids(self) -> list[str]:
+        """同群外部第三方机器人账号列表（不进长期记忆与图片记忆）。"""
+        raw = mrc.get_config("external_bot_ids").data
+        if not isinstance(raw, list):
+            return []
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    @property
+    def window_max_messages(self) -> int:
+        """单窗最大聚合消息条数（默认 50）。"""
+        val = self._eo_int("window_max_messages", 50, stored=True)
+        return max(10, val)
+
+    @property
+    def window_idle_seconds(self) -> int:
+        """窗口空闲刷盘等待秒数（默认 480）。"""
+        val = self._eo_int("window_idle_seconds", 480, stored=True)
+        return max(30, val)
+
+    @property
+    def window_max_age_seconds(self) -> int:
+        """窗口自首条消息起算的最长驻留秒数（默认 3600）。"""
+        val = self._eo_int("window_max_age_seconds", 3600, stored=True)
+        return max(120, val)
+
 
 # 全局单例
 memory_config = MemoryConfig()

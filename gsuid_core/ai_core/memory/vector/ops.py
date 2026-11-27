@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 import time
+import uuid
 import asyncio
 from typing import TYPE_CHECKING, Optional, TypedDict
 from collections.abc import Sequence
 
+from httpx import HTTPError as HttpxError
+
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.rag.base import embed_texts_with_backoff, upsert_points_with_backoff
+from gsuid_core.ai_core.rag.qhttp import UnexpectedResponse, ResponseHandlingException
 from gsuid_core.ai_core.rag.hybrid import hybrid_query
 from gsuid_core.ai_core.rag.sparse import sparse_embed_single, sparse_embed_batch_async
 from gsuid_core.ai_core.rag.qmodels import (
@@ -25,6 +29,15 @@ from gsuid_core.ai_core.rag.qmodels import (
     MatchValue,
     PointStruct,
     FieldCondition,
+)
+
+_QDRANT_WRITE_ERRORS = (
+    OSError,
+    RuntimeError,
+    ValueError,
+    HttpxError,
+    UnexpectedResponse,
+    ResponseHandlingException,
 )
 
 MEMORY_EPISODES_COLLECTION = "memory_episodes"
@@ -239,29 +252,27 @@ async def upsert_entity_vector(
     user_id: Optional[str],
     tag: list[str],
     created_at_ts: float | None = None,
+    aliases: Optional[list[str]] = None,
+    entity_kind: str = "",
+    avatar_url: str = "",
 ):
-    """写入 Entity 向量到 Qdrant
-
-    3.2 修复：Entity 使用双嵌入索引（name_dense + summary_dense）分离存储，
-    支持更灵活的检索策略（可分别按 name 或 summary 检索）。
-
-    使用 Qdrant 的 named vectors：name_dense + summary_dense（共用同一个 sparse vector）
-    """
+    """写入 Entity 向量到 Qdrant（name_dense + summary_dense + sparse）。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
         return
 
-    # 1. 锁外计算 Embedding (CPU耗时操作，使用线程池避免阻塞事件循环)
-    # 3.2 双嵌入：name 和 summary 分别生成向量
+    alias_list = [a.strip() for a in (aliases or []) if isinstance(a, str) and a.strip()]
     name_vector = await _embed_async(name)
     if summary:
         summary_vector = await _embed_async(summary)
     else:
         summary_vector = name_vector
-    sparse_vector = await sparse_embed_single(f"{name}: {summary}" if summary else name)
+    sparse_parts = [name, *alias_list]
+    if summary:
+        sparse_parts.append(summary)
+    sparse_vector = await sparse_embed_single(" ".join(sparse_parts))
 
-    # 构建 named vectors（dense 与 sparse），在集合锁保护下写入 Qdrant。
     vector_data: dict[str, Vector] = {
         "name_dense": name_vector,
         "summary_dense": summary_vector,
@@ -280,6 +291,9 @@ async def upsert_entity_vector(
                 "is_speaker": is_speaker,
                 "user_id": user_id,
                 "tag": tag,
+                "aliases": alias_list,
+                "entity_kind": entity_kind,
+                "avatar_url": avatar_url,
                 "created_at_ts": float(created_at_ts) if created_at_ts is not None else time.time(),
             },
         )
@@ -287,6 +301,48 @@ async def upsert_entity_vector(
             collection_name=MEMORY_ENTITIES_COLLECTION,
             points=[point],
         )
+
+
+async def set_entity_payload(entity_id: str, payload: dict[str, object]) -> bool:
+    """局部更新 Qdrant 中单个 Entity 点的 payload，不重算向量。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not entity_id or not payload:
+        return False
+    async with _QDRANT_LOCKS[MEMORY_ENTITIES_COLLECTION]:
+        try:
+            await client.set_payload(
+                collection_name=MEMORY_ENTITIES_COLLECTION,
+                payload=payload,
+                points=[entity_id],
+            )
+            return True
+        except _QDRANT_WRITE_ERRORS as e:
+            logger.warning(t("log.memory.qdrant_batch_write_entity", e=e))
+            return False
+
+
+async def set_entity_payloads_batch(updates: list[tuple[str, dict[str, object]]]) -> int:
+    """批量局部更新 Qdrant Entity payload（用于无损迁移纠偏与控制台编辑）。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not updates:
+        return 0
+    ok = 0
+    async with _QDRANT_LOCKS[MEMORY_ENTITIES_COLLECTION]:
+        for eid, payload in updates:
+            if not eid or not payload:
+                continue
+            try:
+                await client.set_payload(
+                    collection_name=MEMORY_ENTITIES_COLLECTION,
+                    payload=payload,
+                    points=[eid],
+                )
+                ok += 1
+            except _QDRANT_WRITE_ERRORS as e:
+                logger.warning(t("log.memory.qdrant_batch_write_entity", e=e))
+    return ok
 
 
 async def upsert_edge_vector(
@@ -348,16 +404,12 @@ async def update_edge_lifecycle_payloads(updates: list[EdgeLifecycleUpdate]) -> 
                     },
                     points=[item["edge_id"]],
                 )
-            except Exception as e:
+            except _QDRANT_WRITE_ERRORS as e:
                 logger.warning(t("log.memory.qdrant_batch_write_edge", e=e))
 
 
 async def upsert_entity_vectors_batch(entities_data: list[dict]):
-    """批量写入 Entity 向量到 Qdrant。
-
-    Entity Collection 使用 named vectors：name_dense + summary_dense + sparse。
-    批量写入必须与单条 upsert_entity_vector 保持完全一致的向量结构。
-    """
+    """批量写入 Entity 向量到 Qdrant（name_dense + summary_dense + sparse）。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None or not entities_data:
@@ -366,12 +418,20 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
     names: list[str] = []
     summaries: list[str] = []
     sparse_texts: list[str] = []
+    normalized_aliases: list[list[str]] = []
     for d in entities_data:
         name = str(d["name"])
-        summary = str(d.get("summary", "") or "")
+        summary_raw = d["summary"] if "summary" in d else ""
+        summary = str(summary_raw) if summary_raw else ""
+        raw_aliases = d["aliases"] if "aliases" in d and isinstance(d["aliases"], list) else []
+        aliases = [str(a).strip() for a in raw_aliases if isinstance(a, str) and a.strip()]
+        normalized_aliases.append(aliases)
         names.append(name)
         summaries.append(summary if summary else name)
-        sparse_texts.append(f"{name}: {summary}" if summary else name)
+        sparse_parts = [name, *aliases]
+        if summary:
+            sparse_parts.append(summary)
+        sparse_texts.append(" ".join(sparse_parts))
 
     name_vectors = await _embed_batch_async(names)
     summary_vectors = await _embed_batch_async(summaries)
@@ -386,17 +446,26 @@ async def upsert_entity_vectors_batch(entities_data: list[dict]):
         }
         if sv is not None:
             vector_data["sparse"] = sv
+        summary_raw = d["summary"] if "summary" in d else ""
+        is_spk = bool(d["is_speaker"]) if "is_speaker" in d else False
+        uid = d["user_id"] if "user_id" in d else None
+        tags = d["tag"] if "tag" in d and isinstance(d["tag"], list) else []
+        ekind = d["entity_kind"] if "entity_kind" in d and isinstance(d["entity_kind"], str) else ""
+        avatar = d["avatar_url"] if "avatar_url" in d and isinstance(d["avatar_url"], str) else ""
         points.append(
             PointStruct(
                 id=d["entity_id"],
                 vector=vector_data,
                 payload={
                     "name": d["name"],
-                    "summary": d.get("summary", "") or "",
+                    "summary": str(summary_raw) if summary_raw else "",
                     "scope_key": d["scope_key"],
-                    "is_speaker": d.get("is_speaker", False),
-                    "user_id": d.get("user_id"),
-                    "tag": d.get("tag", []),
+                    "is_speaker": is_spk,
+                    "user_id": uid,
+                    "tag": tags,
+                    "aliases": normalized_aliases[i],
+                    "entity_kind": ekind,
+                    "avatar_url": avatar,
                     "created_at_ts": float(d["created_at_ts"])
                     if "created_at_ts" in d and isinstance(d["created_at_ts"], (int, float))
                     else time.time(),
@@ -517,6 +586,58 @@ async def _hybrid_search_episodes(
     return episodes
 
 
+async def search_entities_dense_cosine(
+    query: str,
+    scope_keys: list[str],
+    top_k: int = 5,
+    score_threshold: float = 0.0,
+) -> list["Entity"]:
+    """纯稠密余弦检索 Entity（直查 ``name_dense``，返回真实余弦分用于实体去重）。"""
+    from gsuid_core.ai_core.rag.base import client
+
+    if client is None or not scope_keys or not query.strip():
+        return []
+    query_dense = await _embed_async(query)
+    points = await hybrid_query(
+        MEMORY_ENTITIES_COLLECTION,
+        query_dense,
+        None,
+        limit=top_k,
+        dense_using="name_dense",
+        query_filter=_scope_filter(scope_keys),
+        dense_score_threshold=score_threshold if score_threshold > 0 else None,
+    )
+    entities: list["Entity"] = []
+    for p in points:
+        payload = p.payload or {}
+        tag = payload["tag"] if "tag" in payload else []
+        tag_text = ",".join(item for item in tag if isinstance(item, str)) if isinstance(tag, list) else str(tag)
+        name_val = payload["name"] if "name" in payload and isinstance(payload["name"], str) else ""
+        summary_val = payload["summary"] if "summary" in payload and isinstance(payload["summary"], str) else ""
+        ent: "Entity" = {
+            "id": str(p.id),
+            "name": name_val,
+            "summary": summary_val,
+            "entity_type": tag_text,
+            "layer": 0,
+            "score": float(p.score),
+        }
+        sk = payload["scope_key"] if "scope_key" in payload and isinstance(payload["scope_key"], str) else ""
+        if sk:
+            ent["scope_key"] = sk
+        ekind = payload["entity_kind"] if "entity_kind" in payload and isinstance(payload["entity_kind"], str) else ""
+        if ekind:
+            ent["entity_kind"] = ekind
+        raw_aliases = payload["aliases"] if "aliases" in payload and isinstance(payload["aliases"], list) else []
+        if raw_aliases:
+            ent["aliases"] = [str(a) for a in raw_aliases if isinstance(a, str) and a]
+        cts = payload["created_at_ts"] if "created_at_ts" in payload else None
+        if isinstance(cts, (int, float)):
+            ent["created_at_ts"] = float(cts)
+        entities.append(ent)
+    return entities
+
+
 async def _hybrid_search_entities(
     query: str,
     scope_keys: list[str],
@@ -626,7 +747,7 @@ async def _hybrid_search_edges(
         resolution_state: str = ""
         if "resolution_state" in r and isinstance(r["resolution_state"], str):
             resolution_state = r["resolution_state"]
-        if invalid_at_ts is not None or resolution_state == "superseded":
+        if invalid_at_ts is not None or resolution_state in ("superseded", "retracted"):
             continue
         scope_key: str = ""
         if "scope_key" in r and isinstance(r["scope_key"], str):
@@ -752,16 +873,33 @@ def _dense_from_point_vector(vector: object) -> list[float]:
     return []
 
 
+def _is_valid_qdrant_point_id(raw_id: str) -> bool:
+    """Qdrant 仅接受 UUID 或无符号整数；过滤 pending:* 等内存临时 ID 避免整批 400。"""
+    s = (raw_id or "").strip()
+    if not s or s.startswith("pending:"):
+        return False
+    if s.isdigit():
+        return True
+    try:
+        uuid.UUID(s)
+        return True
+    except ValueError:
+        return False
+
+
 async def retrieve_episode_dense_vectors(episode_ids: list[str]) -> dict[str, list[float]]:
     """按 id 拉 Episode dense，供 first-mention 聚类。失败返回已取到的子集。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None or not episode_ids:
         return {}
+    valid_ids = [eid for eid in episode_ids if _is_valid_qdrant_point_id(eid)]
+    if not valid_ids:
+        return {}
     out: dict[str, list[float]] = {}
     chunk = 256
-    for i in range(0, len(episode_ids), chunk):
-        batch = episode_ids[i : i + chunk]
+    for i in range(0, len(valid_ids), chunk):
+        batch = valid_ids[i : i + chunk]
         try:
             records = await client.retrieve(
                 collection_name=MEMORY_EPISODES_COLLECTION,
@@ -822,9 +960,13 @@ async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> l
     if qdrant_client is None:
         return []
 
+    valid_ids = [eid for eid in entity_ids if _is_valid_qdrant_point_id(eid)]
+    if not valid_ids:
+        return []
+
     results = await qdrant_client.retrieve(
         collection_name=MEMORY_ENTITIES_COLLECTION,
-        ids=entity_ids,
+        ids=valid_ids,
         with_payload=True,
         with_vectors=False,
     )

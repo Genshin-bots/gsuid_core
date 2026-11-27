@@ -6,7 +6,11 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 from datetime import date, datetime, timezone, timedelta
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.memory.retrieval.types import Episode
 
 _AGO_NUM_WORDS: dict[str, int] = {
     "a": 1,
@@ -27,29 +31,83 @@ _AGO_NUM_WORDS: dict[str, int] = {
 }
 _AGO_RE = re.compile(
     r"\b(a couple of|a few|an|a|one|two|three|four|five|six|seven|eight|nine|ten|few|\d+)\s+"
-    r"(days?|weeks?|months?)\s+ago\b",
+    r"(days?|weeks?|months?|years?)\s+ago\b",
     re.IGNORECASE,
 )
 _PAST_SPAN_RE = re.compile(
     r"\b(?:in the |over the )?past\s+"
     r"(?:(a couple of|a few|an|a|one|two|three|four|five|six|seven|eight|nine|ten|few|\d+)\s+)?"
-    r"(days?|weeks?|months?)\b",
+    r"(days?|weeks?|months?|years?)\b",
     re.IGNORECASE,
 )
-_CN_AGO_RE = re.compile(r"(两|三|四|五|六|七|十|\d+)\s*([天周月])前")
-_CN_YESTERDAY_RE = re.compile(r"昨天|昨晚")
-_CN_LAST_WEEK_RE = re.compile(r"上周")
+_CN_AGO_RE = re.compile(r"(一|两|二|三|四|五|六|七|八|九|十|\d+)\s*(?:个)?([天周月年])前")
+_CN_TODAY_RE = re.compile(r"今天|今晚|今早|刚刚|刚才")
+_CN_YESTERDAY_RE = re.compile(r"昨天|昨晚|昨儿")
+_CN_DAY_BEFORE_YESTERDAY_RE = re.compile(r"前天")
+_CN_THREE_DAYS_AGO_RE = re.compile(r"大前天")
+_CN_LAST_WEEKDAY_RE = re.compile(r"上周([一二三四五六日天])")
+_CN_LAST_WEEK_RE = re.compile(r"上周(?![一二三四五六日天])")
+_CN_LAST_MONTH_RE = re.compile(r"上个月|上月")
+_CN_YMD_RE = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?")
+_CN_MD_RE = re.compile(r"(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]")
 _CN_AGO_NUM: dict[str, int] = {
+    "一": 1,
+    "二": 2,
     "两": 2,
     "三": 3,
     "四": 4,
     "五": 5,
     "六": 6,
     "七": 7,
+    "八": 8,
+    "九": 9,
     "十": 10,
 }
+_CN_WEEKDAY_INDEX: dict[str, int] = {
+    "一": 0,
+    "二": 1,
+    "三": 2,
+    "四": 3,
+    "五": 4,
+    "六": 5,
+    "日": 6,
+    "天": 6,
+}
+_EN_MONTH_MAP: dict[str, int] = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+_EN_MONTH_DAY_RE = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+"
+    r"(\d{1,2})(?:st|nd|rd|th)?(?:,\s*(\d{4}))?\b",
+    re.IGNORECASE,
+)
 _TODAY_RE = re.compile(r"\b(today|this morning|this afternoon|this evening|tonight)\b", re.IGNORECASE)
-_YESTERDAY_RE = re.compile(r"\b(yesterday|last night)\b", re.IGNORECASE)
+_DAY_BEFORE_YESTERDAY_RE = re.compile(r"\bthe day before yesterday\b", re.IGNORECASE)
+_YESTERDAY_RE = re.compile(r"(?<!before )\b(yesterday|last night)\b", re.IGNORECASE)
 _LAST_WEEK_RE = re.compile(r"\blast week\b", re.IGNORECASE)
 _LAST_MONTH_RE = re.compile(r"\blast month\b", re.IGNORECASE)
 _LAST_WEEKDAY_RE = re.compile(
@@ -86,6 +144,8 @@ def _shift_ago(said: datetime, n: int, unit: str) -> datetime:
         return said - timedelta(days=n)
     if u.startswith("week"):
         return said - timedelta(days=7 * n)
+    if u.startswith("year"):
+        return said - timedelta(days=365 * n)
     return said - timedelta(days=30 * n)
 
 
@@ -97,45 +157,135 @@ def _last_weekday(said: datetime, name: str) -> datetime:
     return said - timedelta(days=delta)
 
 
+def _last_cn_weekday(said: datetime, ch: str) -> datetime:
+    wd = _CN_WEEKDAY_INDEX[ch] if ch in _CN_WEEKDAY_INDEX else said.weekday()
+    delta = (said.weekday() - wd) % 7
+    if delta == 0:
+        delta = 7
+    return said - timedelta(days=delta)
+
+
+def _safe_date(year: int, month: int, day: int, ref: datetime) -> datetime | None:
+    try:
+        return datetime(year, month, day, ref.hour, ref.minute, ref.second, tzinfo=ref.tzinfo)
+    except ValueError:
+        return None
+
+
+def _explicit_dates_in_text(raw: str, said_at: datetime) -> list[datetime]:
+    out: list[datetime] = []
+    used_spans: list[tuple[int, int]] = []
+    for m in _CN_YMD_RE.finditer(raw):
+        dt = _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)), said_at)
+        if dt is not None:
+            out.append(dt)
+            used_spans.append(m.span())
+    for m in _CN_MD_RE.finditer(raw):
+        if any(s <= m.start() and m.end() <= e for s, e in used_spans):
+            continue
+        year = said_at.year
+        dt = _safe_date(year, int(m.group(1)), int(m.group(2)), said_at)
+        if dt is not None:
+            if dt.date() > said_at.date() + timedelta(days=7):
+                dt = _safe_date(year - 1, int(m.group(1)), int(m.group(2)), said_at) or dt
+            out.append(dt)
+    for m in _EN_MONTH_DAY_RE.finditer(raw):
+        m_key = m.group(1).lower()
+        month = _EN_MONTH_MAP[m_key] if m_key in _EN_MONTH_MAP else 0
+        if not month:
+            continue
+        day = int(m.group(2))
+        year = int(m.group(3)) if m.group(3) else said_at.year
+        dt = _safe_date(year, month, day, said_at)
+        if dt is not None:
+            if not m.group(3) and dt.date() > said_at.date() + timedelta(days=7):
+                dt = _safe_date(year - 1, month, day, said_at) or dt
+            out.append(dt)
+    return out
+
+
 def event_at_from_text(text: str, said_at: datetime) -> datetime:
-    """发生时刻：原文相对语；没有则退回陈述时刻。"""
+    """发生时刻：原文显式或相对日期；没有则退回陈述时刻。"""
     times = event_times_in_text(text, said_at)
     return min(times) if times else said_at
 
 
 def event_times_in_text(text: str, said_at: datetime) -> list[datetime]:
-    """从用户话里抽出相对发生时间。不解析 recently。"""
-    blob = (text or "").lower().replace("’", "'")
+    """从用户话里抽出中英文显式/相对发生时间。不解析 recently。"""
+    raw = text or ""
+    blob = raw.lower().replace("’", "'")
     out: list[datetime] = []
+    out.extend(_explicit_dates_in_text(raw, said_at))
     for m in _AGO_RE.finditer(blob):
         out.append(_shift_ago(said_at, _ago_count(m.group(1)), m.group(2)))
+    for m in _CN_AGO_RE.finditer(raw):
+        out.append(_shift_ago(said_at, _cn_ago_count(m.group(1)), _cn_unit_to_en(m.group(2))))
     for m in _LAST_WEEKDAY_RE.finditer(blob):
         out.append(_last_weekday(said_at, m.group(1)))
-    if _YESTERDAY_RE.search(blob):
+    for m in _CN_LAST_WEEKDAY_RE.finditer(raw):
+        out.append(_last_cn_weekday(said_at, m.group(1)))
+    if _DAY_BEFORE_YESTERDAY_RE.search(blob) or _CN_DAY_BEFORE_YESTERDAY_RE.search(raw):
+        out.append(said_at - timedelta(days=2))
+    if _CN_THREE_DAYS_AGO_RE.search(raw):
+        out.append(said_at - timedelta(days=3))
+    if _YESTERDAY_RE.search(blob) or _CN_YESTERDAY_RE.search(raw):
         out.append(said_at - timedelta(days=1))
-    if _LAST_WEEK_RE.search(blob):
+    if _LAST_WEEK_RE.search(blob) or _CN_LAST_WEEK_RE.search(raw):
         out.append(said_at - timedelta(days=7))
-    if _LAST_MONTH_RE.search(blob):
+    if _LAST_MONTH_RE.search(blob) or _CN_LAST_MONTH_RE.search(raw):
         out.append(said_at - timedelta(days=30))
-    if _TODAY_RE.search(blob):
+    if _TODAY_RE.search(blob) or _CN_TODAY_RE.search(raw):
         out.append(said_at)
     if not out and _JUST_DONE_RE.search(blob):
         out.append(said_at)
     return out
 
 
+def effective_event_at(ep: "Episode") -> str:
+    """Episode 真实发生时间排序键（优先显式 event_at，再按原文相对/显式日期折算）。"""
+    if "event_at" in ep and ep["event_at"].strip():
+        return ep["event_at"].strip().replace("T", " ")[:19]
+    valid_raw = (ep["valid_at"] if "valid_at" in ep else "").strip()
+    if not valid_raw:
+        return ""
+    norm = valid_raw.replace("T", " ")[:19]
+    said: datetime | None = None
+    for fmt, slen in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d %H:%M", 16), ("%Y-%m-%d", 10)):
+        if len(norm) < slen:
+            continue
+        try:
+            said = datetime.strptime(norm[:slen], fmt)
+            break
+        except ValueError:
+            continue
+    if said is None:
+        return norm
+    ev = event_at_from_text(ep["content"] if "content" in ep else "", said)
+    if ev.date() != said.date():
+        return ev.strftime("%Y-%m-%d %H:%M:%S")
+    return norm
+
+
 def has_relative_time_span(query: str) -> bool:
     """问句在用相对日定位事件。不含裸 today，避免和 currently 撞车。"""
-    blob = (query or "").lower().replace("’", "'")
+    raw = query or ""
+    blob = raw.lower().replace("’", "'")
     if _AGO_RE.search(blob) or _PAST_SPAN_RE.search(blob):
         return True
-    if _LAST_WEEKDAY_RE.search(blob) or _YESTERDAY_RE.search(blob):
+    if _LAST_WEEKDAY_RE.search(blob) or _YESTERDAY_RE.search(blob) or _DAY_BEFORE_YESTERDAY_RE.search(blob):
         return True
     if _LAST_WEEK_RE.search(blob) or _LAST_MONTH_RE.search(blob):
         return True
-    if _CN_AGO_RE.search(query or "") or _CN_YESTERDAY_RE.search(query or ""):
+    if (
+        _CN_AGO_RE.search(raw)
+        or _CN_YESTERDAY_RE.search(raw)
+        or _CN_DAY_BEFORE_YESTERDAY_RE.search(raw)
+        or _CN_THREE_DAYS_AGO_RE.search(raw)
+        or _CN_LAST_WEEKDAY_RE.search(raw)
+        or _CN_LAST_MONTH_RE.search(raw)
+    ):
         return True
-    return bool(_CN_LAST_WEEK_RE.search(query or ""))
+    return bool(_CN_LAST_WEEK_RE.search(raw))
 
 
 def strip_relative_time_spans(query: str) -> str:
@@ -147,10 +297,15 @@ def strip_relative_time_spans(query: str) -> str:
         _LAST_WEEKDAY_RE,
         _LAST_WEEK_RE,
         _LAST_MONTH_RE,
+        _DAY_BEFORE_YESTERDAY_RE,
         _YESTERDAY_RE,
         _CN_AGO_RE,
+        _CN_DAY_BEFORE_YESTERDAY_RE,
+        _CN_THREE_DAYS_AGO_RE,
         _CN_YESTERDAY_RE,
+        _CN_LAST_WEEKDAY_RE,
         _CN_LAST_WEEK_RE,
+        _CN_LAST_MONTH_RE,
     ):
         body = pat.sub(" ", body)
     return _WS_RE.sub(" ", body).strip()
@@ -167,29 +322,39 @@ def _cn_unit_to_en(unit: str) -> str:
         return "day"
     if unit == "周":
         return "week"
+    if unit == "年":
+        return "year"
     return "month"
 
 
 def _query_anchor_times(query: str, clock: datetime) -> list[datetime]:
-    blob = (query or "").lower().replace("’", "'")
+    raw = query or ""
+    blob = raw.lower().replace("’", "'")
     out: list[datetime] = []
     for m in _AGO_RE.finditer(blob):
         out.append(_shift_ago(clock, _ago_count(m.group(1)), m.group(2)))
     for m in _LAST_WEEKDAY_RE.finditer(blob):
         out.append(_last_weekday(clock, m.group(1)))
-    if _YESTERDAY_RE.search(blob) or _CN_YESTERDAY_RE.search(query or ""):
+    for m in _CN_LAST_WEEKDAY_RE.finditer(raw):
+        out.append(_last_cn_weekday(clock, m.group(1)))
+    if _DAY_BEFORE_YESTERDAY_RE.search(blob) or _CN_DAY_BEFORE_YESTERDAY_RE.search(raw):
+        out.append(clock - timedelta(days=2))
+    if _CN_THREE_DAYS_AGO_RE.search(raw):
+        out.append(clock - timedelta(days=3))
+    if _YESTERDAY_RE.search(blob) or _CN_YESTERDAY_RE.search(raw):
         out.append(clock - timedelta(days=1))
-    if _LAST_WEEK_RE.search(blob) or _CN_LAST_WEEK_RE.search(query or ""):
+    if _LAST_WEEK_RE.search(blob) or _CN_LAST_WEEK_RE.search(raw):
         out.append(clock - timedelta(days=7))
-    if _LAST_MONTH_RE.search(blob):
+    if _LAST_MONTH_RE.search(blob) or _CN_LAST_MONTH_RE.search(raw):
         out.append(clock - timedelta(days=30))
-    for m in _CN_AGO_RE.finditer(query or ""):
+    for m in _CN_AGO_RE.finditer(raw):
         out.append(_shift_ago(clock, _cn_ago_count(m.group(1)), _cn_unit_to_en(m.group(2))))
     return out
 
 
 def _window_slack_days(query: str) -> int:
-    blob = (query or "").lower()
+    raw = query or ""
+    blob = raw.lower()
     m = _AGO_RE.search(blob)
     if m is None:
         m = _PAST_SPAN_RE.search(blob)
@@ -199,10 +364,22 @@ def _window_slack_days(query: str) -> int:
             return 3
         if unit.startswith("month"):
             return 7
+        if unit.startswith("year"):
+            return 30
         return 1
-    if _LAST_WEEK_RE.search(blob) or _CN_LAST_WEEK_RE.search(query or ""):
+    cn_m = _CN_AGO_RE.search(raw)
+    if cn_m is not None:
+        unit = cn_m.group(2)
+        if unit == "周":
+            return 3
+        if unit == "月":
+            return 7
+        if unit == "年":
+            return 30
+        return 1
+    if _LAST_WEEK_RE.search(blob) or _CN_LAST_WEEK_RE.search(raw):
         return 4
-    if _LAST_MONTH_RE.search(blob):
+    if _LAST_MONTH_RE.search(blob) or _CN_LAST_MONTH_RE.search(raw):
         return 7
     return 1
 

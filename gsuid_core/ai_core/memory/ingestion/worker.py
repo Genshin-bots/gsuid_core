@@ -1,7 +1,7 @@
-"""摄入 Worker（schema_v2）。
+"""摄入 Worker（schema_v2.1）。
 
-每个 scope 维护环形窗口；满足「28 条 / 静默 180s 且 >=4 条 / 最老 1800s」
-任一条件触发 Pass 1 分诊，再对 extract 聚类执行 Pass 2 四态代数。
+每个 scope 维护环形窗口；动态读取 memory_config 配置（默认 50 条 / 静默 480s 且 >=6 条 / 最老 3600s）
+触发 Pass 1 分诊，再对 extract 聚类执行 Pass 2 五态代数。
 """
 
 from __future__ import annotations
@@ -10,23 +10,26 @@ import time
 import queue as sync_queue
 import asyncio
 from typing import Optional
+from datetime import datetime, timezone
 from collections.abc import Collection
+
+from sqlmodel import col, select
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.config import memory_config
+from gsuid_core.ai_core.memory.identity import is_human_speaker_id, ensure_speaker_entity
 from gsuid_core.ai_core.memory.observer import (
     ObservationRecord,
     format_pending_line,
     get_observation_queue,
 )
+from gsuid_core.utils.database.write_gate import sqlite_write_gate
+from gsuid_core.utils.database.base_models import async_maker
 from gsuid_core.ai_core.persona_reset.guard import is_scope_frozen
 from gsuid_core.ai_core.memory.database.models import AIMemThread, AIMemEpisode
 
-_WINDOW_CAPACITY = 28
-_WINDOW_MAX_BATCH = 40
-_WINDOW_IDLE_SECONDS = 180
-_WINDOW_MAX_AGE_SECONDS = 1800
+_WINDOW_IDLE_MIN_RECORDS = 6
 _SHUTDOWN_FLUSH_TIMEOUT = 20.0
 _TIMER_INTERVAL = 10.0
 
@@ -49,14 +52,17 @@ class _ScopeWindowBuffer:
         return list(self.records)
 
     def expired_by_age(self, now: float) -> bool:
-        return bool(self.records) and (now - self.first_at) >= _WINDOW_MAX_AGE_SECONDS
+        return bool(self.records) and (now - self.first_at) >= memory_config.window_max_age_seconds
 
     def should_flush(self, now: float) -> bool:
         if not self.records:
             return False
-        if len(self.records) >= _WINDOW_CAPACITY:
+        if len(self.records) >= memory_config.window_max_messages:
             return True
-        if len(self.records) >= 4 and (now - self.last_activity) >= _WINDOW_IDLE_SECONDS:
+        if (
+            len(self.records) >= _WINDOW_IDLE_MIN_RECORDS
+            and (now - self.last_activity) >= memory_config.window_idle_seconds
+        ):
             return True
         return self.expired_by_age(now)
 
@@ -147,6 +153,58 @@ def filter_group_scope_records(
     return [r for r in records if not r.personal_credential]
 
 
+async def _touch_thread_activity(
+    thread_id: str,
+    human_uids: set[str],
+    latest_ts: datetime,
+    *,
+    inc_episodes: int = 1,
+) -> None:
+    """更新故事线参与人、片段计数与活跃时间，并将 dormant 故事线重新激活。"""
+    if not thread_id:
+        return
+    async with sqlite_write_gate, async_maker() as session:
+        row = (await session.execute(select(AIMemThread).where(col(AIMemThread.id) == thread_id))).scalar_one_or_none()
+        if row is None:
+            return
+        merged = list(row.get_participant_uids())
+        for uid in sorted(human_uids):
+            if uid and uid not in merged:
+                merged.append(uid)
+        row.set_participant_uids(merged)
+        if inc_episodes > 0:
+            row.episode_count = max(0, row.episode_count) + inc_episodes
+        if row.status == "dormant":
+            row.status = "active"
+        row_last = row.last_at if row.last_at.tzinfo is not None else row.last_at.replace(tzinfo=timezone.utc)
+        cand = latest_ts if latest_ts.tzinfo is not None else latest_ts.replace(tzinfo=timezone.utc)
+        if cand > row_last:
+            row.last_at = cand
+        row.last_mentioned_at = datetime.now(timezone.utc)
+        session.add(row)
+        await session.commit()
+
+
+async def _ensure_cluster_speakers(scope_key: str, cluster_records: list[ObservationRecord]) -> None:
+    """对窗口内真实人类发言人幂等同步唯一 speaker 实体（带 CoreUser 头像与名片）。"""
+    if not scope_key.startswith(("group:", "user_global:")):
+        return
+    seen: set[str] = set()
+    for rec in cluster_records:
+        if rec.is_assistant_context or not is_human_speaker_id(rec.speaker_id):
+            continue
+        if rec.speaker_id in seen:
+            continue
+        seen.add(rec.speaker_id)
+        await ensure_speaker_entity(
+            scope_key=scope_key,
+            user_id=rec.speaker_id,
+            display_name=rec.speaker_name,
+            persona_name=rec.persona_name,
+            sync_vector=False,
+        )
+
+
 async def _ingest_window_inner(
     records: list[ObservationRecord],
     scope_key: str,
@@ -172,7 +230,7 @@ async def _ingest_window_inner(
         if rec.command_hit:
             rec.raw_content = "[用户调用了 bot 功能]"
 
-    threads = await AIMemThread.list_active(scope_key, limit=15)
+    threads = await AIMemThread.list_active_or_dormant(scope_key, limit=15)
     route = await route_window(scope_key, records, threads, force_settle=force_settle)
     # 路由要等 LLM；期间若该 scope 进入人格重置冻结，整窗丢弃不落库。
     if is_scope_frozen(scope_key):
@@ -199,10 +257,15 @@ async def _ingest_window_inner(
 
         episode_id = ""
         cluster_records = [records[i] for i in sorted(lines)]
+        await _ensure_cluster_speakers(scope_key, cluster_records)
+        human_uids = {
+            r.speaker_id for r in cluster_records if not r.is_assistant_context and is_human_speaker_id(r.speaker_id)
+        }
+        latest_ts = max(r.timestamp for r in cluster_records)
+        existing_thread = None
         if create_episodes:
             content = "\n".join(format_pending_line(records[i]) for i in sorted(lines))
             earliest = min(r.timestamp for r in cluster_records)
-            existing_thread = None
             if cluster["thread_ref"] is not None and cluster["thread_ref"].startswith("T"):
                 try:
                     index = int(cluster["thread_ref"][1:]) - 1
@@ -225,6 +288,8 @@ async def _ingest_window_inner(
             )
             episode_id = episode.id
             stats["episodes"] += 1
+            if existing_thread:
+                await _touch_thread_activity(existing_thread, human_uids, latest_ts, inc_episodes=1)
 
         if cluster["action"] == "extract":
             if is_scope_frozen(scope_key):
@@ -247,6 +312,8 @@ async def _ingest_window_inner(
                 stats["preferences"] += extracted["preferences"]
                 if episode_id and extracted["thread_id"]:
                     await AIMemEpisode.assign_thread(episode_id, extracted["thread_id"])
+                    if extracted["thread_id"] != existing_thread:
+                        await _touch_thread_activity(extracted["thread_id"], human_uids, latest_ts, inc_episodes=1)
             except (asyncio.TimeoutError, OSError, RuntimeError, ValueError) as e:
                 logger.warning(i18n_t("log.memory.algebra_extract_failed", scope_key=scope_key, e=e))
 
@@ -355,7 +422,7 @@ class IngestionWorker:
                     continue
                 window = self._windows.setdefault(record.scope_key, _ScopeWindowBuffer())
                 window.push(record)
-                if len(window.records) >= _WINDOW_CAPACITY and record.scope_key not in self._flushing:
+                if len(window.records) >= memory_config.window_max_messages and record.scope_key not in self._flushing:
                     self._spawn_flush(record.scope_key)
             except sync_queue.Empty:
                 if self._stop_event is not None:
@@ -401,7 +468,8 @@ class IngestionWorker:
         assert self._llm_semaphore is not None
         try:
             async with self._llm_semaphore:
-                batches = [records[i : i + _WINDOW_MAX_BATCH] for i in range(0, len(records), _WINDOW_MAX_BATCH)]
+                max_batch = max(memory_config.window_max_messages, 50)
+                batches = [records[i : i + max_batch] for i in range(0, len(records), max_batch)]
                 for batch_idx, batch in enumerate(batches, 1):
                     if is_scope_frozen(scope_key):
                         break

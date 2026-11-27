@@ -76,12 +76,13 @@ _recent_contents: dict[str, deque] = {}
 _COMMAND_ECHO_RE = re.compile(
     r"^[🔨❌✅⚠️🚧\s]*[❌✅]?\s*.{0,20}(请输入正确|功能名称|不存在该功能|无效的指令|未找到命令)"
 )
+# 仅拦截针对系统指令/人设/提示词的越狱注入，放行用户撤回自身历史计划或偏好的正常表达。
 _INJECTION_RE = re.compile(
-    r"(忘记(掉)?(所有|之前|你的)?(的)?(指令|设定|规则|对话|身份)"
-    r"|ignore\s+(all\s+|previous\s+|the\s+)?(instructions|prompts?)"
-    r"|你现在(开始)?(是|要扮演|将)"
-    r"|重置(你的)?(指令|设定|人格)"
-    r"|disregard\s+(all|previous))",
+    r"(忘记(掉)?(所有|全部|一切|之前|你的|系统|初始|原有)?(的)?(系统|初始|安全|核心)?(指令|设定|人设|人格|规则|提示词|身份)"
+    r"|ignore\s+(all\s+|previous\s+|the\s+|system\s+)?(instructions|prompts?|rules)"
+    r"|你现在(开始)?(不再是|必须扮演|要扮演|切换为|改扮)"
+    r"|重置(你的|全部|系统)?(指令|设定|人格|人设|提示词)"
+    r"|disregard\s+(all|previous|system)\s+(instructions|prompts?|rules)?)",
     re.IGNORECASE,
 )
 _USER_COMMAND_RE = re.compile(r"^[/#!！·、.]{1,2}\S")
@@ -107,6 +108,7 @@ class ObservationRecord:
     bot_id: str = ""
     persona_name: str = ""
     personal_credential: bool = False  # 出站依据含个人凭据：禁进群级事实抽取（§4.7）
+    is_assistant_context: bool = False  # 本实例普通对话回复：仅作上下文参照，禁作事实源
     command_hit: bool = False
     defer_count: int = 0
 
@@ -179,6 +181,33 @@ def _is_system_or_error_echo(stripped: str) -> bool:
     )
 
 
+def is_external_bot_speaker(speaker_id: str) -> bool:
+    """检查发言人是否属于配置的同群外部机器人名单。"""
+    sid = (speaker_id or "").strip()
+    if not sid:
+        return False
+    from gsuid_core.ai_core.memory.config import memory_config
+
+    return sid in set(memory_config.external_bot_ids)
+
+
+def is_ai_list_allowed(speaker_id: str, group_id: Optional[str]) -> bool:
+    """同步校验 ai_config 的 black_list / white_list，阻断已拉黑群与用户。"""
+    from gsuid_core.ai_core.configs.ai_config import ai_config
+
+    raw_black = ai_config.get_config("black_list").data
+    raw_white = ai_config.get_config("white_list").data
+    black = [str(item).strip() for item in raw_black if str(item).strip()] if isinstance(raw_black, list) else []
+    white = [str(item).strip() for item in raw_white if str(item).strip()] if isinstance(raw_white, list) else []
+    sid = (speaker_id or "").strip()
+    gid = (group_id or "").strip()
+    if black and ((sid and sid in black) or (gid and gid in black)):
+        return False
+    if white and not ((sid and sid in white) or (gid and gid in white)):
+        return False
+    return True
+
+
 def _gate(
     content: str,
     speaker_id: str,
@@ -187,10 +216,15 @@ def _gate(
     group_id: Optional[str],
     scope_key: str,
 ) -> Optional[str]:
-    """协议级清洗。返回 "HIGH" 或 None。"""
+    """协议级与生产防污染网关。返回 "HIGH" 或 None。"""
     if not (speaker_id or "").strip() or _is_known_bot_speaker(speaker_id, bot_self_id):
         return None
+    if is_external_bot_speaker(speaker_id):
+        logger.trace(t("log.memory.observer_external_bot_filtered", p0=speaker_id))
+        return None
     if group_id and group_id in observer_blacklist:
+        return None
+    if not is_ai_list_allowed(speaker_id, group_id):
         return None
     stripped = content.strip()
     if not stripped:
@@ -238,9 +272,13 @@ async def observe(
     at_targets: Sequence[str] = (),
     reply_to_bot: bool = False,
     personal_credential: bool = False,
+    is_proactive_broadcast: bool = False,
 ) -> None:
     """向观察队列投递一条消息记录（不 await 调用为主）。"""
     from .scope import ScopeType, make_scope_key, self_scope_key
+
+    if is_proactive_broadcast:
+        return
 
     if message_id:
         from gsuid_core.message_history import get_history_manager
@@ -254,6 +292,10 @@ async def observe(
 
     is_self_speech = force_scope_key is None and speaker_id.startswith(_ASSISTANT_PREFIX)
     if is_self_speech:
+        if group_id and group_id in observer_blacklist:
+            return
+        if not is_ai_list_allowed("", group_id):
+            return
         stripped = content.strip()
         if not stripped or _is_system_or_error_echo(stripped):
             return
@@ -306,6 +348,7 @@ async def observe(
         bot_id=bot_id,
         persona_name=persona_name,
         personal_credential=personal_credential,
+        is_assistant_context=is_self_speech,
     )
 
     try:

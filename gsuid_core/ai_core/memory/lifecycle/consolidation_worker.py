@@ -1,42 +1,32 @@
-"""记忆生命周期维护 Worker（C11 · 第 7 章）
+"""记忆生命周期维护 Worker（C11 · 无损演化）。
 
-由 APScheduler 周期性触发（默认每周一次）。一次维护依次执行：
+由 APScheduler 周期性触发。一次维护依次执行：
 
-1. **巩固（Consolidation）**：把高频提及（mention_count 高）的 Edge ``decay_score``
-   回升到 1.0——活跃事实不该被衰减误伤。
-2. **衰减（Decay）**：超过 N 天未被检索、且非高频的有效 Edge ``decay_score *= 0.85``。
-3. **遗忘（Forgetting）**：``decay_score`` 低于阈值的 Edge 物理删除（SQL + Qdrant）。
-4. **孤儿实体回收（Orphan GC）**：遗忘 Edge 后，回收"非 speaker、无任何 edge、
-   超过 TTL 未更新"的孤儿实体（SQL + Qdrant + 递减分层图计数），防止实体只增不减
-   膨胀分类成本。放在遗忘 Edge **之后**——遗忘正是新孤儿的来源。
-
-衰减结果由检索层在 ``reranker_score × decay_score`` 加权排序中消费，确保活跃记忆
-始终优先。整个流程不依赖 LLM——纯规则 / 数值运算，可安全后台执行。
+1. **巩固（Consolidation）**：高频提及的 Edge ``decay_score`` 回升到 1.0。
+2. **温和降权（Decay）**：长久未检索的 Edge 温和降权（保底地板 ``DECAY_FLOOR = 0.35``，零物理删除）。
+3. **状态收口与故事线流转**：到期短期边与满 30 天未证实 staging 转 ``retracted``；故事线经唯一状态机流转。
+4. **安全防线裁剪与对账**：仅突破每 scope 50,000 硬上限时按 salience 裁剪，并对账 Qdrant 悬空向量。
 """
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.memory.lifecycle.sleep_extract import transition_threads
 
-# 衰减判定与分层参数（§6.2）
-# group: 域（群 lore/闲聊）
+# 衰减判定与无损保底参数：持久记忆仅做新鲜度温和降权（地板 0.35），绝不物理删边
 DECAY_STALE_DAYS_GROUP = 7
-DECAY_FACTOR_GROUP = 0.8
-FORGET_THRESHOLD_GROUP = 0.2
+DECAY_FACTOR_GROUP = 0.90
 
-# user_global: 域（用户自述/属性）
 DECAY_STALE_DAYS_USER = 14
-DECAY_FACTOR_USER = 0.85
-FORGET_THRESHOLD_USER = 0.1
+DECAY_FACTOR_USER = 0.92
 
-# 兼容默认
 DECAY_STALE_DAYS = 14
-DECAY_FACTOR = 0.85
-FORGET_THRESHOLD = 0.1
+DECAY_FACTOR = 0.90
+DECAY_FLOOR = 0.35
 
-# 高频提及保护阈值：mention_count ≥ 此值的 Edge 不被衰减（≥2 巩固保护）
+# 高频提及保护阈值：mention_count ≥ 此值的 Edge 不被衰减
 PROTECT_MENTION_COUNT = 2
-# 孤儿实体回收 TTL：非 speaker、无 edge、超过此天数未更新的实体被物理删除（TTL 10 -> 3 天）
-ORPHAN_ENTITY_TTL_DAYS = 3
+# 短期传闻超时归档天数（仅改状态 retracted，不物理删除）
+STAGING_STALE_DAYS = 30
 
 # ── §3.2① Episode 保留策略 / 冷热分集合 ──────────────────────
 # 最近 EPISODE_HOT_DAYS 天内的 Episode 始终保留为热（不降级）
@@ -81,43 +71,26 @@ async def _consolidate() -> int:
     return count
 
 
-async def _forget_ids(forgotten_ids: list[str]) -> int:
-    """遗忘：物理删除指定的 Edge（SQL + Qdrant 向量）。"""
-    if not forgotten_ids:
-        return 0
-
+async def _expire_and_archive_edges() -> tuple[int, int]:
+    """无损状态收口：到期短期状态边与满 30 天未证实 staging 传闻转 retracted 并同步 Qdrant。"""
+    from gsuid_core.ai_core.memory.vector.ops import EdgeLifecycleUpdate, update_edge_lifecycle_payloads
     from gsuid_core.ai_core.memory.database.models import AIMemEdge
 
-    await AIMemEdge.purge_by_ids(forgotten_ids)
-
-    # 同步删除 Qdrant 向量，释放向量空间
-    try:
-        from uuid import UUID
-
-        from gsuid_core.ai_core.rag.base import client as qdrant_client
-        from gsuid_core.ai_core.rag.qmodels import PointIdsList
-        from gsuid_core.ai_core.memory.vector.ops import MEMORY_EDGES_COLLECTION
-
-        qdrant_point_ids: list[int | str | UUID] = [point_id for point_id in forgotten_ids]
-        if qdrant_client is not None:
-            await qdrant_client.delete(
-                collection_name=MEMORY_EDGES_COLLECTION,
-                points_selector=PointIdsList(points=qdrant_point_ids),
-            )
-    except Exception as e:
-        logger.warning(i18n_t("log.memory.lifecycle_delete_qdrant_edge_fail", e=e))
-    return len(forgotten_ids)
+    expired_items = await AIMemEdge.expire_due_edges()
+    stale_staging = await AIMemEdge.archive_stale_staging_edges(stale_days=STAGING_STALE_DAYS)
+    updates: list[EdgeLifecycleUpdate] = [
+        {"edge_id": eid, "invalid_at_ts": ts, "resolution_state": "retracted"}
+        for eid, ts in (*expired_items, *stale_staging)
+        if eid
+    ]
+    if updates:
+        await update_edge_lifecycle_payloads(updates)
+    return len(expired_items), len(stale_staging)
 
 
-async def _forget() -> int:
-    """遗忘：按分层规则物理删除 decay_score 低于阈值的 Edge（SQL + Qdrant 向量）。"""
-    from gsuid_core.ai_core.memory.database.models import AIMemEdge
-
-    # 分层收集：群闲聊域阈值 0.2，其余通用域阈值 0.1（两步查询覆盖全表）
-    group_ids = await AIMemEdge.collect_forgotten(threshold=FORGET_THRESHOLD_GROUP, scope_prefix="group:")
-    base_ids = await AIMemEdge.collect_forgotten(threshold=FORGET_THRESHOLD)
-    all_forgotten = list(set(group_ids + base_ids))
-    return await _forget_ids(all_forgotten)
+async def _transition_threads() -> tuple[int, int]:
+    """委托 sleep_extract 单一状态机流转故事线（零物理删除）。"""
+    return await transition_threads()
 
 
 async def _purge_entities(victims: list[tuple[str, str, str]]) -> int:
@@ -157,14 +130,6 @@ async def _purge_entities(victims: list[tuple[str, str, str]]) -> int:
 
         total += len(entity_ids)
     return total
-
-
-async def _forget_orphan_entities() -> int:
-    """孤儿实体回收：物理删除非 speaker、无 edge、超 TTL 未更新的实体（SQL + Qdrant + 计数）。"""
-    from gsuid_core.ai_core.memory.database.models import AIMemEntity
-
-    orphans = await AIMemEntity.collect_orphans(ttl_days=ORPHAN_ENTITY_TTL_DAYS)
-    return await _purge_entities(orphans)
 
 
 async def _trim_edge_capacity() -> int:
@@ -331,43 +296,47 @@ async def run_lifecycle_maintenance() -> None:
         slept = await run_sleep_extract_tick()
         logger.info(i18n_t("log.memory.lifecycle_sleep_extract", n=slept))
         consolidated = await _consolidate()
-        # 分层衰减（§6.2）：群 lore 7天/0.8；用户自报 14天/0.85
+        # 温和新鲜度降权（地板 DECAY_FLOOR=0.35，持久记忆零物理删除）
         decayed_group = await AIMemEdge.apply_decay(
             stale_days=DECAY_STALE_DAYS_GROUP,
             decay_factor=DECAY_FACTOR_GROUP,
             protect_mention_count=PROTECT_MENTION_COUNT,
             scope_prefix="group:",
+            min_decay_score=DECAY_FLOOR,
         )
         decayed_user = await AIMemEdge.apply_decay(
             stale_days=DECAY_STALE_DAYS_USER,
             decay_factor=DECAY_FACTOR_USER,
             protect_mention_count=PROTECT_MENTION_COUNT,
             scope_prefix="user_global:",
+            min_decay_score=DECAY_FLOOR,
         )
         decayed_user_in_group = await AIMemEdge.apply_decay(
             stale_days=DECAY_STALE_DAYS_USER,
             decay_factor=DECAY_FACTOR_USER,
             protect_mention_count=PROTECT_MENTION_COUNT,
             scope_prefix="user_in_group:",
+            min_decay_score=DECAY_FLOOR,
         )
         decayed = decayed_group + decayed_user + decayed_user_in_group
-        forgotten = await _forget()
-        # §3.2③ Edge 容量裁剪放在遗忘之后：先按 decay 遗忘弱边，再对仍超软上限的 scope 削长尾
+        expired_edges, archived_staging = await _expire_and_archive_edges()
+        threads_dormant, threads_archived = await _transition_threads()
+        forgotten = 0
+        # 仅在突破单群 50,000 条硬安全防线时才触发容量裁剪
         edge_trimmed = await _trim_edge_capacity()
-        # 遗忘 / 裁剪 Edge 之后再回收孤儿实体——这正是新孤儿的来源
-        orphan_entities = await _forget_orphan_entities()
-        # §3.2③ Entity 容量裁剪：对仍超软上限的 scope 淘汰最弱的无边非 speaker 实体
+        orphan_entities = 0
         entity_trimmed = await _trim_entity_capacity()
-        # §3.2① Episode 保留策略 + 冷热分集合：降级冷 Episode、物理上限裁剪
         ep_demoted, ep_purged = await _retain_episodes()
-        # §2 收尾对账：清理 SQL 已删但 Qdrant 残留的悬空向量
         dangling = await _reconcile_dangling_vectors()
-        # 程序性/偏好记忆裁剪（默认开；关闭时为 no-op）
         pref_pruned = await _maintain_preferences()
         _LAST_LIFECYCLE_REPORT = {
             "finished_at": _time.time(),
             "consolidated": consolidated,
             "decayed": decayed,
+            "expired_edges": expired_edges,
+            "archived_staging": archived_staging,
+            "threads_dormant": threads_dormant,
+            "threads_archived": threads_archived,
             "forgotten": forgotten,
             "edge_trimmed": edge_trimmed,
             "orphan_entities": orphan_entities,

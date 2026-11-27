@@ -91,6 +91,20 @@ def submit_image_observation(
     """
     if not image_urls:
         return 0
+    from gsuid_core.ai_core.memory.observer import (
+        is_ai_list_allowed,
+        _is_known_bot_speaker,
+        is_external_bot_speaker,
+    )
+
+    if not (speaker_id or "").strip() or _is_known_bot_speaker(speaker_id, bot_self_id):
+        return 0
+    if is_external_bot_speaker(speaker_id):
+        return 0
+    if group_id and group_id in observer_blacklist:
+        return 0
+    if not is_ai_list_allowed(speaker_id, group_id):
+        return 0
     scope_id = str(group_id or speaker_id)
     submitted = 0
     for url in image_urls:

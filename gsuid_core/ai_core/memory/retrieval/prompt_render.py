@@ -17,7 +17,11 @@ from gsuid_core.ai_core.control.lines import (
     SPEECH_ACT_HINT,
     MEMORY_STAGING_NOTE,
     MEMORY_CONFLICT_NOTE,
+    MEMORY_RUMOR_DENIED_TAG,
+    MEMORY_RETRACTED_EDGE_TAG,
+    MEMORY_SUPERSEDED_EDGE_TAG,
     MEMORY_TIMELINE_ORDER_NOTE,
+    MEMORY_RUMOR_UNCONFIRMED_TAG,
     MEMORY_SPEAKER_ISOLATION_NOTE,
 )
 from gsuid_core.ai_core.memory.config import memory_config
@@ -32,7 +36,7 @@ from .types import (
     ThreadSummary,
     MemoryEventCue,
 )
-from .event_time import event_at_from_text
+from .event_time import effective_event_at, event_at_from_text
 
 MemoryIntent = str
 _UNTRUSTED_WRAP_OVERHEAD = len(wrap_untrusted("memory_recall", ""))
@@ -196,24 +200,32 @@ def _take_even_lines(items: list[str], budget: int) -> list[str]:
     return out
 
 
-def _take_head_tail_lines(items: list[str], budget: int) -> list[str]:
+def _take_uniform_span_lines(items: list[str], budget: int) -> list[str]:
+    """全时段均匀采样（二分中点优先），保留起、中、终各段而不砍掉中段。"""
     n = len(items)
     if n == 0:
         return []
     if sum(len(x) for x in items) <= budget:
-        return items
+        return list(items)
+    order: list[int] = [0]
+    if n > 1:
+        order.append(n - 1)
+    queue: list[tuple[int, int]] = [(0, n - 1)] if n > 2 else []
+    q_idx = 0
+    while q_idx < len(queue):
+        lo, hi = queue[q_idx]
+        q_idx += 1
+        mid = (lo + hi) // 2
+        if mid > lo and mid < hi:
+            order.append(mid)
+            if mid - lo > 1:
+                queue.append((lo, mid))
+            if hi - mid > 1:
+                queue.append((mid, hi))
     keep: set[int] = set()
     used = 0
-    i, j = 0, n - 1
-    left = True
-    while i <= j:
-        idx = i if left else j
+    for idx in order:
         ln = len(items[idx])
-        if left:
-            i += 1
-        else:
-            j -= 1
-        left = not left
         if used + ln > budget and keep:
             continue
         keep.add(idx)
@@ -336,6 +348,26 @@ class MemoryContext:
             "（各规则按其触发条件适用；未写明条件的按字面最小范围理解，不扩大化）\n" + "\n".join(taken)
         )
 
+    def _render_threads_block(self, max_chars: int, intent: str) -> str | None:
+        if not self.threads or intent != "broad_summary":
+            return None
+        thread_budget = int(max_chars * 0.18)
+        lines: list[str] = []
+        for th in self.threads[:6]:
+            title = (th["title"] if "title" in th else "").strip()
+            summary = (th["summary"] if "summary" in th else "").strip()
+            if not title and not summary:
+                continue
+            status = th["status"] if "status" in th else "active"
+            stamp = (th["last_active_at"] if "last_active_at" in th else "")[:10]
+            meta = f"{status}·{stamp}" if stamp else status
+            body = f"{title}：{summary}" if (title and summary) else (title or summary)
+            lines.append(f"• [{meta}] {body[:140]}")
+        taken = _take_lines(lines, thread_budget)
+        if not taken:
+            return None
+        return "【故事线主轴】\n" + "\n".join(taken)
+
     def _render_edges_block(
         self,
         max_chars: int,
@@ -362,27 +394,46 @@ class MemoryContext:
         else:
             edges.sort(key=_edge_rank)
 
-        conflict = any(("resolution_state" in e and e["resolution_state"] == "contradicted") for e in edges)
-        staging = any(("resolution_state" in e and e["resolution_state"] == "staging") for e in edges)
         keep_versions = intent == "version_diff"
         now_ts = time.time()
         extra_sensitive = _get_sensitive_extra_terms()
-        fact_lines: list[str] = []
-        seen_facts: set[str] = set()
-        has_self_edge = False
 
-        for i, e in enumerate(edges, start=1):
+        # 收集矛盾边及其配对边 ID：豁免 0.35 裁切并强制成对相邻渲染。
+        partner_map: dict[str, str] = {}
+        contradicted_ids: set[str] = set()
+        for e in edges:
+            eid = e["id"]
+            st = e["resolution_state"] if "resolution_state" in e else "active"
+            cid = e["contradicts_edge_id"] if "contradicts_edge_id" in e and e["contradicts_edge_id"] else ""
+            if st == "contradicted":
+                if eid:
+                    contradicted_ids.add(eid)
+                if cid:
+                    contradicted_ids.add(cid)
+                    if eid:
+                        partner_map[eid] = cid
+                        partner_map.setdefault(cid, eid)
+
+        eligible: list[tuple[Edge, str]] = []
+        eligible_by_id: dict[str, tuple[Edge, str]] = {}
+        seen_facts: set[str] = set()
+
+        for e in edges:
+            eid = e["id"]
+            state = e["resolution_state"] if "resolution_state" in e else "active"
+            if state == "retracted" and not keep_versions:
+                continue
             invalid_at = e["invalid_at_ts"]
             if invalid_at and invalid_at < now_ts and not keep_versions:
                 continue
-            if e["weight"] < memory_config.min_edge_weight:
+            is_conflict_member = bool(eid and eid in contradicted_ids) or state == "contradicted"
+            if e["weight"] < memory_config.min_edge_weight and not is_conflict_member:
                 continue
             fact = _complete_fact_subject(e["fact"], e["source_name"])
             if not fact or _DANGLING_FACT_RE.search(fact):
                 continue
-            # 语义相关性防线：剔除仅因同日期/低分召回且与问句实体完全无关的边
             sc = float(e["score"] or 0.0) if "score" in e else 0.0
-            if sc < 0.35 and query.strip():
+            if sc < 0.35 and query.strip() and not is_conflict_member:
                 from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
 
                 stop_words = (
@@ -409,21 +460,50 @@ class MemoryContext:
             ):
                 continue
             sig = fact.strip().lower().replace(" ", "")[:24]
-            if sig in seen_facts:
+            if sig in seen_facts and not is_conflict_member:
                 continue
             seen_facts.add(sig)
+            eligible.append((e, fact))
+            if eid:
+                eligible_by_id[eid] = (e, fact)
 
+        ordered_pairs: list[tuple[Edge, str]] = []
+        emitted_ids: set[str] = set()
+        max_inject = memory_config.fact_max_inject
+        for e, fact in eligible:
+            eid = e["id"]
+            if eid and eid in emitted_ids:
+                continue
+            if len(ordered_pairs) >= max_inject:
+                break
+            ordered_pairs.append((e, fact))
+            if eid:
+                emitted_ids.add(eid)
+                pid = partner_map[eid] if eid in partner_map else ""
+                if pid and pid in eligible_by_id and pid not in emitted_ids:
+                    ordered_pairs.append(eligible_by_id[pid])
+                    emitted_ids.add(pid)
+
+        fact_lines: list[str] = []
+        has_self_edge = False
+        has_conflict = False
+        has_staging = False
+        for i, (e, fact) in enumerate(ordered_pairs, start=1):
             state = e["resolution_state"] if "resolution_state" in e else "active"
             mark = ""
             if "scope_key" in e and e["scope_key"].startswith("self:"):
                 has_self_edge = True
                 mark = "[自我经历] "
-            if state == "contradicted":
-                mark += "⚠️[存在未消解矛盾] "
+            if state == "contradicted" or (e["id"] and e["id"] in contradicted_ids):
+                has_conflict = True
+                mark += MEMORY_RUMOR_DENIED_TAG
             elif state == "staging":
-                mark += "[待证实传闻] "
-            elif state == "superseded" and intent == "version_diff":
-                mark += "[已于后续更新] "
+                has_staging = True
+                mark += MEMORY_RUMOR_UNCONFIRMED_TAG
+            elif state == "retracted" and keep_versions:
+                mark += MEMORY_RETRACTED_EDGE_TAG
+            elif state == "superseded" and keep_versions:
+                mark += MEMORY_SUPERSEDED_EDGE_TAG
 
             is_id = any(k in fact for k in _IDENTITY_FACT_KEYWORDS)
             dt_prefix = _edge_date_prefix(e)
@@ -435,8 +515,6 @@ class MemoryContext:
             else:
                 rendered_fact = fact
             fact_lines.append(f"• [记录 #{i}{_edge_stamp(e)}] {dt_prefix}{mark}{id_tag}{rendered_fact}")
-            if len(fact_lines) >= memory_config.fact_max_inject:
-                break
 
         taken = _take_lines(fact_lines, fact_budget)
         if not taken:
@@ -444,9 +522,9 @@ class MemoryContext:
         header = "【核心事实 - 与当前问题相关】"
         if intent == "timeline_order":
             header += MEMORY_TIMELINE_ORDER_NOTE
-        if conflict:
+        if has_conflict:
             header += MEMORY_CONFLICT_NOTE
-        if staging:
+        if has_staging:
             header += MEMORY_STAGING_NOTE
         if has_self_edge:
             header += MEMORY_SPEAKER_ISOLATION_NOTE
@@ -512,6 +590,7 @@ class MemoryContext:
                 from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import excerpt_around_tokens
 
                 shown = excerpt_around_tokens(raw, query, 480) or shown
+            retract_prefix = ep["retraction_note"] if "retraction_note" in ep and ep["retraction_note"] else ""
             ts = (ep["valid_at"] or "").strip()[:19].replace("T", " ")
             if ts:
                 stamp = f"[{ts}] "
@@ -520,9 +599,9 @@ class MemoryContext:
                     ev = event_at_from_text(raw, said)
                     if ev.date() != said.date():
                         stamp += f"[发生 {ev.strftime('%Y-%m-%d')}] "
-                dated.append(f"{stamp}{grp_prefix}{prefix}{shown}")
+                dated.append(f"{retract_prefix}{stamp}{grp_prefix}{prefix}{shown}")
             else:
-                undated.append(f"{grp_prefix}{prefix}{shown}")
+                undated.append(f"{retract_prefix}{grp_prefix}{prefix}{shown}")
         return dated + undated
 
     def _split_episode_buckets(
@@ -644,7 +723,7 @@ class MemoryContext:
         if intent in ("timeline_order", "broad_summary"):
             sheet_tail = [e for e in packed if is_fact_sheet(e)]
             core_packed = [e for e in packed if not is_fact_sheet(e)]
-            core_packed.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+            core_packed.sort(key=effective_event_at)
             packed = core_packed + sheet_tail
 
         skeleton_block: str | None = None
@@ -701,10 +780,10 @@ class MemoryContext:
             sheet_eps = [e for e in user_eps if is_fact_sheet(e)]
             want_asst = intent == "broad_summary" and bool(asst_eps)
             user_share = (other_budget * 3) // 4 if want_asst else other_budget
-            taken = _take_head_tail_lines(_fmt(core_user_eps, self_mark=False), user_share)
+            taken = _take_uniform_span_lines(_fmt(core_user_eps, self_mark=False), user_share)
             used_chars = sum(len(x) for x in taken)
             if want_asst and other_budget - used_chars > 120:
-                taken = taken + _take_head_tail_lines(_fmt(asst_eps, self_mark=False), other_budget - used_chars)
+                taken = taken + _take_uniform_span_lines(_fmt(asst_eps, self_mark=False), other_budget - used_chars)
                 used_chars = sum(len(x) for x in taken)
             if sheet_eps and other_budget - used_chars > 200:
                 taken = taken + _take_lines(_fmt(sheet_eps, self_mark=False), other_budget - used_chars)
@@ -778,6 +857,10 @@ class MemoryContext:
 
         if self.low_evidence:
             parts.append("【检索提示】记忆中没有与该问题直接相关的证据。")
+
+        thread_block = self._render_threads_block(max_chars, intent)
+        if thread_block is not None:
+            parts.append(_speech(thread_block))
 
         ev_block = self._render_events_block(intent)
         if ev_block is not None:

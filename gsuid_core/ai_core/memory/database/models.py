@@ -9,9 +9,10 @@
 偏好表 ``AIMemPreference`` 独立位于 ``gsuid_core.ai_core.memory.database.preference``。
 """
 
+import json
 import uuid
 import asyncio
-from typing import List, TypeVar, Optional, Sequence
+from typing import List, TypeVar, Optional, Sequence, TypedDict
 from datetime import datetime, timezone, timedelta
 from collections.abc import Mapping
 
@@ -26,6 +27,7 @@ from sqlalchemy import (
     UniqueConstraint,
     or_,
     and_,
+    case,
     desc,
     func,
     not_,
@@ -65,6 +67,131 @@ def _dict_str(data: Mapping[str, object], key: str, default: str = "") -> str:
         if isinstance(raw, str):
             return raw
     return default
+
+
+class PendingAliasEntry(TypedDict):
+    """二轨待证实外号条目：累计跨窗口命中 >= 2 次后晋升进 aliases_json。"""
+
+    alias: str
+    hits: int
+    windows: list[str]
+
+
+_PERSON_ENTITY_KINDS: frozenset[str] = frozenset({"speaker", "person"})
+_COMPATIBLE_ENTITY_KIND_GROUPS: tuple[frozenset[str], ...] = (
+    _PERSON_ENTITY_KINDS,
+    frozenset({"item", "concept"}),
+    frozenset({"org"}),
+    frozenset({"location"}),
+    frozenset({"project"}),
+    frozenset({"event"}),
+)
+
+
+def are_entity_kinds_compatible(kind_a: str, kind_b: str) -> bool:
+    """实体类型兼容矩阵：物理禁止人物（speaker/person）与物品/机构/地点等合并。"""
+    ka = (kind_a or "").strip().lower()
+    kb = (kind_b or "").strip().lower()
+    if ka == kb:
+        return True
+    if not ka or not kb:
+        return ka not in _PERSON_ENTITY_KINDS and kb not in _PERSON_ENTITY_KINDS
+    if (ka in _PERSON_ENTITY_KINDS) != (kb in _PERSON_ENTITY_KINDS):
+        return False
+    for group in _COMPATIBLE_ENTITY_KIND_GROUPS:
+        if ka in group and kb in group:
+            return True
+    return False
+
+
+def _parse_str_list_json(raw: str | None) -> list[str]:
+    if not raw or not raw.strip():
+        return []
+    try:
+        parsed: object = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in parsed:
+        if isinstance(item, str):
+            val = item.strip()
+            if val and val not in seen:
+                seen.add(val)
+                out.append(val)
+    return out
+
+
+def _dump_str_list_json(items: Sequence[str], *, cap: int = 64) -> str:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        val = item.strip()
+        if val and val not in seen:
+            seen.add(val)
+            out.append(val)
+            if len(out) >= cap:
+                break
+    return json.dumps(out, ensure_ascii=False)
+
+
+def _parse_pending_aliases_json(raw: str | None) -> list[PendingAliasEntry]:
+    if not raw or not raw.strip():
+        return []
+    try:
+        parsed: object = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[PendingAliasEntry] = []
+    seen: set[str] = set()
+    for item in parsed:
+        if isinstance(item, str):
+            alias = item.strip()
+            if alias and alias not in seen:
+                seen.add(alias)
+                out.append(PendingAliasEntry(alias=alias, hits=1, windows=[]))
+            continue
+        if not isinstance(item, dict):
+            continue
+        alias_raw = item["alias"] if "alias" in item else ""
+        if not isinstance(alias_raw, str):
+            continue
+        alias = alias_raw.strip()
+        if not alias or alias in seen:
+            continue
+        hits_raw = item["hits"] if "hits" in item else 1
+        hits = int(hits_raw) if isinstance(hits_raw, int) and not isinstance(hits_raw, bool) and hits_raw > 0 else 1
+        wins_raw = item["windows"] if "windows" in item else []
+        windows = (
+            [str(w).strip() for w in wins_raw if isinstance(w, str) and w.strip()] if isinstance(wins_raw, list) else []
+        )
+        seen.add(alias)
+        out.append(PendingAliasEntry(alias=alias, hits=hits, windows=windows[:8]))
+    return out
+
+
+def _dump_pending_aliases_json(entries: Sequence[PendingAliasEntry], *, cap: int = 32) -> str:
+    cleaned: list[PendingAliasEntry] = []
+    seen: set[str] = set()
+    for entry in entries:
+        alias = entry["alias"].strip()
+        if not alias or alias in seen:
+            continue
+        seen.add(alias)
+        cleaned.append(
+            PendingAliasEntry(
+                alias=alias,
+                hits=max(1, int(entry["hits"])),
+                windows=[w.strip() for w in entry["windows"] if w.strip()][:8],
+            )
+        )
+        if len(cleaned) >= cap:
+            break
+    return json.dumps(cleaned, ensure_ascii=False)
 
 
 def _model_table(model: type[SQLModel]) -> Table:
@@ -870,14 +997,6 @@ class AIMemEpisode(SQLModel, table=True):
         return out
 
     @classmethod
-    async def assign_session_thread(cls, session_id: str, thread_id: str) -> None:
-        if not session_id or not thread_id:
-            return
-        async with sqlite_write_gate, async_maker() as session:
-            await session.execute(update(cls).where(col(cls.session_id) == session_id).values(thread_id=thread_id))
-            await session.commit()
-
-    @classmethod
     async def purge_episodes_by_ids(cls, episode_ids: list[str]) -> int:
         if not episode_ids:
             return 0
@@ -939,6 +1058,7 @@ class AIMemEntity(SQLModel, table=True):
         UniqueConstraint("scope_key", "name", name="uq_entity_scope_name"),
         Index("ix_mem_entity_scope_name", "scope_key", "name"),
         Index("ix_mem_entity_scope_speaker", "scope_key", "is_speaker"),
+        Index("ix_mem_entity_scope_user", "scope_key", "user_id"),
         Index("ix_mem_entity_scope_id", "scope_key", "id"),
         Index("ix_mem_entity_updated_at", "updated_at"),
     )
@@ -951,9 +1071,60 @@ class AIMemEntity(SQLModel, table=True):
     is_speaker: bool = Field(default=False)
     entity_kind: str = Field(default="person", max_length=24)
     user_id: Optional[str] = Field(default=None, index=True, max_length=64)
+    aliases_json: str = Field(default="[]", sa_column=Column(Text, nullable=False, default="[]"))
+    pending_aliases_json: str = Field(default="[]", sa_column=Column(Text, nullable=False, default="[]"))
+    avatar_url: str = Field(default="", sa_column=Column(Text, nullable=False, default=""))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     qdrant_id: str = Field(index=True, max_length=36)
+
+    def get_aliases(self) -> list[str]:
+        return _parse_str_list_json(self.aliases_json)
+
+    def set_aliases(self, aliases: Sequence[str]) -> None:
+        self.aliases_json = _dump_str_list_json(aliases)
+
+    def get_pending_aliases(self) -> list[PendingAliasEntry]:
+        return _parse_pending_aliases_json(self.pending_aliases_json)
+
+    def set_pending_aliases(self, entries: Sequence[PendingAliasEntry]) -> None:
+        self.pending_aliases_json = _dump_pending_aliases_json(entries)
+
+    @classmethod
+    @with_read_session
+    async def find_by_user_id(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        user_id: str,
+    ) -> Optional["AIMemEntity"]:
+        if not scope_key or not user_id:
+            return None
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key, col(cls.user_id) == user_id)
+            .order_by(desc(col(cls.is_speaker)), desc(col(cls.updated_at)))
+            .limit(1)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+    @classmethod
+    @with_read_session
+    async def list_speakers_by_scope(
+        cls,
+        session: AsyncSession,
+        scope_key: str,
+        limit: int = 500,
+    ) -> list["AIMemEntity"]:
+        if not scope_key or limit <= 0:
+            return []
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key, col(cls.is_speaker).is_(True))
+            .order_by(col(cls.updated_at).desc())
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
 
     episodes: List["AIMemEpisode"] = Relationship(
         back_populates="mentioned_entities",
@@ -985,19 +1156,33 @@ class AIMemEntity(SQLModel, table=True):
         session: AsyncSession,
         scope_key: str,
         name: str,
+        *,
+        entity_kind: str = "",
     ) -> Optional["AIMemEntity"]:
         result = await session.execute(select(cls).where(cls.scope_key == scope_key, cls.name == name))
         entity = result.scalar_one_or_none()
         if entity:
             return entity
         from gsuid_core.ai_core.memory.config import memory_config
-        from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
+        from gsuid_core.ai_core.memory.vector.ops import search_entities_dense_cosine
 
-        similar = await _hybrid_search_entities(query=name, scope_keys=[scope_key], top_k=3)
         threshold = memory_config.dedup_similarity_threshold
-        if similar and similar[0]["score"] >= threshold:
-            result = await session.execute(select(cls).where(cls.id == similar[0]["id"]))
-            return result.scalar_one_or_none()
+        similar = await search_entities_dense_cosine(
+            query=name,
+            scope_keys=[scope_key],
+            top_k=5,
+            score_threshold=threshold,
+        )
+        for hit in similar:
+            if hit["score"] < threshold:
+                continue
+            cand_res = await session.execute(select(cls).where(cls.id == hit["id"], cls.scope_key == scope_key))
+            cand = cand_res.scalar_one_or_none()
+            if cand is None:
+                continue
+            if entity_kind and not are_entity_kinds_compatible(entity_kind, cand.entity_kind):
+                continue
+            return cand
         return None
 
     @classmethod
@@ -1010,26 +1195,31 @@ class AIMemEntity(SQLModel, table=True):
                     ed["name"] = name[len("user_") :]
 
     @classmethod
-    async def _hybrid_match_names(cls, scope_key: str, names: Sequence[str]) -> list[tuple[str, str]]:
-        """并发向量+词法匹配未命中精确名称的实体，返回 ``(name, candidate_entity_id)``。"""
+    async def _dense_match_candidates(cls, scope_key: str, names: Sequence[str]) -> dict[str, list[str]]:
+        """纯稠密余弦匹配未命中精确名称的实体，返回 ``{name: [candidate_entity_id, ...]}``。"""
         from gsuid_core.ai_core.memory.config import memory_config as _mc
-        from gsuid_core.ai_core.memory.vector.ops import _hybrid_search_entities
+        from gsuid_core.ai_core.memory.vector.ops import search_entities_dense_cosine
 
-        async def _one(uname: str) -> tuple[str, Sequence[Mapping[str, object]]]:
-            return uname, await _hybrid_search_entities(query=uname, scope_keys=[scope_key], top_k=3)
+        threshold = _mc.dedup_similarity_threshold
+
+        async def _one(uname: str) -> tuple[str, list[str]]:
+            similar = await search_entities_dense_cosine(
+                query=uname,
+                scope_keys=[scope_key],
+                top_k=5,
+                score_threshold=threshold,
+            )
+            cids = [hit["id"] for hit in similar if hit["score"] >= threshold and hit["id"]]
+            return uname, cids
 
         search_results = await asyncio.gather(*(_one(n) for n in names))
-        threshold = _mc.dedup_similarity_threshold
-        pairs: list[tuple[str, str]] = []
-        for uname, similar in search_results:
-            if not similar:
-                continue
-            top = similar[0]
-            score = top["score"] if "score" in top else 0.0
-            sid = top["id"] if "id" in top else ""
-            if isinstance(score, (int, float)) and score >= threshold and isinstance(sid, str) and sid:
-                pairs.append((uname, sid))
-        return pairs
+        return {uname: cids for uname, cids in search_results if cids}
+
+    @classmethod
+    async def _hybrid_match_names(cls, scope_key: str, names: Sequence[str]) -> list[tuple[str, str]]:
+        """按纯稠密余弦匹配未命中精确名称的实体，返回 ``(name, top_candidate_id)``。"""
+        cand_map = await cls._dense_match_candidates(scope_key, names)
+        return [(uname, cids[0]) for uname, cids in cand_map.items() if cids]
 
     @classmethod
     async def prefetch_hybrid_name_ids(
@@ -1038,7 +1228,12 @@ class AIMemEntity(SQLModel, table=True):
         entities_data: list[dict[str, object]],
     ) -> dict[str, str]:
         cls._normalize_entity_data_names(entities_data)
-        all_names = list({n for ed in entities_data if (n := _dict_str(ed, "name").strip())})
+        kind_by_name: dict[str, str] = {}
+        for ed in entities_data:
+            n = _dict_str(ed, "name").strip()
+            if n and n not in kind_by_name:
+                kind_by_name[n] = _dict_str(ed, "kind", "person")
+        all_names = list(kind_by_name.keys())
         if not all_names:
             return {}
         async with async_maker() as session:
@@ -1050,16 +1245,25 @@ class AIMemEntity(SQLModel, table=True):
         if not unmatched:
             return {}
 
-        matched_pairs = await cls._hybrid_match_names(scope_key, unmatched)
-        if not matched_pairs:
+        cand_map = await cls._dense_match_candidates(scope_key, unmatched)
+        if not cand_map:
             return {}
-        cand_ids = list({sid for _, sid in matched_pairs})
+        cand_ids = list({sid for cids in cand_map.values() for sid in cids})
         async with async_maker() as session:
             rows = (
-                await session.execute(select(cls.id).where(col(cls.id).in_(cand_ids), cls.scope_key == scope_key))
+                await session.execute(
+                    select(cls.id, cls.entity_kind).where(col(cls.id).in_(cand_ids), cls.scope_key == scope_key)
+                )
             ).all()
-            valid_ids = {str(r[0]) for r in rows}
-        return {uname: sid for uname, sid in matched_pairs if sid in valid_ids}
+            kind_by_id = {str(r[0]): str(r[1] or "person") for r in rows}
+        out: dict[str, str] = {}
+        for uname, cids in cand_map.items():
+            req_kind = kind_by_name[uname] if uname in kind_by_name else "person"
+            for sid in cids:
+                if sid in kind_by_id and are_entity_kinds_compatible(req_kind, kind_by_id[sid]):
+                    out[uname] = sid
+                    break
+        return out
 
     @classmethod
     async def extract_and_upsert(
@@ -1077,30 +1281,55 @@ class AIMemEntity(SQLModel, table=True):
         new_entity_count = 0
         cls._normalize_entity_data_names(entities_data)
 
+        existing_by_uid: dict[str, AIMemEntity] = {}
+        all_uids = list({u for ed in entities_data if (u := _dict_str(ed, "user_id").strip())})
+        if all_uids:
+            uid_rows = (
+                (
+                    await session.execute(
+                        select(cls)
+                        .where(cls.scope_key == scope_key, col(cls.user_id).in_(all_uids))
+                        .order_by(desc(col(cls.is_speaker)), desc(col(cls.updated_at)))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for row in uid_rows:
+                if row.user_id and row.user_id not in existing_by_uid:
+                    existing_by_uid[row.user_id] = row
+
         existing_map: dict[str, AIMemEntity] = {}
-        all_names = [n for ed in entities_data if (n := _dict_str(ed, "name").strip())]
+        kind_by_name: dict[str, str] = {}
+        for ed in entities_data:
+            n = _dict_str(ed, "name").strip()
+            if n and n not in kind_by_name:
+                kind_by_name[n] = _dict_str(ed, "kind", "person")
+        all_names = list(kind_by_name.keys())
         if all_names:
             result = await session.execute(select(cls).where(cls.scope_key == scope_key, col(cls.name).in_(all_names)))
             existing_map = {e.name: e for e in result.scalars().all()}
 
         unmatched_names = [n for n in all_names if n not in existing_map]
         if unmatched_names:
-            matched_pairs = (
-                [(u, hybrid_name_ids[u]) for u in unmatched_names if u in hybrid_name_ids]
-                if hybrid_name_ids is not None
-                else await cls._hybrid_match_names(scope_key, unmatched_names)
-            )
-            if matched_pairs:
-                cand_ids = list({sid for _, sid in matched_pairs})
+            if hybrid_name_ids is not None:
+                cand_map = {u: [hybrid_name_ids[u]] for u in unmatched_names if u in hybrid_name_ids}
+            else:
+                cand_map = await cls._dense_match_candidates(scope_key, unmatched_names)
+            cand_ids = list({sid for cids in cand_map.values() for sid in cids})
+            if cand_ids:
                 rows = (
                     (await session.execute(select(cls).where(col(cls.id).in_(cand_ids), cls.scope_key == scope_key)))
                     .scalars()
                     .all()
                 )
                 by_id = {e.id: e for e in rows}
-                for uname, sid in matched_pairs:
-                    if sid in by_id:
-                        existing_map[uname] = by_id[sid]
+                for uname, cids in cand_map.items():
+                    req_kind = kind_by_name[uname] if uname in kind_by_name else "person"
+                    for sid in cids:
+                        if sid in by_id and are_entity_kinds_compatible(req_kind, by_id[sid].entity_kind):
+                            existing_map[uname] = by_id[sid]
+                            break
 
         _MAX_SUMMARY_CHARS = 2000
         speaker_id_set = {s for s in speaker_ids if s}
@@ -1108,7 +1337,6 @@ class AIMemEntity(SQLModel, table=True):
             name = _dict_str(entity_data, "name").strip()
             if not name:
                 continue
-            existing = existing_map[name] if name in existing_map else None
             raw_tags = entity_data["tag"] if "tag" in entity_data and isinstance(entity_data["tag"], list) else []
             tag_list: list[object] = list(raw_tags)
             uid = _dict_str(entity_data, "user_id").strip() or None
@@ -1121,13 +1349,17 @@ class AIMemEntity(SQLModel, table=True):
                     kind = "speaker"
                 if "speaker" not in tag_list:
                     tag_list.append("speaker")
+            existing = existing_by_uid[uid] if (uid is not None and uid in existing_by_uid) else None
+            if existing is None and name in existing_map:
+                existing = existing_map[name]
             summary_piece = _dict_str(entity_data, "summary")
             if existing:
-                if is_spk and not existing.is_speaker:
+                person_compat = are_entity_kinds_compatible("speaker", existing.entity_kind)
+                if is_spk and not existing.is_speaker and person_compat:
                     existing.is_speaker = True
                 if is_spk and existing.entity_kind == "person":
                     existing.entity_kind = "speaker"
-                if uid and not existing.user_id:
+                if uid and not existing.user_id and person_compat:
                     existing.user_id = uid
                 if summary_piece and summary_piece not in existing.summary:
                     combined = f"{existing.summary}\n{summary_piece}".strip()
@@ -1136,7 +1368,7 @@ class AIMemEntity(SQLModel, table=True):
                     existing.summary = combined
                 existing_tags = existing.tag if isinstance(existing.tag, list) else []
                 merged_tags = list(set(existing_tags) | set(tag_list))
-                if is_spk and "speaker" not in merged_tags:
+                if existing.is_speaker and "speaker" not in merged_tags:
                     merged_tags.append("speaker")
                 existing.tag = merged_tags
                 existing.updated_at = datetime.now(timezone.utc)
@@ -1156,6 +1388,9 @@ class AIMemEntity(SQLModel, table=True):
                     user_id=uid,
                     qdrant_id=entity_id,
                 )
+                existing_map[name] = target_entity
+                if uid is not None:
+                    existing_by_uid[uid] = target_entity
                 payload_tags = tag_list
             session.add(target_entity)
             vector_payloads.append(
@@ -1167,6 +1402,9 @@ class AIMemEntity(SQLModel, table=True):
                     "is_speaker": target_entity.is_speaker,
                     "user_id": target_entity.user_id,
                     "tag": payload_tags,
+                    "aliases": target_entity.get_aliases(),
+                    "entity_kind": target_entity.entity_kind,
+                    "avatar_url": target_entity.avatar_url,
                 }
             )
             name_to_id[name] = target_entity.id
@@ -1191,23 +1429,6 @@ class AIMemEntity(SQLModel, table=True):
     @classmethod
     def _has_edge_expr(cls) -> ColumnElement[bool]:
         return exists().where(or_(col(AIMemEdge.source_entity_id) == cls.id, col(AIMemEdge.target_entity_id) == cls.id))
-
-    @classmethod
-    @with_session
-    async def collect_orphans(
-        cls,
-        session: AsyncSession,
-        ttl_days: int = 10,
-    ) -> list[tuple[str, str, str]]:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
-        result = await session.execute(
-            select(cls.id, cls.scope_key, cls.qdrant_id).where(
-                col(cls.is_speaker).is_(False),
-                col(cls.updated_at) < cutoff,
-                ~cls._has_edge_expr(),
-            )
-        )
-        return [(row[0], row[1], row[2] or row[0]) for row in result.all()]
 
     @classmethod
     async def purge_orphans_by_ids(cls, entity_ids: list[str]) -> int:
@@ -1365,11 +1586,12 @@ class AIMemEntity(SQLModel, table=True):
 
 
 class AIMemThread(SQLModel, table=True):
-    """跨 session 的主题线程；里程碑边按 (valid_at, turn_index) 追加。"""
+    """跨 session 的主题故事线；里程碑边按 (valid_at, turn_index) 追加。"""
 
     __table_args__ = (
         Index("ix_mem_thread_scope_first", "scope_key", "first_at"),
         Index("ix_mem_thread_scope_active", "scope_key", "last_at"),
+        Index("ix_mem_thread_scope_status_last", "scope_key", "status", "last_at"),
         Index("ix_mem_thread_last_at", "last_at"),
     )
 
@@ -1383,18 +1605,37 @@ class AIMemThread(SQLModel, table=True):
     last_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     n_sessions: int = Field(default=0)
     milestone_count: int = Field(default=0)
+    episode_count: int = Field(default=0)
+    participant_uids_json: str = Field(default="[]", sa_column=Column(Text, nullable=False, default="[]"))
     qdrant_id: str = Field(default="", max_length=36)
     mention_count: int = Field(default=1)
     last_mentioned_at: Optional[datetime] = Field(default=None)
-    title_source: str = Field(default="opener", max_length=16)
+    title_source: str = Field(default="llm", max_length=16)
     watermark_valid_at: Optional[datetime] = Field(default=None)
+
+    def get_participant_uids(self) -> list[str]:
+        return _parse_str_list_json(self.participant_uids_json)
+
+    def set_participant_uids(self, uids: Sequence[str]) -> None:
+        self.participant_uids_json = _dump_str_list_json(uids)
 
     @classmethod
     @with_read_session
     async def list_by_scope(cls, session: AsyncSession, scope_key: str, limit: int = 80) -> list["AIMemThread"]:
         if not scope_key or limit <= 0:
             return []
-        stmt = select(cls).where(col(cls.scope_key) == scope_key).order_by(col(cls.first_at).asc()).limit(limit)
+        stmt = select(cls).where(col(cls.scope_key) == scope_key).order_by(col(cls.last_at).desc()).limit(limit)
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_by_scopes(
+        cls, session: AsyncSession, scope_keys: Sequence[str], limit: int = 120
+    ) -> list["AIMemThread"]:
+        valid = [sk for sk in scope_keys if sk]
+        if not valid or limit <= 0:
+            return []
+        stmt = select(cls).where(col(cls.scope_key).in_(valid)).order_by(col(cls.last_at).desc()).limit(limit)
         return list((await session.execute(stmt)).scalars().all())
 
     @classmethod
@@ -1405,6 +1646,21 @@ class AIMemThread(SQLModel, table=True):
         stmt = (
             select(cls)
             .where(col(cls.scope_key) == scope_key, col(cls.status) == "active")
+            .order_by(col(cls.last_at).desc())
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    @with_read_session
+    async def list_active_or_dormant(
+        cls, session: AsyncSession, scope_key: str, limit: int = 20
+    ) -> list["AIMemThread"]:
+        if not scope_key or limit <= 0:
+            return []
+        stmt = (
+            select(cls)
+            .where(col(cls.scope_key) == scope_key, col(cls.status).in_(["active", "dormant"]))
             .order_by(col(cls.last_at).desc())
             .limit(limit)
         )
@@ -1437,7 +1693,7 @@ class AIMemThread(SQLModel, table=True):
 
 
 class AIMemEdge(SQLModel, table=True):
-    """一条可验证事实边。``resolution_state`` 承载四态代数。"""
+    """一条可验证事实边。``resolution_state`` 承载五态代数（active/staging/superseded/contradicted/retracted）。"""
 
     __table_args__ = (
         Index("ix_mem_edge_scope_valid", "scope_key", "valid_at", "invalid_at"),
@@ -1669,6 +1925,7 @@ class AIMemEdge(SQLModel, table=True):
         decay_factor: float = 0.85,
         protect_mention_count: int = 2,
         scope_prefix: Optional[str] = None,
+        min_decay_score: float = 0.35,
     ) -> int:
         async with sqlite_write_gate:
             return await cls._apply_decay_db(
@@ -1676,6 +1933,7 @@ class AIMemEdge(SQLModel, table=True):
                 decay_factor=decay_factor,
                 protect_mention_count=protect_mention_count,
                 scope_prefix=scope_prefix,
+                min_decay_score=min_decay_score,
             )
 
     @classmethod
@@ -1687,33 +1945,87 @@ class AIMemEdge(SQLModel, table=True):
         decay_factor: float = 0.85,
         protect_mention_count: int = 2,
         scope_prefix: Optional[str] = None,
+        min_decay_score: float = 0.35,
     ) -> int:
         cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
         conditions = [
             col(cls.invalid_at).is_(None),
             col(cls.mention_count) < protect_mention_count,
             or_(col(cls.last_accessed).is_(None), col(cls.last_accessed) < cutoff),
+            func.coalesce(col(cls.decay_score), 1.0) > min_decay_score,
         ]
         if scope_prefix:
             conditions.append(col(cls.scope_key).startswith(scope_prefix))
-        result = await session.execute(
-            update(cls).where(*conditions).values(decay_score=func.coalesce(col(cls.decay_score), 1.0) * decay_factor)
-        )
+        next_score = func.coalesce(col(cls.decay_score), 1.0) * decay_factor
+        floored = case((next_score < min_decay_score, min_decay_score), else_=next_score)
+        result = await session.execute(update(cls).where(*conditions).values(decay_score=floored))
         return result.rowcount if isinstance(result, CursorResult) else 0
 
     @classmethod
+    async def expire_due_edges(cls, now: datetime | None = None) -> list[tuple[str, float]]:
+        """将已到 expired_at 的短期状态边无损置为 retracted，返回待同步的 Qdrant 列表。"""
+        async with sqlite_write_gate:
+            return await cls._expire_due_edges_db(now=now)
+
+    @classmethod
     @with_session
-    async def collect_forgotten(
+    async def _expire_due_edges_db(
         cls,
         session: AsyncSession,
-        threshold: float = 0.1,
-        scope_prefix: Optional[str] = None,
-    ) -> list[str]:
-        conditions = [col(cls.decay_score) < threshold]
-        if scope_prefix:
-            conditions.append(col(cls.scope_key).startswith(scope_prefix))
-        result = await session.execute(select(cls.id, cls.qdrant_id).where(*conditions))
-        return [row[1] or row[0] for row in result.all()]
+        now: datetime | None = None,
+    ) -> list[tuple[str, float]]:
+        now_dt = _naive_utc(now or datetime.now(timezone.utc))
+        stmt = select(cls).where(
+            col(cls.expired_at).is_not(None),
+            col(cls.expired_at) < now_dt,
+            col(cls.invalid_at).is_(None),
+            col(cls.resolution_state).in_(["active", "staging"]),
+        )
+        rows = list((await session.execute(stmt)).scalars().all())
+        synced: list[tuple[str, float]] = []
+        for edge in rows:
+            exp = edge.expired_at or now_dt
+            edge.resolution_state = "retracted"
+            edge.invalid_at = exp
+            session.add(edge)
+            aware = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
+            synced.append((edge.qdrant_id or edge.id, aware.timestamp()))
+        return synced
+
+    @classmethod
+    async def archive_stale_staging_edges(
+        cls,
+        stale_days: int = 30,
+        now: datetime | None = None,
+    ) -> list[tuple[str, float]]:
+        """将创建满 stale_days 天仍未证实的 staging 传闻边归档为 retracted。"""
+        async with sqlite_write_gate:
+            return await cls._archive_stale_staging_edges_db(stale_days=stale_days, now=now)
+
+    @classmethod
+    @with_session
+    async def _archive_stale_staging_edges_db(
+        cls,
+        session: AsyncSession,
+        stale_days: int = 30,
+        now: datetime | None = None,
+    ) -> list[tuple[str, float]]:
+        now_dt = _naive_utc(now or datetime.now(timezone.utc))
+        cutoff = now_dt - timedelta(days=stale_days)
+        stmt = select(cls).where(
+            col(cls.resolution_state) == "staging",
+            col(cls.invalid_at).is_(None),
+            or_(col(cls.created_at) < cutoff, col(cls.valid_at) < cutoff),
+        )
+        rows = list((await session.execute(stmt)).scalars().all())
+        synced: list[tuple[str, float]] = []
+        now_ts = now_dt.replace(tzinfo=timezone.utc).timestamp()
+        for edge in rows:
+            edge.resolution_state = "retracted"
+            edge.invalid_at = now_dt
+            session.add(edge)
+            synced.append((edge.qdrant_id or edge.id, now_ts))
+        return synced
 
     @classmethod
     async def purge_by_ids(cls, edge_ids: list[str]) -> int:
@@ -1738,7 +2050,7 @@ class AIMemEdge(SQLModel, table=True):
                     col(cls.thread_id) == tid,
                     col(cls.edge_kind) == "milestone",
                     col(cls.invalid_at).is_(None),
-                    col(cls.resolution_state) != "superseded",
+                    col(cls.resolution_state).notin_(["superseded", "retracted"]),
                 )
             )
             actual = int(cnt_res.scalar_one() or 0)
@@ -1783,5 +2095,7 @@ __all__ = [
     "AIMemEntity",
     "AIMemEdge",
     "AIMemThread",
+    "PendingAliasEntry",
+    "are_entity_kinds_compatible",
     "mem_episode_entity_mentions",
 ]

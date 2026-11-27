@@ -234,19 +234,46 @@ async def get_term_mappings(scope_key: str) -> Dict[str, str]:
 
 
 async def get_scope_summary(scope_key: str, limit: int = 8) -> str:
-    """零 LLM 群摘要：活跃故事线标题 + 最近里程碑事实。"""
+    """零 LLM 群摘要：优先读活跃故事线滚动 summary，回退读里程碑/最近有效边。"""
+    from sqlmodel import col, select
+
+    from gsuid_core.utils.database.base_models import async_maker
     from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemThread
 
     if not scope_key:
         return ""
     threads = await AIMemThread.list_active(scope_key, limit=limit)
     if not threads:
+        threads = await AIMemThread.list_active_or_dormant(scope_key, limit=min(limit, 5))
+    if not threads:
         return ""
     lines: list[str] = []
     for th in threads:
-        lines.append(f"- {th.title or '未命名故事线'}")
+        title = (th.title or "").strip() or "未命名故事线"
+        rolling = (th.summary or "").strip()
+        if rolling:
+            lines.append(f"- {title}：{rolling[:120]}")
+            continue
+        lines.append(f"- {title}")
         milestones = await AIMemEdge.list_thread_milestones(scope_key, th.id, limit=3, ascending=False)
-        for edge in milestones:
+        if milestones:
+            for edge in milestones:
+                lines.append(f"  · {edge.fact[:80]}")
+            continue
+        async with async_maker() as session:
+            stmt = (
+                select(AIMemEdge)
+                .where(
+                    col(AIMemEdge.scope_key) == scope_key,
+                    col(AIMemEdge.thread_id) == th.id,
+                    col(AIMemEdge.invalid_at).is_(None),
+                    col(AIMemEdge.resolution_state).in_(["active", "contradicted"]),
+                )
+                .order_by(col(AIMemEdge.valid_at).desc())
+                .limit(3)
+            )
+            recent_edges = list((await session.execute(stmt)).scalars().all())
+        for edge in recent_edges:
             lines.append(f"  · {edge.fact[:80]}")
     return "\n".join(lines)
 
@@ -310,7 +337,8 @@ async def record_member_alias(scope_key: str, alias: str, user_id: str) -> List[
         return profile
 
     new_profile: GroupProfileData = await state_mutate(_PROFILE_SCOPE, scope_key, _mutate)
-    result = new_profile["member_alias_ids"].get(alias, [user_id])
+    alias_map = new_profile["member_alias_ids"]
+    result = alias_map[alias] if alias in alias_map else [user_id]
     logger.debug(
         i18n_t(
             "log.memory.groupprofile_scope_key_group_create",

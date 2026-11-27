@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from gsuid_core.ai_core.memory.retrieval.types import Episode
+from gsuid_core.ai_core.memory.retrieval.event_time import effective_event_at
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -27,10 +28,10 @@ def cluster_first_mentions(
     *,
     link_threshold: float = 0.88,
 ) -> list[Episode]:
-    """单链接聚类后每簇取最早；无向量则按时间均匀取样。"""
+    """单链接聚类后每簇取最早；无向量则按真实发生时间均匀取样。"""
     if n <= 0 or not openers:
         return []
-    ordered = sorted(openers, key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    ordered = sorted(openers, key=effective_event_at)
     if len(ordered) <= n:
         return list(ordered)
     ids = [str(e["id"]) if "id" in e else "" for e in ordered]
@@ -115,7 +116,7 @@ def select_by_topic_scores(
         return []
     ranked = [ep for _s, ep in sorted(zip(scores, episodes, strict=True), key=lambda x: x[0], reverse=True)]
     pool = ranked[: max(n * 3, n)]
-    pool.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    pool.sort(key=effective_event_at)
     if vectors is None:
         return cluster_first_mentions(pool, n)
     kept: dict[str, list[float]] = {}

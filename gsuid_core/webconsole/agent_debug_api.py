@@ -86,12 +86,16 @@ async def invalidate_memory_edge(
             return _err("Edge 不存在")
         now_utc = datetime.now(timezone.utc)
         edge.invalid_at = now_utc
-        res_state = edge.resolution_state or "active"
+        if edge.resolution_state not in ("superseded", "retracted"):
+            edge.resolution_state = "retracted"
+        res_state = edge.resolution_state
+        qdrant_edge_id = edge.qdrant_id or edge.id
+        session.add(edge)
         await session.commit()
     await update_edge_lifecycle_payloads(
         [
             {
-                "edge_id": edge_id,
+                "edge_id": qdrant_edge_id,
                 "invalid_at_ts": now_utc.timestamp(),
                 "resolution_state": res_state,
             }
@@ -117,6 +121,7 @@ async def list_memory_conflicts(
                     select(AIMemEdge)
                     .where(
                         AIMemEdge.scope_key == scope_key,
+                        col(AIMemEdge.invalid_at).is_(None),
                         col(AIMemEdge.resolution_state).in_(["contradicted", "staging"]),
                     )
                     .order_by(col(AIMemEdge.created_at).desc())

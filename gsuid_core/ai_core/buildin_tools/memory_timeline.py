@@ -158,6 +158,7 @@ async def read_session(
         around: 可选 #id 或 episode_id，展开附近原文
         radius: 展开半径，默认 6
     """
+    from gsuid_core.ai_core.memory.privacy import excise_group_episode_content_for_user
     from gsuid_core.ai_core.memory.database.models import AIMemEpisode
     from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import _assistant_turn, _speaker_stripped
 
@@ -167,15 +168,34 @@ async def read_session(
     keys = set(_scope_keys(ctx.deps))
     if not keys:
         return "没有可检索的记忆范围。"
-    rows = [r for r in await AIMemEpisode.get_session(sid) if r.scope_key in keys]
-    if not rows:
+    ev = ctx.deps.ev
+    is_private = ev is None or not ev.group_id
+    current_uid = str(ev.user_id).strip() if ev is not None and ev.user_id else ""
+
+    raw_rows = [r for r in await AIMemEpisode.get_session(sid) if r.scope_key in keys]
+    if not raw_rows:
         return f"找不到 session {sid}。"
+
+    safe_rows: list[tuple[AIMemEpisode, str]] = []
+    for row in raw_rows:
+        content = row.content or ""
+        if _assistant_turn(content):
+            continue
+        if is_private and row.scope_key.startswith("group:"):
+            # 私聊严禁展开其他群友在群内的原话。
+            spks = [str(s) for s in row.speaker_ids] if isinstance(row.speaker_ids, list) else []
+            excised = excise_group_episode_content_for_user(content, current_uid, spks)
+            if excised is None:
+                continue
+            content = excised
+        safe_rows.append((row, content))
+
     lines: list[str] = [f"【session {sid}】"]
-    user_rows = [r for r in rows if not _assistant_turn(r.content or "")]
-    for row in user_rows:
+    user_rows = [pair[0] for pair in safe_rows]
+    for row, content in safe_rows:
         day = row.valid_at.strftime("%Y-%m-%d") if row.valid_at else ""
         mark = _mark_for(row.id)
-        body = _speaker_stripped(row.content or "")[:160]
+        body = _speaker_stripped(content)[:160]
         lines.append(f"{mark} · {day} · {body.replace(chr(10), ' ').strip()}")
     target = (around or "").strip()
     if target:
@@ -184,14 +204,14 @@ async def read_session(
             lines.append(note)
         elif idx >= 0:
             lo = max(0, idx - max(0, radius))
-            hi = min(len(user_rows), idx + max(0, radius) + 1)
+            hi = min(len(safe_rows), idx + max(0, radius) + 1)
             lines.append("【原文】")
-            for row in user_rows[lo:hi]:
+            for row, content in safe_rows[lo:hi]:
                 day = row.valid_at.strftime("%Y-%m-%d") if row.valid_at else ""
-                body = _speaker_stripped(row.content or "").replace("\n", " ").strip()[:400]
+                body = _speaker_stripped(content).replace("\n", " ").strip()[:400]
                 mark = _mark_for(row.id)
                 lines.append(f"{mark} · {day} · {body}")
-    return "\n".join(lines) if len(lines) > 1 else f"session {sid} 没有用户发言。"
+    return "\n".join(lines) if len(lines) > 1 else f"session {sid} 没有可展示的用户发言。"
 
 
 @ai_tools(category="buildin", visible_when=visible_when_timeline_query)

@@ -81,9 +81,12 @@ def parse_iso_ts(raw: str) -> float:
     try:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        norm = text.replace("T", " ")
+        for fmt, slen in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d %H:%M", 16), ("%Y-%m-%d", 10)):
+            if len(norm) < slen:
+                continue
             try:
-                return datetime.strptime(text[: len(fmt)], fmt).replace(tzinfo=timezone.utc).timestamp()
+                return datetime.strptime(norm[:slen], fmt).replace(tzinfo=timezone.utc).timestamp()
             except ValueError:
                 continue
         return 0.0

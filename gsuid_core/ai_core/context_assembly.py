@@ -222,9 +222,38 @@ async def assemble_dynamic_context(
     )
     from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
 
-    tail = await load_speaker_preference_tail(bot_id, persona_name or "", user_id, existing_text=memory_text)
+    tail = await load_speaker_preference_tail(
+        bot_id,
+        persona_name or "",
+        user_id,
+        existing_text=memory_text,
+        query=query,
+        active_domains=ctx.assembled_domains,
+    )
     if tail:
         text = f"{text}\n\n{tail}" if text else tail
+
+    allowed_blocks = suffix_allowed_blocks(ctx)
+    if (allowed_blocks is None or "memory" in allowed_blocks) and not ctx.skip_memory:
+        from gsuid_core.ai_core.memory.config import memory_config
+        from gsuid_core.ai_core.configs.ai_config import ai_config
+
+        if bool(ai_config.get_config("enable_memory").data) and memory_config.enable_retrieval:
+            from gsuid_core.ai_core.memory.retrieval.anchor_lore import build_anchor_lore_block
+
+            at_targets: Tuple[str, ...] = ()
+            if ctx.inbound_link is not None and ctx.inbound_link.at_targets:
+                at_targets = ctx.inbound_link.at_targets
+            elif event is not None and event.at_list:
+                at_targets = tuple(str(x) for x in event.at_list if str(x).strip())
+            anchor_block = await build_anchor_lore_block(
+                user_id=user_id,
+                group_id=group_id,
+                query=query,
+                at_targets=at_targets,
+            )
+            if anchor_block:
+                text = f"{text}\n\n{anchor_block}" if text else anchor_block
     from gsuid_core.ai_core.entity_index import strip_surfaces, format_alias_bindings
     from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
 

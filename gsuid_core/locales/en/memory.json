@@ -119,6 +119,7 @@
   "log.memory.observation_queue_race": "Memory observation queue race; dropping message",
   "log.memory.observer_command_echo_filter": "[Observer] Command echo filter matched; discarding: {p0}",
   "log.memory.observer_credential_filtered": "[Observer] credential command/form message dropped from memory",
+  "log.memory.observer_external_bot_filtered": "[Observer] External bot filter matched; skipping long-term memory observation: {p0}",
   "log.memory.observer_injection_signature_filter_inject": "[Observer] Injection signature filter matched; discarding: {p0}",
   "log.memory.observer_repetition_filter_matched": "[Observer] Repetition filter matched; discarding: {p0}",
   "log.memory.observer_user_command_typo": "[Observer] User command/typo filter matched; discarding: {p0}",
@@ -187,5 +188,11 @@
   "log.memory.time_range_supplemental_retrieval_2": "[Memory] Time-range supplemental retrieval recalled {p0} Episode records ({p1:%Y-%m-%d} ~ {p2:%Y-%m-%d})",
   "log.memory.total_episode_records_entity": "[Memory] Total: {p0} Episode records, {p1} Entity items, {p2} Edge records, {p3} Category items",
   "log.memory.trigger_immediate_flush_correction": "[Memory] Failed to trigger immediate flush for correction: {e}",
-  "log.memory.update_group_profile": "[Memory] Failed to update group profile: {e}"
+  "log.memory.update_group_profile": "[Memory] Failed to update group profile: {e}",
+  "log.memory.v2_1_backup_done": "[Memory] v2.1 nondestructive migration created database backup: {path}",
+  "log.memory.v2_1_migration_fail": "[Memory] v2.1 nondestructive migration failed (original DB intact): {e}",
+  "log.memory.v2_1_sql_done": "[Memory] v2.1 nondestructive SQL repair completed ({ms}ms): speakers created={speakers}, demoted={demoted}, threads updated={threads}, stale cog nodes cleaned={cog_cleaned}",
+  "log.memory.v2_1_vector_backfill_done": "[Memory] v2.1 background speaker vector backfill completed: {done}",
+  "log.memory.v2_1_vector_backfill_fail": "[Memory] v2.1 background speaker vector backfill failed (can retry from console): {e}",
+  "log.memory.v2_1_vector_backfill_start": "[Memory] v2.1 starting low-priority background vector backfill: speakers={count}, payload patches={patches}"
 }

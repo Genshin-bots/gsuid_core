@@ -1022,6 +1022,15 @@ GET /api/ai/memory/scopes
             "scope_key": "group:789012",
             "scope_type": "group",
             "scope_id": "789012",
+            "display_name": "示例群聊",
+            "avatar_url": "https://example.com/group-icon.png",
+            "speaker_previews": [
+                {
+                    "user_id": "12345",
+                    "name": "示例用户",
+                    "avatar_url": "https://example.com/user-avatar.png"
+                }
+            ],
             "episode_count": 50,
             "entity_count": 30,
             "edge_count": 40,
@@ -1033,6 +1042,9 @@ GET /api/ai/memory/scopes
             "scope_key": "user_global:12345",
             "scope_type": "user_global",
             "scope_id": "12345",
+            "display_name": "示例用户",
+            "avatar_url": "https://example.com/user-avatar.png",
+            "speaker_previews": [],
             "episode_count": 20,
             "entity_count": 15,
             "edge_count": 10,
@@ -1043,6 +1055,8 @@ GET /api/ai/memory/scopes
     ]
 }
 ```
+
+`display_name`、`avatar_url` 来自 CoreUser / CoreGroup 或人格头像，缺失时为空字符串；`speaker_previews` 最多返回 3 个近期说话人，供群范围头像兜底展示。
 
 ---
 

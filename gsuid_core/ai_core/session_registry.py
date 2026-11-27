@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import time
 import asyncio
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Protocol, Sequence
 from threading import Lock
 
 from gsuid_core.message_history import get_history_manager
 
 if TYPE_CHECKING:
+    from pydantic_ai.messages import ModelMessage
+
     # 仅在类型检查期导入以避免运行时循环引用，保持类型提示完整追踪。
     from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 
@@ -246,7 +248,42 @@ def parse_session_scope(session_id: str) -> tuple[str, str, str]:
     return "", "", ""
 
 
-async def distill_idle_session(session: "GsCoreAIAgent") -> None:
+def _split_non_proactive_history(history: Sequence["ModelMessage"]) -> tuple[list["ModelMessage"], bool]:
+    """剥离 append_proactive_assistant_turn 追加的独立主动播报，防空闲 GC 回灌记忆。"""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, SystemPromptPart
+
+    kept: list[ModelMessage] = []
+    prev_is_active_request = False
+    has_user_turn = False
+    saw_proactive = False
+    for msg in history:
+        if isinstance(msg, ModelRequest):
+            non_sys = any(not isinstance(p, SystemPromptPart) for p in msg.parts)
+            if any(isinstance(p, UserPromptPart) for p in msg.parts):
+                has_user_turn = True
+            prev_is_active_request = non_sys
+            kept.append(msg)
+        elif isinstance(msg, ModelResponse):
+            if not prev_is_active_request:
+                saw_proactive = True
+                continue
+            prev_is_active_request = False
+            kept.append(msg)
+    return kept, saw_proactive and not has_user_turn
+
+
+class DistillableSession(Protocol):
+    @property
+    def session_id(self) -> str: ...
+
+    @property
+    def persona_name(self) -> Optional[str]: ...
+
+    @property
+    def history(self) -> Sequence["ModelMessage"]: ...
+
+
+async def distill_idle_session(session: DistillableSession) -> None:
     """GC 前把 B 轨中段抽成摘要写入记忆；失败只 warning，不挡回收。"""
     from gsuid_core.i18n import t
     from gsuid_core.logger import logger
@@ -257,9 +294,7 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
 
     if not session.history:
         return
-    summary = _extractive_middle_summary(session.history)
-    if not summary:
-        return
+    filtered_history, is_proactive_only = _split_non_proactive_history(session.history)
     bot_self_id, _kind, _sid = parse_session_scope(session.session_id)
     bid = bot_self_id or "default"
     from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
@@ -277,6 +312,22 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
         obs_msg_type = "private_msg"
         obs_targets = (_sid,)
     else:
+        return
+    if is_proactive_only:
+        await observe(
+            content="",
+            speaker_id=f"__assistant_{bid}__",
+            group_id=obs_gid,
+            bot_self_id=bid,
+            persona_name=session.persona_name or "",
+            observer_blacklist=[],
+            message_type=obs_msg_type,
+            at_targets=obs_targets,
+            is_proactive_broadcast=True,
+        )
+        return
+    summary = _extractive_middle_summary(filtered_history)
+    if not summary:
         return
     try:
         await remember(
@@ -303,6 +354,7 @@ async def distill_idle_session(session: "GsCoreAIAgent") -> None:
             observer_blacklist=[],
             message_type=obs_msg_type,
             at_targets=obs_targets,
+            is_proactive_broadcast=False,
         )
     except Exception as e:
         logger.debug(t("log.ai.session_gc_observe_fail", e=e))

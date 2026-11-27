@@ -33,8 +33,11 @@ class WindowRouteOutput(TypedDict):
 
 def format_window_line(index: int, record: "ObservationRecord") -> str:
     ts = record.timestamp.astimezone().strftime("%H:%M")
-    name = record.speaker_name or record.speaker_id
-    head = f"[#{index} {ts} {name}({record.speaker_id})]"
+    if record.is_assistant_context or record.speaker_id.startswith("__assistant_"):
+        head = f"[#{index} {ts} 助手上下文(禁抽事实)]"
+    else:
+        name = record.speaker_name or record.speaker_id
+        head = f"[#{index} {ts} {name}({record.speaker_id})]"
     if record.reply_to_msg_id:
         quote = f" -> 回复{record.reply_to_msg_id}"
         if record.reply_preview:

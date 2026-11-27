@@ -600,14 +600,20 @@ def render_speaker_preference_tail(rules: list[str]) -> str:
     return "\n\n".join(parts)
 
 
+_MAX_GENERAL_PREFS = 4
+_MAX_DOMAIN_PREFS = 3
+
+
 async def load_speaker_preference_tail(
     bot_id: str,
     persona_name: str,
     speaker_id: str,
     *,
     existing_text: str = "",
+    query: str = "",
+    active_domains: Sequence[str] = (),
 ) -> str:
-    """读这个人的 USER_GLOBAL 偏好和他名下的自我笔记。库未建则空。"""
+    """分域偏好唯一注入出口：通用规矩常驻 <=4 条，垂直域命中按需激活 <=3 条。"""
     speaker = speaker_id.strip()
     if not speaker:
         return ""
@@ -615,50 +621,88 @@ async def load_speaker_preference_tail(
 
     if async_maker is None:
         return ""
+    from gsuid_core.ai_core.kits.memory import relevant_preference_contexts
     from gsuid_core.ai_core.memory.config import memory_config
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_overlaps_text
 
     model = await get_self_model(bot_id, persona_name)
-    scoped: list[tuple[str, str, bool, Optional[datetime], str]] = []
+    general_scoped: list[tuple[str, str, bool, Optional[datetime], str]] = []
+    domain_scoped: list[tuple[str, str, bool, Optional[datetime], str]] = []
+    applied_ids: list[str] = []
+
     if memory_config.enable_preference_memory:
         from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
         scope = make_scope_key(ScopeType.USER_GLOBAL, speaker)
-        cap = int(memory_config.preference_max_inject)
-        standing_rows = await AIMemPreference.get_active(
-            [scope],
-            target_contexts=list(_STANDING_PREF_CONTEXTS),
-            limit=min(cap, 2),
-        )
-        other_rows = await AIMemPreference.get_active([scope], limit=cap * 3)
+        cap = max(int(memory_config.preference_max_inject), _MAX_GENERAL_PREFS + _MAX_DOMAIN_PREFS)
+        rows = await AIMemPreference.get_active([scope], limit=cap * 4)
+
+        q_clean = (query or "").strip()
+        q_low = q_clean.lower()
+        active_ctx: set[str] = {d.strip().lower() for d in active_domains if d and d.strip()}
+        if q_clean:
+            for dom in relevant_preference_contexts(q_clean):
+                if dom.strip():
+                    active_ctx.add(dom.strip().lower())
+        domain_gated = bool(q_clean or active_ctx)
+
         seen_ids: set[str] = set()
-        merged: list[AIMemPreference] = []
-        for row in standing_rows:
+        for row in rows:
             if row.id in seen_ids:
                 continue
-            if existing_text and row.preference_rule.strip() and row.preference_rule.strip() in existing_text:
-                continue
             seen_ids.add(row.id)
-            merged.append(row)
-        for row in other_rows:
-            if row.id in seen_ids or row.target_context == "possession":
+            ctx_val = (row.target_context or "general").strip() or "general"
+            rule_text = (row.preference_rule or "").strip()
+            if len(rule_text) < 4 or ctx_val in ("possession", "location"):
                 continue
-            if existing_text and row.preference_rule.strip() and row.preference_rule.strip() in existing_text:
+            if existing_text and rule_text in existing_text:
                 continue
-            seen_ids.add(row.id)
-            merged.append(row)
-        scoped = [
-            (row.target_context, row.preference_rule, row.is_correction, row.created_at, row.polarity) for row in merged
-        ]
+            entry = (ctx_val, rule_text, row.is_correction, row.created_at, row.polarity)
+            if ctx_val == "general":
+                general_scoped.append(entry)
+                applied_ids.append(row.id)
+                continue
+            if not domain_gated:
+                domain_scoped.append(entry)
+                applied_ids.append(row.id)
+                continue
+            ctx_low = ctx_val.lower()
+            matched_domain = (
+                ctx_low in active_ctx
+                or (q_low and ctx_low in q_low)
+                or (row.is_correction and q_clean and query_overlaps_text(q_clean, rule_text))
+            )
+            if matched_domain:
+                domain_scoped.append(entry)
+                applied_ids.append(row.id)
+
     notes = [
-        n for n in model["preferences_learned"] if not (existing_text and n.strip() and n.strip() in existing_text)
+        n
+        for n in model["preferences_learned"]
+        if len(n.strip()) >= 4 and not (existing_text and n.strip() and n.strip() in existing_text)
     ]
-    rules = collect_speaker_preference_rules(
+    general_rules = collect_speaker_preference_rules(
         notes,
-        scoped,
+        general_scoped,
         speaker,
-        limit=int(memory_config.preference_max_inject),
+        limit=min(_MAX_GENERAL_PREFS, int(memory_config.preference_max_inject)),
     )
-    return render_speaker_preference_tail(rules)
+    domain_limit = min(_MAX_DOMAIN_PREFS, max(0, int(memory_config.preference_max_inject) - len(general_rules)))
+    domain_rules = (
+        collect_speaker_preference_rules([], domain_scoped, speaker, limit=domain_limit) if domain_limit > 0 else []
+    )
+    if applied_ids:
+        import asyncio
+
+        from gsuid_core.ai_core.memory.database.preference import AIMemPreference
+
+        touch_ids = applied_ids[: _MAX_GENERAL_PREFS + _MAX_DOMAIN_PREFS]
+
+        async def _touch_applied() -> None:
+            await AIMemPreference.touch_applied(touch_ids)
+
+        asyncio.create_task(_touch_applied())
+    return render_speaker_preference_tail(general_rules + domain_rules)
 
 
 def build_relationship_context(rel: "RelationshipView") -> str:

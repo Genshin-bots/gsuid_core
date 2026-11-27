@@ -209,6 +209,24 @@ exec_list = [
     "CREATE INDEX IF NOT EXISTS ix_aiapprovalrequest_dedupe_key ON aiapprovalrequest (dedupe_key);",
     "CREATE INDEX IF NOT EXISTS ix_aiapprovalrequest_expires_at ON aiapprovalrequest (expires_at);",
     "CREATE INDEX IF NOT EXISTS ix_aiapprovalrequest_confirm_code_hash ON aiapprovalrequest (confirm_code_hash);",
+    # AI 记忆 v2.1 无损增量列与复合索引（幂等补齐；MySQL 不支持 TEXT 字面量默认值，附 NULL 兜底 + 回填）
+    "ALTER TABLE aimementity ADD COLUMN aliases_json TEXT DEFAULT '[]';",
+    "ALTER TABLE aimementity ADD COLUMN aliases_json TEXT NULL;",
+    "UPDATE aimementity SET aliases_json = '[]' WHERE aliases_json IS NULL;",
+    "ALTER TABLE aimementity ADD COLUMN pending_aliases_json TEXT DEFAULT '[]';",
+    "ALTER TABLE aimementity ADD COLUMN pending_aliases_json TEXT NULL;",
+    "UPDATE aimementity SET pending_aliases_json = '[]' WHERE pending_aliases_json IS NULL;",
+    "ALTER TABLE aimementity ADD COLUMN avatar_url TEXT DEFAULT '';",
+    "ALTER TABLE aimementity ADD COLUMN avatar_url TEXT NULL;",
+    "UPDATE aimementity SET avatar_url = '' WHERE avatar_url IS NULL;",
+    "CREATE INDEX IF NOT EXISTS ix_mem_entity_scope_user ON aimementity (scope_key, user_id);",
+    "CREATE INDEX ix_mem_entity_scope_user ON aimementity (scope_key, user_id);",
+    "ALTER TABLE aimemthread ADD COLUMN participant_uids_json TEXT DEFAULT '[]';",
+    "ALTER TABLE aimemthread ADD COLUMN participant_uids_json TEXT NULL;",
+    "UPDATE aimemthread SET participant_uids_json = '[]' WHERE participant_uids_json IS NULL;",
+    "ALTER TABLE aimemthread ADD COLUMN episode_count INTEGER DEFAULT 0;",
+    "CREATE INDEX IF NOT EXISTS ix_mem_thread_scope_status_last ON aimemthread (scope_key, status, last_at);",
+    "CREATE INDEX ix_mem_thread_scope_status_last ON aimemthread (scope_key, status, last_at);",
 ]
 
 

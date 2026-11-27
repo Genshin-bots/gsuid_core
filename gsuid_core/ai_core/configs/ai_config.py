@@ -926,6 +926,31 @@ MEMORY_CONFIG: Dict[str, GSC] = {
         "按人格配置",
         options=["按人格配置", "全部群聊"],
     ),
+    "external_bot_ids": GsListStrConfig(
+        "同群外部机器人账号列表",
+        "同群其他机器人的平台用户 ID（如 QQ 号）。"
+        "外部 Bot 消息保留在短期会话历史供当场引用，但拦截在长期记忆与图片记忆之外",
+        [],
+        options=[],
+    ),
+    "window_max_messages": GsIntConfig(
+        "记忆聚合单窗消息上限",
+        "单个摄入窗口最多聚合的消息条数，放宽至 50 条以保留完整多轮对话语境",
+        50,
+        options=[28, 40, 50, 65, 80],
+    ),
+    "window_idle_seconds": GsIntConfig(
+        "记忆聚合空闲刷盘秒数",
+        "群聊安静超过该秒数且累积满 6 条消息后触发刷盘（默认 480 秒即 8 分钟），避免短暂停顿切碎对话",
+        480,
+        options=[180, 300, 480, 600, 900],
+    ),
+    "window_max_age_seconds": GsIntConfig(
+        "记忆聚合窗口最长驻留秒数",
+        "窗口内自首条消息起算的最长等待秒数，超过则强制刷盘（默认 3600 秒即 1 小时）",
+        3600,
+        options=[1800, 3600, 7200],
+    ),
     "MemoryRecall": GsDivider(
         "记忆检索设置",
         "记忆检索设置",

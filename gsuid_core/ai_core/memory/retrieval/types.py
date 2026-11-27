@@ -17,6 +17,7 @@ class Episode(TypedDict):
     speaker_ids: NotRequired[list[str]]
     kind: NotRequired[str]
     score: NotRequired[float]
+    retraction_note: NotRequired[str]
 
 
 class Entity(TypedDict):
@@ -28,6 +29,9 @@ class Entity(TypedDict):
     score: float
     scope_key: NotRequired[str]
     created_at_ts: NotRequired[float]
+    entity_kind: NotRequired[str]
+    aliases: NotRequired[list[str]]
+    avatar_url: NotRequired[str]
 
 
 class Edge(TypedDict):
@@ -60,6 +64,8 @@ class ThreadSummary(TypedDict):
     status: str
     milestone_count: int
     last_active_at: str
+    participant_uids: NotRequired[list[str]]
+    episode_count: NotRequired[int]
 
 
 class MemoryEventCue(TypedDict):

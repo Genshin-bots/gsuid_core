@@ -113,10 +113,18 @@ async def remember_user_alias(
 
     try:
         from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+        from gsuid_core.ai_core.memory.identity import sync_group_profile_alias_to_entity
         from gsuid_core.ai_core.memory.group_profile import record_member_alias
 
         scope_key = make_scope_key(ScopeType.GROUP, str(group_id))
         ids = await record_member_alias(scope_key, alias, str(target_id))
+        await sync_group_profile_alias_to_entity(
+            scope_key=scope_key,
+            alias=alias,
+            user_id=str(target_id),
+            persona_name=persona_name_from_event(ev) or "",
+            caller_pm=caller_pm,
+        )
         logger.info(
             t(
                 "log.ai.identity_scope_key_remember",

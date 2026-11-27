@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 
 from gsuid_core.ai_core.memory.retrieval.types import Episode
+from gsuid_core.ai_core.memory.retrieval.event_time import effective_event_at
 from gsuid_core.ai_core.memory.retrieval.lexical_cover import (
     _DOC_SOURCE_RE,
     episode_source_key,
@@ -223,7 +224,7 @@ def pack_first_mention_episodes(episodes: list[Episode], query: str, cap: int) -
 
     topic = temporal_search_query(query) or query
     user = [e for e in episodes if not is_fact_sheet(e) and not _assistant_turn(e["content"] or "")]
-    user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    user.sort(key=effective_event_at)
 
     groups: dict[str, list[Episode]] = {}
     group_order: list[str] = []
@@ -285,7 +286,7 @@ def pack_first_mention_episodes(episodes: list[Episode], query: str, cap: int) -
                 have_ids.add(eid)
             pool.append(ep)
 
-    pool.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    pool.sort(key=effective_event_at)
     if topic:
         strong = [e for e in pool if _topic_hit_count(topic, e["content"] or "") >= 1]
         if len(strong) >= cap:
@@ -454,7 +455,7 @@ def pack_sum_episodes(episodes: list[Episode], query: str, cap: int = 48) -> lis
         if not matched:
             matched = [ep for ep in users if _topic_word_in_piece(cand_low, (ep["content"] or "").lower())]
         for ep in matched[:per_cand]:
-            eid = str(ep.get("id", ""))
+            eid = str(ep["id"]) if "id" in ep else ""
             if eid and eid in chosen_ids:
                 continue
             if eid:
@@ -464,12 +465,12 @@ def pack_sum_episodes(episodes: list[Episode], query: str, cap: int = 48) -> lis
     for ep in valued + users:
         if len(chosen) >= cap:
             break
-        eid = str(ep.get("id", ""))
+        eid = str(ep["id"]) if "id" in ep else ""
         if eid and eid not in chosen_ids:
             chosen_ids.add(eid)
             chosen.append(ep)
 
-    chosen.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    chosen.sort(key=effective_event_at)
     return chosen[:cap]
 
 
@@ -500,7 +501,7 @@ def pack_order_dialogue(episodes: list[Episode], query: str, cap: int) -> list[E
     if cap <= 0:
         return []
     user = [e for e in episodes if not is_fact_sheet(e) and not _assistant_turn(e["content"] or "")]
-    user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    user.sort(key=effective_event_at)
     out: list[Episode] = []
     seen: set[str] = set()
     groups: dict[str, list[Episode]] = {}
@@ -553,18 +554,16 @@ def pack_order_dialogue(episodes: list[Episode], query: str, cap: int) -> list[E
         if not progressed:
             break
         idx += 1
-    out.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    out.sort(key=effective_event_at)
     return out[:cap]
 
 
 def _order_stamps(episodes: list[Episode]) -> list[str]:
-    """排序骨架每行的时点标签。
+    """排序骨架每行的时点标签（优先真实发生日期）。
 
-    原本一律截成 ``YYYY-MM-DD``。同一天被压成几千条时（长会话按天分块入库），
-    模型拿到的是一排完全相同的日期，无从排序——同一天内的事件因此被整段判错。
-    日期出现重复时补当天累计序号，保证同日各行标签唯一且单调。
+    同一天内多条事件补当天累计序号，保证同日各行标签唯一且单调。
     """
-    days = [str(ep["valid_at"] if "valid_at" in ep else "")[:10] for ep in episodes]
+    days = [effective_event_at(ep)[:10] for ep in episodes]
     need_finer = len(set(days)) < len(days)
     stamps: list[str] = []
     day_seq: dict[str, int] = {}
@@ -689,7 +688,7 @@ def _pack_without_sweep(
         looks_like_count_query(query) or looks_like_sum_query(query, memory_intent=memory_intent)
     ):
         user = [e for e in _in_explicit_window(eps) if not _assistant_turn(e["content"] or "")]
-        user.sort(key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+        user.sort(key=effective_event_at)
         return pack_timeline_episodes(user, cap=20, query=query)
     if memory_intent == "version_diff":
         return pack_attribute_episodes(eps, query, asker_id=asker_id, cap=12, memory_intent=memory_intent)
@@ -709,11 +708,11 @@ def pack_timeline_episodes(episodes: list[Episode], cap: int, query: str = "") -
     by_day: dict[str, Episode] = {}
     day_score: dict[str, int] = {}
     undated: list[Episode] = []
-    ordered = sorted(episodes, key=lambda e: str(e["valid_at"] if "valid_at" in e else ""))
+    ordered = sorted(episodes, key=effective_event_at)
     for ep in ordered:
         if _assistant_turn(ep["content"] or ""):
             continue
-        day = (ep["valid_at"] or "")[:10]
+        day = effective_event_at(ep)[:10]
         if len(day) < 10:
             undated.append(ep)
             continue

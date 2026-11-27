@@ -257,6 +257,15 @@ async def search_cognition(
                 kind_hi[hit.kind] = n + 1
         capped.append(hit)
     final = await _drop_stale_handles(capped)
+    # 群成员人物检索时抑制无关 FileOS 落盘混排（仅默认联邦面且无落盘查询词时）。
+    has_member_hit = any(h.id.startswith("member_") for h in final)
+    is_artifact_q = bool(re.search(r"落盘|报告|图表|表格|句柄|产物|结果", search_q))
+    if has_member_hit and kinds == DEFAULT_RECALL_KINDS and not is_artifact_q:
+        final = [
+            h
+            for h in final
+            if h.kind is not CogKind.TOOL_OUTPUT or _token_overlap_score(search_q, f"{h.title} {h.summary}") >= 0.35
+        ]
     # 弱相关片段收口：有强命中只留强命中；无强命中时保留前几条高分语义候选，避免同义/跨语问句只剩1条。
     has_strong_ep = any(h.kind is CogKind.EPISODE and h.high_confidence for h in final)
     if has_strong_ep:
@@ -556,9 +565,14 @@ def _append_episode_hits(
     seed_ep_ids: set[str],
     neighbor_ep_ids: set[str],
 ) -> None:
+    q_stripped = search_q.strip()
     for i, ep in enumerate(episodes):
         content = str(ep["content"]) if "content" in ep else ""
         if not content:
+            continue
+        # 剔除当轮刚入列的自回声片段，防止把用户当前问句当历史证据回灌。
+        stripped_c = content.strip()
+        if len(q_stripped) >= 4 and (stripped_c == q_stripped or stripped_c.endswith(f": {q_stripped}")):
             continue
         raw_id = str(ep["id"]) if "id" in ep else ""
         # 邻条只为计数/时间线补上下文；降分后进弱相关，避免和语义命中一起摊开。
@@ -570,12 +584,13 @@ def _append_episode_hits(
         if memory_intent not in ("timeline_order", "broad_summary") and not text_has_query_needles(search_q, content):
             ep_score = round(ep_score * 0.5, 4)
         ep_sk = ep["scope_key"] if "scope_key" in ep else ""
+        retract_prefix = ep["retraction_note"] if "retraction_note" in ep and ep["retraction_note"] else ""
         bag.add(
             CognitiveHit(
                 kind=CogKind.EPISODE,
                 id=f"ep_{ep['id']}" if "id" in ep else f"ep_{i}",
                 title="",
-                summary=_render_scoped_text(scope, ep_sk, content),
+                summary=f"{retract_prefix}{_render_scoped_text(scope, ep_sk, content)}",
                 score=ep_score,
                 as_of=str(ep["valid_at"])[:16] if "valid_at" in ep else "",
                 source="memory",
@@ -583,7 +598,170 @@ def _append_episode_hits(
         )
 
 
+async def _append_member_dossier_hits(
+    bag: _HitBag,
+    *,
+    scope: CogScope,
+    search_q: str,
+    kinds: FrozenSet[CogKind],
+) -> set[str]:
+    """群聊下原生按外号/昵称/UID 解析被提及群成员并补充结构化实体与事实边。"""
+    if not scope.group_id:
+        return set()
+    from sqlmodel import col, desc, select
+
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.control.lines import (
+        MEMORY_RUMOR_DENIED_TAG,
+        MEMORY_RUMOR_UNCONFIRMED_TAG,
+    )
+    from gsuid_core.ai_core.memory.identity import resolve_member_by_query, resolve_member_entities
+    from gsuid_core.utils.database.base_models import async_maker
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge
+    from gsuid_core.ai_core.memory.retrieval.prompt_render import (
+        _sensitive_fact_hit,
+        _get_sensitive_extra_terms,
+    )
+
+    if async_maker is None:
+        return set()
+    scope_key = make_scope_key(ScopeType.GROUP, scope.group_id)
+    members = await resolve_member_entities(scope_key, search_q, limit=3)
+    if not members:
+        members = await resolve_member_by_query(scope_key, search_q, limit=3)
+    if not members:
+        return set()
+
+    matched_uids: set[str] = {m.user_id for m in members if m.user_id}
+    extra_sensitive = _get_sensitive_extra_terms()
+
+    if CogKind.ENTITY in kinds:
+        for ent in members:
+            aliases = ent.get_aliases()
+            uid_s = f"UID:{ent.user_id}" if ent.user_id else ""
+            al_s = f"别名:{'/'.join(aliases[:5])}" if aliases else ""
+            meta = " · ".join(p for p in (uid_s, al_s, ent.summary.strip()) if p)
+            bag.add(
+                CognitiveHit(
+                    kind=CogKind.ENTITY,
+                    id=f"member_ent_{ent.id}",
+                    title=ent.name,
+                    summary=meta or "本群成员",
+                    score=0.92,
+                    source="member_spine",
+                )
+            )
+
+    if CogKind.FACT in kinds:
+        member_ids = [m.id for m in members]
+        member_by_id = {m.id: m for m in members}
+        async with async_maker() as session:
+            edge_rows = list(
+                (
+                    await session.execute(
+                        select(AIMemEdge)
+                        .where(
+                            col(AIMemEdge.scope_key) == scope_key,
+                            col(AIMemEdge.source_entity_id).in_(member_ids),
+                            col(AIMemEdge.invalid_at).is_(None),
+                            col(AIMemEdge.resolution_state).in_(["active", "staging", "contradicted"]),
+                        )
+                        .order_by(desc(col(AIMemEdge.mention_count)), desc(col(AIMemEdge.valid_at)))
+                        .limit(24)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        for edge in edge_rows:
+            owner = member_by_id[edge.source_entity_id] if edge.source_entity_id in member_by_id else None
+            is_self = bool(owner is not None and owner.user_id and owner.user_id == scope.user_id)
+            if not is_self and _sensitive_fact_hit(edge.fact, extra_sensitive):
+                continue
+            prefix = ""
+            if edge.resolution_state == "staging":
+                prefix = MEMORY_RUMOR_UNCONFIRMED_TAG
+            elif edge.resolution_state == "contradicted":
+                prefix = MEMORY_RUMOR_DENIED_TAG
+            stamp = edge.event_at or edge.valid_at
+            as_of = stamp.strftime("%Y-%m-%d") if stamp is not None else ""
+            bag.add(
+                CognitiveHit(
+                    kind=CogKind.FACT,
+                    id=f"member_edge_{edge.id}",
+                    title=f"{prefix}{edge.fact}",
+                    summary="",
+                    score=0.88 if edge.resolution_state == "active" else 0.78,
+                    as_of=as_of,
+                    source="member_spine",
+                )
+            )
+    return matched_uids
+
+
+async def _append_thread_hits(
+    bag: _HitBag,
+    *,
+    scope: CogScope,
+    search_q: str,
+    matched_member_uids: set[str],
+) -> None:
+    """检索活跃/休眠长线故事线（私聊严格仅放行本人参与线）。"""
+    from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key
+    from gsuid_core.ai_core.memory.privacy import resolve_user_group_scopes
+    from gsuid_core.utils.database.base_models import async_maker
+    from gsuid_core.ai_core.memory.database.models import AIMemThread
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
+
+    if async_maker is None:
+        return
+    scope_keys: list[str] = []
+    if scope.group_id:
+        scope_keys.append(make_scope_key(ScopeType.GROUP, scope.group_id))
+    elif scope.user_id:
+        scope_keys.append(make_scope_key(ScopeType.USER_GLOBAL, scope.user_id))
+        scope_keys.extend(await resolve_user_group_scopes(scope.user_id, bot_id=scope.bot_id, cap=15))
+
+    toks = [t.lower() for t in query_tokens(search_q) if len(t) >= 2]
+    uid = (scope.user_id or "").strip()
+    user_scope = f"user_global:{uid}" if uid else ""
+    scored_hits: list[tuple[float, AIMemThread]] = []
+    # 单次 IN 查询覆盖全部候选 scope，避免私聊多群扇出 N+1 查库。
+    threads = await AIMemThread.list_by_scopes(scope_keys, limit=120)
+    for th in threads:
+        sk = th.scope_key
+        participants = set(th.get_participant_uids())
+        if scope.is_private and sk != user_scope and (not uid or uid not in participants):
+            continue
+        blob = f"{th.title} {' '.join(th.aliases)} {th.summary}".lower()
+        tok_hits = sum(1 for tok in toks if tok in blob)
+        member_hit = bool(matched_member_uids and (participants & matched_member_uids))
+        if tok_hits == 0 and not member_hit:
+            continue
+        fresh_bonus = 0.03 if th.status == "active" else (0.01 if th.status == "dormant" else 0.0)
+        score = 0.72 + min(0.2, tok_hits * 0.06) + (0.12 if member_hit else 0.0) + fresh_bonus
+        scored_hits.append((score, th))
+    scored_hits.sort(key=lambda pair: pair[0], reverse=True)
+    for sc, th in scored_hits[:6]:
+        title = _render_scoped_text(scope, th.scope_key, th.title)
+        bag.add(
+            CognitiveHit(
+                kind=CogKind.THREAD,
+                id=f"thread_{th.id}",
+                title=f"[{th.status}] {title}",
+                summary=th.summary or f"共 {th.episode_count} 条记录",
+                score=round(sc, 4),
+                as_of=th.last_at.strftime("%Y-%m-%d") if th.last_at else "",
+                source="memory_thread",
+            )
+        )
+
+
 def _append_edge_hits(bag: _HitBag, edges: Sequence[Edge], scope: CogScope, speaker_ids: set[str]) -> None:
+    from gsuid_core.ai_core.control.lines import (
+        MEMORY_RUMOR_DENIED_TAG,
+        MEMORY_RUMOR_UNCONFIRMED_TAG,
+    )
     from gsuid_core.ai_core.memory.ingestion.algebra import _DANGLING_FACT_RE
     from gsuid_core.ai_core.memory.retrieval.dual_route import _fact_mentions_speaker
 
@@ -605,11 +783,17 @@ def _append_edge_hits(bag: _HitBag, edges: Sequence[Edge], scope: CogScope, spea
             else ""
         )
         edge_sk = edge["scope_key"] if "scope_key" in edge else ""
+        state = edge["resolution_state"] if "resolution_state" in edge else "active"
+        tag = ""
+        if state == "staging":
+            tag = MEMORY_RUMOR_UNCONFIRMED_TAG
+        elif state == "contradicted":
+            tag = MEMORY_RUMOR_DENIED_TAG
         bag.add(
             CognitiveHit(
                 kind=CogKind.FACT,
                 id=f"edge_{edge['id']}" if "id" in edge else f"edge_{i}",
-                title=_render_scoped_text(scope, edge_sk, fact),
+                title=f"{tag}{_render_scoped_text(scope, edge_sk, fact)}",
                 summary="",
                 score=float(edge["score"]) if "score" in edge else 0.6,
                 as_of=as_of,
@@ -682,9 +866,14 @@ async def _search_memory(
 
     bag = _HitBag()
     speaker_ids = {scope.user_id} if scope.user_id else set()
-    # 偏好置顶；片段是经历原文，紧随其后，避免事实边把证据会话挤出 RRF 前排。
+    # 偏好置顶；群聊成员档案与故事线优先于泛片段，避免事实边把精准档案挤出前排。
     if CogKind.PREFERENCE in kinds:
         _append_preference_hits(bag, ctx.preferences, search_q)
+    matched_member_uids: set[str] = set()
+    if scope.group_id and (CogKind.ENTITY in kinds or CogKind.FACT in kinds or CogKind.THREAD in kinds):
+        matched_member_uids = await _append_member_dossier_hits(bag, scope=scope, search_q=search_q, kinds=kinds)
+    if CogKind.THREAD in kinds:
+        await _append_thread_hits(bag, scope=scope, search_q=search_q, matched_member_uids=matched_member_uids)
     if CogKind.EPISODE in kinds:
         _append_episode_hits(bag, ctx.episodes, scope, search_q, memory_intent, seed_ep_ids, neighbor_ep_ids)
     if CogKind.FACT in kinds:

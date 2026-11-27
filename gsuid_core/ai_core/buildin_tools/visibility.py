@@ -26,7 +26,8 @@ from gsuid_core.ai_core.models import ToolContext
 class VisibilityScanCtx(Protocol):
     """visible_when 扫描面：只要 deps 与本轮 messages。"""
 
-    deps: ToolContext | None
+    @property
+    def deps(self) -> ToolContext | None: ...
 
     @property
     def messages(self) -> Sequence[object]: ...
@@ -216,15 +217,30 @@ def visibility_user_hint(
     return ""
 
 
+_TIMELINE_CUE_RE = re.compile(
+    r"(?:上次说过|之前说过|原话|聊天记录|时间线|第几次|翻一下记录|查一下记录|按顺序|先后顺序|以前是不是)"
+)
+
+
 def visible_when_timeline_query(ctx: VisibilityScanCtx) -> bool:
-    """排序/摘要/版本对比问句才暴露 search_turns / read_session / timeline（call_tool 直调放行）。"""
+    """排序/摘要/版本对比/历史原话问句或 find_tools 召回时暴露时间线工具。"""
     if _is_call_tool_direct_invoke():
         return True
     deps = ctx.deps
-    if deps is None or "memory_intent" not in deps.extra:
+    if deps is None:
         return False
-    memory_intent = deps.extra["memory_intent"]
-    return isinstance(memory_intent, str) and memory_intent in ("version_diff", "timeline_order", "broad_summary")
+    if any(find_tools_recalled(deps, name) for name in ("search_turns", "read_session", "recall_session")):
+        return True
+    if "memory_intent" in deps.extra:
+        memory_intent = deps.extra["memory_intent"]
+        if isinstance(memory_intent, str) and memory_intent in ("version_diff", "timeline_order", "broad_summary"):
+            return True
+    ev = deps.ev
+    if ev is not None:
+        raw = ev.raw_text or ev.text or ""
+        if raw and _TIMELINE_CUE_RE.search(raw):
+            return True
+    return False
 
 
 def context_has_image(ctx: VisibilityScanCtx) -> bool:

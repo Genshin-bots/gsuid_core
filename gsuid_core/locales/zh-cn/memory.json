@@ -119,6 +119,7 @@
   "log.memory.observation_queue_race": "记忆观察队列发生竞争，丢弃消息",
   "log.memory.observer_command_echo_filter": "[Observer] 命中命令回显过滤，丢弃: {p0}",
   "log.memory.observer_credential_filtered": "[Observer] 凭据命令/凭据形态消息，整条丢弃不进记忆",
+  "log.memory.observer_external_bot_filtered": "[Observer] 命中外部机器人过滤，跳过长期记忆观察: {p0}",
   "log.memory.observer_injection_signature_filter_inject": "[Observer] 命中注入特征过滤，丢弃: {p0}",
   "log.memory.observer_repetition_filter_matched": "[Observer] 命中复读过滤，丢弃: {p0}",
   "log.memory.observer_user_command_typo": "[Observer] 命中用户命令/typo 过滤，丢弃: {p0}",
@@ -187,5 +188,11 @@
   "log.memory.time_range_supplemental_retrieval_2": "[Memory] 时间范围补召回 {p0} 条 Episode ({p1:%Y-%m-%d} ~ {p2:%Y-%m-%d})",
   "log.memory.total_episode_records_entity": "[Memory] 共计 {p0} 条 Episode, {p1} 个 Entity, {p2} 条 Edge, {p3} 个 Category",
   "log.memory.trigger_immediate_flush_correction": "[Memory] 纠错即时 flush 触发失败: {e}",
-  "log.memory.update_group_profile": "[Memory] 群组画像更新失败: {e}"
+  "log.memory.update_group_profile": "[Memory] 群组画像更新失败: {e}",
+  "log.memory.v2_1_backup_done": "[Memory] v2.1 无损迁移已创建整库备份: {path}",
+  "log.memory.v2_1_migration_fail": "[Memory] v2.1 无损迁移失败（原库已保护）: {e}",
+  "log.memory.v2_1_sql_done": "[Memory] v2.1 无损 SQL 修复完成（耗时 {ms}ms）：补建说话人 {speakers}，去误标 {demoted}，更新故事线 {threads}，清理旧悬空认知索引 {cog_cleaned}",
+  "log.memory.v2_1_vector_backfill_done": "[Memory] v2.1 后台低优补刷缺失说话人向量完成: {done} 条",
+  "log.memory.v2_1_vector_backfill_fail": "[Memory] v2.1 后台补刷说话人向量异常（不影响检索，可控制台重试）: {e}",
+  "log.memory.v2_1_vector_backfill_start": "[Memory] v2.1 服务就绪，启动后台低优向量补刷: 新说话人 {count}，payload 局部刷新 {patches}"
 }

@@ -631,13 +631,21 @@ def test_ingest_window_deferral_fallback_and_freeze(tmp_path: Path, monkeypatch:
     r0 = _mk_obs("第一句", timestamp=t0)
     r1 = _mk_obs("十分钟后", timestamp=t0 + timedelta(minutes=10))
 
-    # 1) 窗口缓冲达到容量门槛触发 flush
+    # 1) 窗口缓冲达到容量门槛（50 条）或满足 6 条+静默阈值触发 flush
+    from gsuid_core.ai_core.memory.config import memory_config
+
     window = worker_mod._ScopeWindowBuffer()
-    for i in range(28):
+    for i in range(memory_config.window_max_messages):
         window.push(_mk_obs(f"消息{i}", speaker_id="1", group_id="9", scope_key="group:9"))
         if i == 2:
             assert not window.should_flush(window.first_at)
     assert window.should_flush(window.first_at)
+
+    idle_win = worker_mod._ScopeWindowBuffer()
+    for i in range(6):
+        idle_win.push(_mk_obs(f"静默消息{i}", speaker_id="1", group_id="9", scope_key="group:9"))
+    assert not idle_win.should_flush(idle_win.last_activity + memory_config.window_idle_seconds - 5)
+    assert idle_win.should_flush(idle_win.last_activity + memory_config.window_idle_seconds + 1)
 
     # 2) 移除 PYTEST_CURRENT_TEST 走真实路由配置缺失兜底：按 5 分钟间隔分段
     with monkeypatch.context() as mp:
@@ -672,6 +680,7 @@ def test_ingest_window_deferral_fallback_and_freeze(tmp_path: Path, monkeypatch:
 
     with monkeypatch.context() as mp:
         mp.setattr(worker_mod.AIMemThread, "list_active", _fake_list_active)
+        mp.setattr(worker_mod.AIMemThread, "list_active_or_dormant", _fake_list_active)
         mp.setattr(worker_mod.AIMemEpisode, "create_episode", _fake_create_ep)
         mp.setattr(window_router, "route_window", _route_split)
 
@@ -1472,3 +1481,1625 @@ def test_qdrant_transport_error_and_parallel_task_cleanup(monkeypatch: pytest.Mo
         )
 
     asyncio.run(_scenario())
+
+
+def test_identity_spine_and_nondestructive_v2_1_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """身份脊柱双轨外号守卫、跨类去重屏障，以及 v2.1 无损存量纠偏零删除与幂等契约。"""
+    import gsuid_core.ai_core.state_store as state_store
+    import gsuid_core.ai_core.memory.identity as identity_mod
+    import gsuid_core.ai_core.memory.group_profile as gp_mod
+    import gsuid_core.ai_core.memory.database.models as mem_models
+    import gsuid_core.ai_core.migrations.memory_nondestructive_v2_1 as mig_v21
+    from gsuid_core.utils.database.models import CoreUser
+    from gsuid_core.ai_core.cognition.nodes import AICogEdge, AICogNode
+    from gsuid_core.ai_core.memory.database.models import (
+        AIMemEdge,
+        AIMemEntity,
+        AIMemThread,
+        AIMemEpisode,
+        are_entity_kinds_compatible,
+    )
+
+    assert are_entity_kinds_compatible("speaker", "person") is True
+    assert are_entity_kinds_compatible("speaker", "item") is False
+    assert are_entity_kinds_compatible("project", "speaker") is False
+    assert are_entity_kinds_compatible("item", "location") is False
+
+    async def scenario() -> tuple[str, str]:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="v21_mig.db") as (_engine, maker):
+            monkeypatch.setattr(identity_mod, "async_maker", maker)
+            monkeypatch.setattr(mem_models, "async_maker", maker)
+            monkeypatch.setattr(mig_v21, "get_res_path", lambda: tmp_path / "data")
+            monkeypatch.setattr(gp_mod, "collect_persona_surfaces", lambda name: ("小柚子",) if name else ())
+
+            state_kv: dict[tuple[str, str], object] = {}
+
+            async def _get_v(scope: str, key: str) -> object | None:
+                return state_kv[(scope, key)] if (scope, key) in state_kv else None
+
+            async def _set_v(scope: str, key: str, val: object) -> None:
+                state_kv[(scope, key)] = val
+
+            monkeypatch.setattr(state_store, "state_get_value", _get_v)
+            monkeypatch.setattr(state_store, "state_set_value", _set_v)
+
+            async def _noop_alias(_sk: str, _al: str, _uid: str) -> None:
+                return None
+
+            monkeypatch.setattr(gp_mod, "record_member_alias", _noop_alias)
+
+            now = datetime.now(timezone.utc)
+            async with maker() as session:
+                session.add_all(
+                    [
+                        CoreUser(
+                            user_id="100000001",
+                            bot_id="onebot",
+                            group_id="200000001",
+                            user_name="测试用户A",
+                            user_icon="https://q1.qlogo.cn/g?b=qq&nk=100000001&s=100",
+                        ),
+                        CoreUser(
+                            user_id="100000002",
+                            bot_id="onebot",
+                            group_id="200000001",
+                            user_name="测试用户B",
+                            user_icon="https://q1.qlogo.cn/g?b=qq&nk=100000002&s=100",
+                        ),
+                    ]
+                )
+                await session.commit()
+
+            # 1) 身份脊柱：确定性维护唯一 speaker + 双轨外号晋升 + 唤醒词/受保护称谓防撞
+            ent_a = await identity_mod.ensure_speaker_entity(
+                "group:200000001",
+                "100000001",
+                display_name="测试用户A",
+                avatar_url="https://q1.qlogo.cn/g?b=qq&nk=100000001&s=100",
+                sync_vector=False,
+            )
+            assert ent_a is not None and ent_a.is_speaker is True and "q1.qlogo.cn" in ent_a.avatar_url
+
+            async def _noop_payload(_eid: str, _patch: dict[str, object]) -> None:
+                return None
+
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.set_entity_payload", _noop_payload)
+            assert (
+                await identity_mod.record_entity_alias(
+                    "group:200000001", "100000001", "小柚子", track="self_claim", persona_name="小柚子"
+                )
+                == "blocked"
+            )
+            assert (
+                await identity_mod.record_entity_alias("group:200000001", "100000001", "管理员", track="self_claim")
+                == "blocked"
+            )
+            assert (
+                await identity_mod.record_entity_alias(
+                    "group:200000001", "100000001", "老王", track="corroboration", window_id="w1"
+                )
+                == "pending"
+            )
+            assert (
+                await identity_mod.record_entity_alias(
+                    "group:200000001", "100000001", "老王", track="corroboration", window_id="w2"
+                )
+                == "promoted"
+            )
+            assert (
+                await identity_mod.record_entity_alias("group:200000001", "100000001", "阿测", track="self_claim")
+                == "promoted"
+            )
+            resolved = await identity_mod.resolve_member_by_query("group:200000001", "老王")
+            assert len(resolved) == 1 and resolved[0].user_id == "100000001" and "阿测" in resolved[0].get_aliases()
+
+            # 2) 构造存量脏数据，验证 v2.1 迁移：五张记忆表 0 删除 + 原位纠偏 + 精准清 aicognode 悬空行
+            old_ts = int(datetime(2026, 10, 1, 0, 0, tzinfo=timezone.utc).timestamp())
+            new_ts = int(datetime(2026, 11, 20, 0, 0, tzinfo=timezone.utc).timestamp())
+            async with maker() as session:
+                session.add_all(
+                    [
+                        AIMemEpisode(
+                            id="ep_self_bad",
+                            scope_key="self::test_persona",
+                            content="自我思考记录",
+                            speaker_ids=["__assistant_onebot__"],
+                            valid_at=now - timedelta(days=1),
+                            qdrant_id="ep_self_bad",
+                        ),
+                        AIMemEpisode(
+                            id="ep_grp_missing_spk",
+                            scope_key="group:200000001",
+                            content="测试用户B(100000002): 周末去露营",
+                            speaker_ids=["100000002"],
+                            thread_id="th_old",
+                            valid_at=now - timedelta(days=20),
+                            qdrant_id="ep_grp_missing_spk",
+                        ),
+                        AIMemEpisode(
+                            id="ep_grp_dorm_th",
+                            scope_key="group:200000001",
+                            content="测试用户A(100000001): 本周读书会继续讨论",
+                            speaker_ids=["100000001"],
+                            thread_id="th_dorm",
+                            valid_at=now - timedelta(days=5),
+                            qdrant_id="ep_grp_dorm_th",
+                        ),
+                        AIMemEntity(
+                            id="ent_non_human_spk",
+                            scope_key="group:200000001",
+                            name="机械键盘",
+                            summary="外设设备",
+                            tag=["speaker", "item"],
+                            entity_kind="item",
+                            is_speaker=True,
+                            user_id=None,
+                            qdrant_id="ent_non_human_spk",
+                        ),
+                        AIMemThread(
+                            id="th_old",
+                            scope_key="group:200000001",
+                            title="旧露营计划",
+                            status="active",
+                            first_at=now - timedelta(days=25),
+                            last_at=now - timedelta(days=20),
+                        ),
+                        AIMemThread(
+                            id="th_dorm",
+                            scope_key="group:200000001",
+                            title="近期读书会",
+                            status="active",
+                            first_at=now - timedelta(days=6),
+                            last_at=now - timedelta(days=5),
+                        ),
+                        AIMemEdge(
+                            id="ed_keep",
+                            scope_key="group:200000001",
+                            fact="测试用户A喜欢露营",
+                            source_entity_id=ent_a.id,
+                            target_entity_id=ent_a.id,
+                            thread_id="th_old",
+                            valid_at=now - timedelta(days=20),
+                            qdrant_id="ed_keep",
+                        ),
+                        AICogNode(
+                            kind="episode",
+                            source="observe",
+                            ref="ep:legacy_dangling",
+                            title="旧废止行",
+                            summary="",
+                            scope_key="group:200000001",
+                            created_at=old_ts,
+                            updated_at=old_ts,
+                        ),
+                        AICogNode(
+                            kind="episode",
+                            source="observe",
+                            ref="ep:recent_keep",
+                            title="新保留行",
+                            summary="",
+                            scope_key="group:200000001",
+                            created_at=new_ts,
+                            updated_at=new_ts,
+                        ),
+                        AICogNode(
+                            kind="entity",
+                            source="observe",
+                            ref="env:nonexistent_entity_id",
+                            title="悬空实体旧前缀",
+                            summary="",
+                            scope_key="group:200000001",
+                            created_at=old_ts,
+                            updated_at=old_ts,
+                        ),
+                        AICogNode(
+                            kind="entity",
+                            source="memory",
+                            ref="ent:nonexistent_ent_id",
+                            title="悬空实体标准前缀",
+                            summary="",
+                            scope_key="group:200000001",
+                            created_at=old_ts,
+                            updated_at=old_ts,
+                        ),
+                        AICogNode(
+                            kind="entity",
+                            source="plugin",
+                            ref="world:demo_hub",
+                            title="世界枢纽保留",
+                            summary="",
+                            scope_key="",
+                            created_at=old_ts,
+                            updated_at=old_ts,
+                        ),
+                        AICogNode(
+                            kind="artifact",
+                            source="tool_output",
+                            ref="tool:to_123456",
+                            title="工具落盘保留",
+                            summary="",
+                            scope_key="group:200000001",
+                            created_at=old_ts,
+                            updated_at=old_ts,
+                        ),
+                    ]
+                )
+                await session.commit()
+
+                bad_cog = (
+                    await session.execute(select(AICogNode).where(col(AICogNode.ref) == "ep:legacy_dangling"))
+                ).scalar_one()
+                world_cog = (
+                    await session.execute(select(AICogNode).where(col(AICogNode.ref) == "world:demo_hub"))
+                ).scalar_one()
+                assert bad_cog.id is not None and world_cog.id is not None
+                session.add(AICogEdge(src_id=bad_cog.id, dst_id=world_cog.id, edge_kind="mentions", created_at=old_ts))
+                await session.commit()
+
+            import gsuid_core.utils.database.base_models as base_models
+
+            monkeypatch.setattr(base_models, "DB_PATH", tmp_path / "v21_mig.db")
+            report = await mig_v21.migrate_memory_nondestructive_v2_1(
+                backup_db_path=tmp_path / "GsData_pre_v2_1.db.bak",
+                audit_log_path=tmp_path / "repair_audit_v2_1.jsonl",
+                spawn_vector_backfill=False,
+            )
+            assert report is not None and report["status"] == "completed"
+            assert report["malformed_self_scopes_fixed"] >= 1
+            assert report["non_human_speakers_demoted"] == 1
+            assert report["missing_speakers_created"] == 1
+            assert report["threads_archived"] == 1 and report["threads_dormant"] == 1
+            assert report["dangling_cog_episodes_cleaned"] == 1 and report["dangling_cog_env_cleaned"] == 2
+            assert report["dangling_cog_edges_cleaned"] == 1
+
+            async with maker() as session:
+                # 5 张真实记忆表零物理删除
+                assert len((await session.execute(select(AIMemEpisode))).scalars().all()) == 3
+                assert len((await session.execute(select(AIMemEdge))).scalars().all()) == 1
+                assert len((await session.execute(select(AIMemThread))).scalars().all()) == 2
+                assert len((await session.execute(select(AIMemEntity))).scalars().all()) == 3
+
+                ep_fixed = await session.get(AIMemEpisode, "ep_self_bad")
+                assert ep_fixed is not None and ep_fixed.scope_key == "self:default:test_persona"
+                demoted = await session.get(AIMemEntity, "ent_non_human_spk")
+                assert demoted is not None and demoted.is_speaker is False
+                created_b = (
+                    await session.execute(
+                        select(AIMemEntity).where(
+                            col(AIMemEntity.scope_key) == "group:200000001",
+                            col(AIMemEntity.user_id) == "100000002",
+                        )
+                    )
+                ).scalar_one()
+                assert created_b.is_speaker is True and "100000002" in created_b.avatar_url
+                th_old = await session.get(AIMemThread, "th_old")
+                th_dorm = await session.get(AIMemThread, "th_dorm")
+                assert th_old is not None and th_old.status == "archived" and th_old.episode_count == 1
+                assert "100000002" in th_old.get_participant_uids()
+                assert th_dorm is not None and th_dorm.status == "dormant"
+
+                cog_refs = {n.ref for n in (await session.execute(select(AICogNode))).scalars().all()}
+                assert cog_refs == {"ep:recent_keep", "world:demo_hub", "tool:to_123456"}
+
+            # 幂等复跑不重复改写；且重启续跑必须补刷持久化在报告里的 payload_patch 与 pending_vector
+            assert "ent_non_human_spk" in report["pending_payload_patch_entity_ids"]
+            assert len(report["pending_vector_backfill_ids"]) == 1
+            report2 = await mig_v21.migrate_memory_nondestructive_v2_1(
+                backup_db_path=tmp_path / "GsData_pre_v2_1.db.bak",
+                audit_log_path=tmp_path / "repair_audit_v2_1.jsonl",
+                spawn_vector_backfill=False,
+            )
+            assert report2 is not None and report2["migrated_at"] == report["migrated_at"]
+
+            patched_entities: list[tuple[str, dict[str, object]]] = []
+            upserted_vectors: list[dict[str, object]] = []
+
+            async def _fake_ready(timeout: float = 600.0) -> bool:
+                del timeout
+                return True
+
+            async def _fake_patch_batch(updates: list[tuple[str, dict[str, object]]]) -> int:
+                patched_entities.extend(updates)
+                return len(updates)
+
+            async def _fake_upsert_batch(items: list[dict[str, object]]) -> None:
+                upserted_vectors.extend(items)
+
+            monkeypatch.setattr("gsuid_core.ai_core.startup.wait_ai_core_ready", _fake_ready)
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.set_entity_payloads_batch", _fake_patch_batch)
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.upsert_entity_vectors_batch", _fake_upsert_batch)
+            monkeypatch.setattr("gsuid_core.ai_core.rag.base.client", object())
+            monkeypatch.setattr(mig_v21, "_backfill_task", None)
+
+            await mig_v21.migrate_memory_nondestructive_v2_1(
+                backup_db_path=tmp_path / "GsData_pre_v2_1.db.bak",
+                audit_log_path=tmp_path / "repair_audit_v2_1.jsonl",
+                spawn_vector_backfill=True,
+            )
+            assert mig_v21._backfill_task is not None
+            await mig_v21._backfill_task
+            assert any(eid == "ent_non_human_spk" and pl["is_speaker"] is False for eid, pl in patched_entities)
+            assert len(upserted_vectors) == 1
+            report_done = await mig_v21.get_migration_v2_1_report()
+            assert (
+                report_done is not None
+                and report_done["status"] == "completed"
+                and report_done["pending_payload_patch_entity_ids"] == []
+                and report_done["pending_vector_backfill_ids"] == []
+            )
+            return report["backup_path"], report["audit_log_path"]
+
+    backup_path, audit_log_path = asyncio.run(scenario())
+    assert Path(backup_path).exists() and Path(audit_log_path).exists()
+
+
+def test_phase2_anti_pollution_five_state_algebra_and_lossless_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """外部 Bot/回执/广播拦截、五态代数护栏（RETRACT/气话防抖/第三方 staging/禁 Bot 源）与无损生命周期。"""
+    import gsuid_core.ai_core.memory.identity as identity_mod
+    import gsuid_core.ai_core.memory.observer as observer_mod
+    import gsuid_core.ai_core.memory.database.models as mem_models
+    import gsuid_core.ai_core.memory.ingestion.algebra as algebra_mod
+    import gsuid_core.ai_core.memory.ingestion.multimodal as mm_mod
+    import gsuid_core.ai_core.memory.lifecycle.consolidation_worker as cw_mod
+    from gsuid_core.ai_core.memory.config import MemoryConfig
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemThread
+    from gsuid_core.ai_core.memory.ingestion.algebra import AlgebraExtractOutput, apply_algebra_output
+    from gsuid_core.ai_core.memory.database.preference import AIMemPreference
+
+    # 1) Observer 与多模态前置过滤：外部 Bot、主动广播拦截；普通用户引用签到文案及合法「忽略旧方案」均放行
+    q: sync_queue.Queue[ObservationRecord] = sync_queue.Queue(maxsize=50)
+    monkeypatch.setattr(observer_mod, "_KNOWN_BOT_SELF_IDS", set())
+    monkeypatch.setattr(observer_mod, "_observation_queue", q)
+    monkeypatch.setattr(observer_mod, "_recent_contents", {})
+    monkeypatch.setattr(MemoryConfig, "external_bot_ids", property(lambda _s: ["888888888"]))
+
+    async def _run_obs() -> list[ObservationRecord]:
+        await observer_mod.observe("外部bot播报今日运势", "888888888", "200000001", "800000001", [])
+        await observer_mod.observe(
+            "我今天刚看到群里提示自动签到成功：获得积分 10", "100000001", "200000001", "800000001", []
+        )
+        await observer_mod.observe(
+            "定时播报内容", "__assistant_onebot__", "200000001", "800000001", [], is_proactive_broadcast=True
+        )
+        await observer_mod.observe(
+            "我刚才忽略了之前那个旧方案，准备换新方案", "100000001", "200000001", "800000001", []
+        )
+        items: list[ObservationRecord] = []
+        while not q.empty():
+            items.append(q.get_nowait())
+        return items
+
+    kept = asyncio.run(_run_obs())
+    assert len(kept) == 2
+    assert any("自动签到成功" in item.raw_content for item in kept)
+    assert any("换新方案" in item.raw_content for item in kept)
+    assert (
+        mm_mod.submit_image_observation(["https://example.com/1.png"], "888888888", "200000001", "800000001", []) == 0
+    )
+
+    # 1.5) 空闲会话 GC：纯主动播报会话经 is_proactive_broadcast=True 拦截不入记忆；混排会话剥离播报保留真对话
+    from pydantic_ai.messages import TextPart, ModelRequest, ModelResponse, UserPromptPart, SystemPromptPart
+
+    from gsuid_core.ai_core.session_registry import distill_idle_session, _split_non_proactive_history
+
+    proactive_only_hist = [
+        ModelRequest(parts=[SystemPromptPart(content="sys")]),
+        ModelResponse(parts=[TextPart(content="早安定时播报内容")]),
+    ]
+    mixed_hist = [
+        ModelRequest(parts=[SystemPromptPart(content="sys")]),
+        ModelRequest(parts=[UserPromptPart(content="今天讨论方案")]),
+        ModelResponse(parts=[TextPart(content="好的我记下了")]),
+        ModelResponse(parts=[TextPart(content="晚间主动心跳播报")]),
+    ]
+    _, is_pro_only = _split_non_proactive_history(proactive_only_hist)
+    kept_mixed, is_mixed_pro_only = _split_non_proactive_history(mixed_hist)
+    assert is_pro_only is True and is_mixed_pro_only is False and len(kept_mixed) == 3
+
+    class _FakeIdleSession:
+        def __init__(self) -> None:
+            self.session_id = "ws:onebot:800000001:group:200000001"
+            self.persona_name: str | None = "default"
+            self.history = list(proactive_only_hist)
+
+    asyncio.run(distill_idle_session(_FakeIdleSession()))
+    assert q.empty()
+
+    # 2) 五态代数护栏 + 无损生命周期
+    async def scenario() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="phase2_alg.db") as (_engine, maker):
+            monkeypatch.setattr(mem_models, "async_maker", maker)
+            monkeypatch.setattr(algebra_mod, "async_maker", maker)
+            monkeypatch.setattr(identity_mod, "async_maker", maker)
+
+            async def _noop_vec(*_a: object, **_kw: object) -> None:
+                return None
+
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.upsert_entity_vectors_batch", _noop_vec)
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.upsert_edge_vectors_batch", _noop_vec)
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.update_edge_lifecycle_payloads", _noop_vec)
+
+            now = datetime.now(timezone.utc)
+            ent_a = AIMemEntity(
+                id="ent_a",
+                scope_key="group:200000001",
+                name="测试用户A",
+                user_id="100000001",
+                is_speaker=True,
+                entity_kind="speaker",
+                qdrant_id="ent_a",
+            )
+            ent_b = AIMemEntity(
+                id="ent_b",
+                scope_key="group:200000001",
+                name="测试用户B",
+                user_id="100000002",
+                is_speaker=True,
+                entity_kind="speaker",
+                qdrant_id="ent_b",
+            )
+            ed_plan = AIMemEdge(
+                id="ed_plan_0001",
+                scope_key="group:200000001",
+                fact="测试用户A计划下月买新车",
+                source_entity_id="ent_a",
+                target_entity_id="ent_a",
+                edge_kind="attribute",
+                slot_key="car_plan",
+                resolution_state="active",
+                valid_at=now - timedelta(days=5),
+                qdrant_id="ed_plan_0001",
+            )
+            ed_invest = AIMemEdge(
+                id="ed_inv_0002",
+                scope_key="group:200000001",
+                fact="测试用户A长期定投指数基金",
+                source_entity_id="ent_a",
+                target_entity_id="ent_a",
+                edge_kind="attribute",
+                slot_key="invest_habit",
+                resolution_state="active",
+                valid_at=now - timedelta(days=10),
+                qdrant_id="ed_inv_0002",
+            )
+            async with maker() as session:
+                session.add_all([ent_a, ent_b, ed_plan, ed_invest])
+                await session.commit()
+
+            recs = [
+                observer_mod.ObservationRecord(
+                    raw_content="我不打算买车了，订单已经取消，以后回答尽量先给结论",
+                    speaker_id="100000001",
+                    group_id="200000001",
+                    scope_key="group:200000001",
+                    timestamp=now,
+                    message_type="group_msg",
+                    speaker_name="测试用户A",
+                    reply_to_bot=True,
+                ),
+                _mk_obs("测试用户A把旧投资计划取消了", speaker_id="100000002", speaker_name="测试用户B", timestamp=now),
+                _mk_obs("听说测试用户B最近换了新工作", speaker_id="100000001", speaker_name="测试用户A", timestamp=now),
+                _mk_obs("群里这事大家怎么看", speaker_id="100000001", speaker_name="测试用户A", timestamp=now),
+                observer_mod.ObservationRecord(
+                    raw_content="我是助手瞎扯的一条事实",
+                    speaker_id="__assistant_onebot__",
+                    group_id="200000001",
+                    scope_key="group:200000001",
+                    timestamp=now,
+                    message_type="group_msg",
+                    is_assistant_context=True,
+                ),
+            ]
+            short_plan = algebra_mod._short_edge(ed_plan.id)
+            short_inv = algebra_mod._short_edge(ed_invest.id)
+            out: AlgebraExtractOutput = {
+                "entities": [
+                    {"name": "测试用户A", "user_id": "100000001", "summary": "", "kind": "speaker"},
+                    {"name": "测试用户B", "user_id": "100000002", "summary": "", "kind": "speaker"},
+                ],
+                "edges": [
+                    {
+                        "op": "RETRACT",
+                        "target_edge_id": short_plan,
+                        "source": "测试用户A",
+                        "target": "测试用户A",
+                        "edge_kind": "attribute",
+                        "slot_key": "car_plan",
+                        "fact": "测试用户A取消了买车计划",
+                        "subject_user_id": "100000001",
+                        "speaker_user_id": "100000001",
+                        "line_idx": 0,
+                        "event_date": None,
+                        "ttl_days": None,
+                    },
+                    {
+                        "op": "RETRACT",
+                        "target_edge_id": short_inv,
+                        "source": "测试用户A",
+                        "target": "测试用户A",
+                        "edge_kind": "attribute",
+                        "slot_key": "invest_habit",
+                        "fact": "测试用户B试图代撤测试用户A的投资计划",
+                        "subject_user_id": "100000001",
+                        "speaker_user_id": "100000002",
+                        "line_idx": 1,
+                        "event_date": None,
+                        "ttl_days": None,
+                    },
+                    {
+                        "op": "ADD",
+                        "target_edge_id": "",
+                        "source": "测试用户B",
+                        "target": "测试用户B",
+                        "edge_kind": "attribute",
+                        "slot_key": "job",
+                        "fact": "测试用户B最近换了新工作",
+                        "subject_user_id": "100000002",
+                        "speaker_user_id": "100000001",
+                        "line_idx": 2,
+                        "event_date": None,
+                        "ttl_days": None,
+                    },
+                    {
+                        "op": "ADD",
+                        "target_edge_id": "",
+                        "source": "测试用户A",
+                        "target": "测试用户A",
+                        "edge_kind": "attribute",
+                        "slot_key": "group_ref",
+                        "fact": "测试用户A在200000001群问这事怎么看",
+                        "subject_user_id": "100000001",
+                        "speaker_user_id": "100000001",
+                        "line_idx": 3,
+                        "event_date": None,
+                        "ttl_days": None,
+                    },
+                    {
+                        "op": "ADD",
+                        "target_edge_id": "",
+                        "source": "测试用户A",
+                        "target": "测试用户A",
+                        "edge_kind": "attribute",
+                        "slot_key": "bot_hallucination",
+                        "fact": "测试用户A是火星人",
+                        "subject_user_id": "100000001",
+                        "speaker_user_id": "__assistant_onebot__",
+                        "line_idx": 4,
+                        "event_date": None,
+                        "ttl_days": None,
+                    },
+                ],
+                "aliases": [],
+                "thread_summary": "测试用户A决定取消买车计划",
+                "preferences": [
+                    {
+                        "user_id": "100000001",
+                        "target_context": "possession",
+                        "preference_rule": "错误归类到物品持有的记录",
+                        "polarity": "do",
+                        "is_correction": False,
+                    },
+                    {
+                        "user_id": "100000001",
+                        "target_context": "general",
+                        "preference_rule": "以后回答尽量先给结论再展开",
+                        "polarity": "do",
+                        "is_correction": False,
+                    },
+                ],
+            }
+
+            await apply_algebra_output(
+                "group:200000001",
+                recs,
+                [0, 1, 2, 3, 4],
+                out,
+                known_edges=[ed_plan, ed_invest],
+                thread_ref="new",
+                topic_title="换车讨论",
+                episode_id="",
+                threads=[],
+            )
+
+            async with maker() as session:
+                p_row = await session.get(AIMemEdge, "ed_plan_0001")
+                i_row = await session.get(AIMemEdge, "ed_inv_0002")
+                assert p_row is not None and p_row.resolution_state == "retracted" and p_row.invalid_at is not None
+                assert i_row is not None and i_row.resolution_state == "active" and i_row.invalid_at is None
+                all_edges = list((await session.execute(select(AIMemEdge))).scalars().all())
+                by_fact = {e.fact: e for e in all_edges}
+                assert (
+                    "测试用户B最近换了新工作" in by_fact
+                    and by_fact["测试用户B最近换了新工作"].resolution_state == "staging"
+                )
+                assert "测试用户A在200000001群问这事怎么看" not in by_fact
+                assert "测试用户A是火星人" not in by_fact
+                prefs = list((await session.execute(select(AIMemPreference))).scalars().all())
+                assert len(prefs) == 1 and "先给结论" in prefs[0].preference_rule
+                th_rows = list((await session.execute(select(AIMemThread))).scalars().all())
+                assert len(th_rows) == 1 and "取消买车" in th_rows[0].summary
+
+                # 3) 无损生命周期：decay 地板 0.35 + 到期短期边 & 30天 staging 转 retracted + 故事线流转，零物理删除
+                session.add_all(
+                    [
+                        AIMemEdge(
+                            id="ed_due_ttl",
+                            scope_key="group:200000001",
+                            fact="测试用户A这几天出差",
+                            source_entity_id="ent_a",
+                            target_entity_id="ent_a",
+                            resolution_state="active",
+                            valid_at=now - timedelta(days=10),
+                            expired_at=now - timedelta(days=1),
+                            qdrant_id="ed_due_ttl",
+                        ),
+                        AIMemEdge(
+                            id="ed_old_stg",
+                            scope_key="group:200000001",
+                            fact="旧传闻超30天未证实",
+                            source_entity_id="ent_b",
+                            target_entity_id="ent_b",
+                            resolution_state="staging",
+                            valid_at=now - timedelta(days=40),
+                            qdrant_id="ed_old_stg",
+                        ),
+                        AIMemEdge(
+                            id="ed_decay_floor",
+                            scope_key="group:200000001",
+                            fact="很早之前的持久爱好",
+                            source_entity_id="ent_a",
+                            target_entity_id="ent_a",
+                            resolution_state="active",
+                            decay_score=0.36,
+                            valid_at=now - timedelta(days=60),
+                            last_accessed=now - timedelta(days=60),
+                            qdrant_id="ed_decay_floor",
+                        ),
+                    ]
+                )
+                await session.commit()
+
+            await AIMemEdge.apply_decay(stale_days=7, decay_factor=0.5, min_decay_score=cw_mod.DECAY_FLOOR)
+            exp_cnt, stg_cnt = await cw_mod._expire_and_archive_edges()
+            assert exp_cnt == 1 and stg_cnt == 1
+            # 单一状态机流转验证：超 14 天故事线转 archived 并委托 sleep_extract
+            async with maker() as session:
+                session.add(
+                    AIMemThread(
+                        id="th_stale_cw",
+                        scope_key="group:200000001",
+                        title="旧周会线",
+                        status="active",
+                        first_at=now - timedelta(days=20),
+                        last_at=now - timedelta(days=16),
+                    )
+                )
+                await session.commit()
+            d_cnt, a_cnt = await cw_mod._transition_threads()
+            assert d_cnt == 0 and a_cnt == 1
+
+            # ensure_speaker_entity 仅头像变更时走 set_entity_payload 轻量同步，不触发全量重嵌
+            avatar_patches: list[tuple[str, dict[str, object]]] = []
+
+            async def _cap_ent_payload(eid: str, pl: dict[str, object]) -> bool:
+                avatar_patches.append((eid, pl))
+                return True
+
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.set_entity_payload", _cap_ent_payload)
+            await identity_mod.ensure_speaker_entity(
+                "group:200000001",
+                "100000001",
+                display_name="测试用户A",
+                avatar_url="https://q1.qlogo.cn/g?b=qq&nk=100000001&s=100",
+                sync_vector=True,
+            )
+            assert any(
+                eid == "ent_a" and pl["avatar_url"] == "https://q1.qlogo.cn/g?b=qq&nk=100000001&s=100"
+                for eid, pl in avatar_patches
+            )
+
+            async with maker() as session:
+                floor_e = await session.get(AIMemEdge, "ed_decay_floor")
+                due_e = await session.get(AIMemEdge, "ed_due_ttl")
+                stg_e = await session.get(AIMemEdge, "ed_old_stg")
+                assert floor_e is not None and abs(floor_e.decay_score - 0.35) < 1e-6
+                assert due_e is not None and due_e.resolution_state == "retracted"
+                assert stg_e is not None and stg_e.resolution_state == "retracted"
+
+            # 4) 同窗无 target_edge_id 按槽撤回 + 同窗第三方传闻被本人辟谣自动双边 CONTRADICT + pending ID 过滤
+            from gsuid_core.ai_core.memory.vector.ops import _is_valid_qdrant_point_id
+
+            assert not _is_valid_qdrant_point_id("pending:group:200000001:1795734289:0")
+            assert _is_valid_qdrant_point_id("123e4567-e89b-12d3-a456-426614174000")
+
+            sw_records = [
+                _mk_obs(
+                    "计划买设备Z",
+                    speaker_id="100000001",
+                    speaker_name="测试用户A",
+                    group_id="200000001",
+                    scope_key="group:200000001",
+                    timestamp=now,
+                ),
+                _mk_obs(
+                    "设备Z我决定不买了，取消预算",
+                    speaker_id="100000001",
+                    speaker_name="测试用户A",
+                    group_id="200000001",
+                    scope_key="group:200000001",
+                    timestamp=now + timedelta(seconds=5),
+                ),
+                _mk_obs(
+                    "听说测试用户A要去外地出差",
+                    speaker_id="100000002",
+                    speaker_name="测试用户B",
+                    group_id="200000001",
+                    scope_key="group:200000001",
+                    timestamp=now + timedelta(seconds=10),
+                ),
+                _mk_obs(
+                    "我没要去外地出差，辟谣一下",
+                    speaker_id="100000001",
+                    speaker_name="测试用户A",
+                    group_id="200000001",
+                    scope_key="group:200000001",
+                    timestamp=now + timedelta(seconds=15),
+                ),
+            ]
+            sw_out: AlgebraExtractOutput = {
+                "entities": [
+                    {"name": "测试用户A", "user_id": "100000001", "summary": "", "kind": "speaker"},
+                    {"name": "设备Z", "user_id": None, "summary": "", "kind": "item"},
+                    {"name": "外地", "user_id": None, "summary": "", "kind": "location"},
+                ],
+                "edges": [
+                    {
+                        "op": "ADD",
+                        "target_edge_id": "",
+                        "source": "测试用户A",
+                        "target": "设备Z",
+                        "edge_kind": "relation",
+                        "slot_key": "device_z_plan",
+                        "fact": "测试用户A计划购买设备Z",
+                        "subject_user_id": "100000001",
+                        "speaker_user_id": "100000001",
+                        "line_idx": 0,
+                        "event_date": None,
+                        "ttl_days": None,
+                    },
+                    {
+                        "op": "RETRACT",
+                        "target_edge_id": "",
+                        "source": "测试用户A",
+                        "target": "设备Z",
+                        "edge_kind": "relation",
+                        "slot_key": "device_z_plan",
+                        "fact": "测试用户A取消购买设备Z的预算",
+                        "subject_user_id": "100000001",
+                        "speaker_user_id": "100000001",
+                        "line_idx": 1,
+                        "event_date": None,
+                        "ttl_days": None,
+                    },
+                    {
+                        "op": "ADD",
+                        "target_edge_id": "",
+                        "source": "测试用户A",
+                        "target": "外地",
+                        "edge_kind": "relation",
+                        "slot_key": "trip_plan_sw",
+                        "fact": "测试用户B转述测试用户A要去外地出差",
+                        "subject_user_id": "100000001",
+                        "speaker_user_id": "100000002",
+                        "line_idx": 2,
+                        "event_date": None,
+                        "ttl_days": None,
+                    },
+                    {
+                        "op": "CONTRADICT",
+                        "target_edge_id": "",
+                        "source": "测试用户A",
+                        "target": "外地",
+                        "edge_kind": "relation",
+                        "slot_key": "trip_plan_sw",
+                        "fact": "测试用户A否认自己要去外地出差",
+                        "subject_user_id": "100000001",
+                        "speaker_user_id": "100000001",
+                        "line_idx": 3,
+                        "event_date": None,
+                        "ttl_days": None,
+                    },
+                ],
+                "preferences": [],
+                "aliases": [],
+                "thread_summary": "",
+            }
+            parsed_sw = algebra_mod._parse_output(
+                '{"entities":[],"edges":[{"op":"RETRACT","target":null,"source":"测试用户A","target_name":"设备Z","kind":"relation","slot":"device_z_plan","fact":"","subject":"100000001","speaker":"100000001","line":1}]}'
+            )
+            assert parsed_sw is not None and len(parsed_sw["edges"]) == 1 and parsed_sw["edges"][0]["op"] == "RETRACT"
+            await apply_algebra_output(
+                "group:200000001",
+                sw_records,
+                [0, 1, 2, 3],
+                sw_out,
+                known_edges=[],
+                thread_ref=None,
+                topic_title="",
+                episode_id="ep_sw",
+            )
+            async with maker() as session:
+                sw_edges = list(
+                    (
+                        await session.execute(
+                            select(AIMemEdge).where(col(AIMemEdge.slot_key).in_(["device_z_plan", "trip_plan_sw"]))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                dev_edges = [e for e in sw_edges if e.slot_key == "device_z_plan"]
+                trip_edges = [e for e in sw_edges if e.slot_key == "trip_plan_sw"]
+                assert len(dev_edges) == 1 and dev_edges[0].resolution_state == "retracted"
+                assert len(trip_edges) == 2
+                assert all(e.resolution_state == "contradicted" and e.contradicts_edge_id for e in trip_edges)
+                assert {trip_edges[0].id, trip_edges[1].id} == {
+                    trip_edges[0].contradicts_edge_id,
+                    trip_edges[1].contradicts_edge_id,
+                }
+
+    asyncio.run(scenario())
+
+
+def test_phase3_anchor_lore_retrieval_time_ordering_and_dossier_privacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """人物锚点直注隔离、中英文事件时间解析、全跨度均匀采样、撤回标注、单出口偏好与 lookup_person_memory 隐私。"""
+    import gsuid_core.ai_core.memory.identity as identity_mod
+    import gsuid_core.ai_core.memory.database.models as mem_models
+    import gsuid_core.ai_core.buildin_tools.memory_dossier as dossier_mod
+    import gsuid_core.ai_core.memory.retrieval.anchor_lore as anchor_mod
+    from gsuid_core.ai_core.control.lines import (
+        ANCHOR_LORE_HEADER,
+        MEMORY_RUMOR_UNCONFIRMED_TAG,
+        MEMORY_RETRACTED_EPISODE_PREFIX,
+    )
+    from gsuid_core.ai_core.memory.privacy import parse_iso_ts
+    from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
+    from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemEntity, AIMemThread
+    from gsuid_core.ai_core.buildin_tools.visibility import (
+        mark_find_tools_recalled,
+        visible_when_timeline_query,
+    )
+    from gsuid_core.ai_core.memory.database.preference import AIMemPreference
+    from gsuid_core.ai_core.memory.retrieval.event_time import effective_event_at, event_at_from_text
+    from gsuid_core.ai_core.memory.retrieval.prompt_render import (
+        MemoryContext,
+        _take_uniform_span_lines,
+    )
+
+    # 1) 中英文事件时间解析 + effective_event_at 标准时间戳解析 + 全跨度均匀采样 + 撤回片段标注 + 时间线工具可见性
+    ref = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    d_ago = event_at_from_text("2个月前去杭州玩过", ref)
+    d_ymd = event_at_from_text("2025年3月5日正式入职", ref)
+    d_en = event_at_from_text("Started the job on May 12, 2025", ref)
+    assert d_ago < ref - timedelta(days=50)
+    assert (d_ymd.year, d_ymd.month, d_ymd.day) == (2025, 3, 5)
+    assert (d_en.year, d_en.month, d_en.day) == (2025, 5, 12)
+    assert effective_event_at(
+        _episode("ep_ts_19", "测试用户A(1): 我昨天买了咖啡", "group:200000001", valid_at="2026-11-27 12:34:56")
+    ).startswith("2026-11-26")
+    assert effective_event_at(
+        _episode("ep_ts_16", "测试用户A(1): 我昨天买了咖啡", "group:200000001", valid_at="2026-11-27 12:34")
+    ).startswith("2026-11-26")
+    assert effective_event_at(
+        _episode("ep_ts_10", "测试用户A(1): 我昨天买了咖啡", "group:200000001", valid_at="2026-11-27")
+    ).startswith("2026-11-26")
+    assert parse_iso_ts("2026-11-27 12:34:56 UTC") > 0.0
+
+    lines_10 = [f"事件行{i:02d}" for i in range(10)]
+    sampled = _take_uniform_span_lines(lines_10, budget=25)
+    assert (
+        sampled[0] == "事件行00" and sampled[-1] == "事件行09" and any(x in sampled for x in ("事件行04", "事件行05"))
+    )
+
+    ep_ret = _episode("ep_old_car", "测试用户A: 我准备买测试车型X", "group:200000001")
+    ep_ret["retraction_note"] = MEMORY_RETRACTED_EPISODE_PREFIX
+    rendered_ret = MemoryContext(episodes=[ep_ret]).to_prompt_text(2000, query="测试车型X", wrap_recall=False)
+    assert MEMORY_RETRACTED_EPISODE_PREFIX in rendered_ret
+
+    ev_tl = Event(bot_id="b1", bot_self_id="s1", user_id="100000001", group_id="200000001", text="帮我梳理时间线")
+    assert visible_when_timeline_query(make_run_ctx(ev=ev_tl)) is True
+    ev_plain = Event(bot_id="b1", bot_self_id="s1", user_id="100000001", group_id="200000001", text="随便聊聊")
+    ctx_plain = make_run_ctx(ev=ev_plain)
+    assert visible_when_timeline_query(ctx_plain) is False
+    mark_find_tools_recalled(ctx_plain.deps, "read_session")
+    assert visible_when_timeline_query(ctx_plain) is True
+
+    # 2) Anchor Lore 群隔离 + 私聊本人单向汇聚 + lookup_person_memory + 单出口偏好上限
+    async def scenario() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="phase3_anchor.db") as (_engine, maker):
+            monkeypatch.setattr(identity_mod, "async_maker", maker)
+            monkeypatch.setattr(mem_models, "async_maker", maker)
+            monkeypatch.setattr(anchor_mod, "async_maker", maker)
+            monkeypatch.setattr(dossier_mod, "async_maker", maker)
+
+            async def _fake_user_groups(_uid: str, **_kw: object) -> list[str]:
+                return ["group:200000001", "group:200000002"]
+
+            monkeypatch.setattr(dossier_mod, "resolve_user_group_scopes", _fake_user_groups)
+
+            now = datetime.now(timezone.utc)
+            ent_a_g1 = AIMemEntity(
+                id="a_g1",
+                scope_key="group:200000001",
+                name="测试用户A",
+                user_id="100000001",
+                is_speaker=True,
+                entity_kind="speaker",
+                qdrant_id="a_g1",
+            )
+            ent_a_g1.set_aliases(["阿A"])
+            ent_b_g1 = AIMemEntity(
+                id="b_g1",
+                scope_key="group:200000001",
+                name="测试用户B",
+                user_id="100000002",
+                is_speaker=True,
+                entity_kind="speaker",
+                qdrant_id="b_g1",
+            )
+            ent_b_g1.set_aliases(["老B"])
+            ent_a_g2 = AIMemEntity(
+                id="a_g2",
+                scope_key="group:200000002",
+                name="测试用户A",
+                user_id="100000001",
+                is_speaker=True,
+                entity_kind="speaker",
+                qdrant_id="a_g2",
+            )
+            ent_c_g2 = AIMemEntity(
+                id="c_g2",
+                scope_key="group:200000002",
+                name="测试用户C",
+                user_id="100000003",
+                is_speaker=True,
+                entity_kind="speaker",
+                qdrant_id="c_g2",
+            )
+            async with maker() as session:
+                session.add_all(
+                    [
+                        ent_a_g1,
+                        ent_b_g1,
+                        ent_a_g2,
+                        ent_c_g2,
+                        AIMemEdge(
+                            id="e_a_g1",
+                            scope_key="group:200000001",
+                            fact="测试用户A养了一只橘猫",
+                            source_entity_id="a_g1",
+                            target_entity_id="a_g1",
+                            resolution_state="active",
+                            valid_at=now,
+                            qdrant_id="e_a_g1",
+                        ),
+                        AIMemEdge(
+                            id="e_a_expired",
+                            scope_key="group:200000001",
+                            fact="测试用户A临时出差已过期",
+                            source_entity_id="a_g1",
+                            target_entity_id="a_g1",
+                            resolution_state="active",
+                            valid_at=now - timedelta(days=5),
+                            expired_at=now - timedelta(hours=2),
+                            qdrant_id="e_a_expired",
+                        ),
+                        AIMemEdge(
+                            id="e_b_stg",
+                            scope_key="group:200000001",
+                            fact="测试用户B准备去日本旅游",
+                            source_entity_id="b_g1",
+                            target_entity_id="b_g1",
+                            resolution_state="staging",
+                            valid_at=now,
+                            qdrant_id="e_b_stg",
+                        ),
+                        AIMemEdge(
+                            id="e_a_g2",
+                            scope_key="group:200000002",
+                            fact="测试用户A在B群学吉他",
+                            source_entity_id="a_g2",
+                            target_entity_id="a_g2",
+                            resolution_state="active",
+                            valid_at=now,
+                            qdrant_id="e_a_g2",
+                        ),
+                        AIMemEdge(
+                            id="e_c_g2",
+                            scope_key="group:200000002",
+                            fact="测试用户C买了新相机",
+                            source_entity_id="c_g2",
+                            target_entity_id="c_g2",
+                            resolution_state="active",
+                            valid_at=now,
+                            qdrant_id="e_c_g2",
+                        ),
+                        AIMemThread(
+                            id="th_g1",
+                            scope_key="group:200000001",
+                            title="周末露营",
+                            summary="商量周六营地",
+                            status="active",
+                            participant_uids_json='["100000001","100000002"]',
+                            first_at=now,
+                            last_at=now,
+                        ),
+                    ]
+                )
+                distinct_general_rules = (
+                    "回复尽量简短直接给结论",
+                    "时间换算默认用北京时间",
+                    "货币报价默认换算人民币",
+                    "列清单时使用数字编号",
+                    "技术概念请附带生活类比",
+                    "不要使用过多客套敬语",
+                )
+                for idx, rule_txt in enumerate(distinct_general_rules):
+                    session.add(
+                        AIMemPreference(
+                            id=f"p_gen_{idx}",
+                            scope_key="user_global:100000001",
+                            user_id="100000001",
+                            target_context="general",
+                            preference_rule=rule_txt,
+                            mention_count=10 - idx,
+                            is_active=True,
+                        )
+                    )
+                session.add_all(
+                    [
+                        AIMemPreference(
+                            id="p_bad_ctx",
+                            scope_key="user_global:100000001",
+                            user_id="100000001",
+                            target_context="possession",
+                            preference_rule="误抽的物品持有偏好",
+                            is_active=True,
+                        ),
+                        AIMemPreference(
+                            id="p_dom",
+                            scope_key="user_global:100000001",
+                            user_id="100000001",
+                            target_context="画图",
+                            preference_rule="画图默认用竖屏比例",
+                            is_active=True,
+                        ),
+                    ]
+                )
+                await session.commit()
+
+            # 群聊直注：命中本群当前说话人 + 外号点名成员，严禁串入 B 群事实，且已到期短期边立即可见性失效
+            grp_anchor = await anchor_mod.build_anchor_lore_block("100000001", "200000001", "老B最近忙啥呢")
+            assert ANCHOR_LORE_HEADER in grp_anchor and "橘猫" in grp_anchor
+            assert "临时出差已过期" not in grp_anchor
+            assert f"{MEMORY_RUMOR_UNCONFIRMED_TAG}测试用户B准备去日本旅游" in grp_anchor
+            assert "学吉他" not in grp_anchor and "新相机" not in grp_anchor
+
+            # Anchor Lore 装配镜像 MemoryKit 开关闸门：skip_memory / enable_memory=False / enable_retrieval=False 均禁注
+            from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
+            from gsuid_core.ai_core.memory.config import MemoryConfig
+            from gsuid_core.ai_core.context_assembly import assemble_dynamic_context
+
+            async def _noop_pref_tail(*_a: object, **_kw: object) -> str:
+                return ""
+
+            monkeypatch.setattr("gsuid_core.ai_core.self_cognition.load_speaker_preference_tail", _noop_pref_tail)
+            ctx_skip = AgentHookContext(point=AgentHookPoint.COMPOSE_CONTEXT, skip_memory=True)
+            txt_skip, _ = await assemble_dynamic_context(
+                query="老B最近忙啥呢",
+                user_id="100000001",
+                bot_id="b1",
+                persona_name="default",
+                mood_key="calm",
+                group_id="200000001",
+                hook_ctx=ctx_skip,
+            )
+            assert ANCHOR_LORE_HEADER not in txt_skip
+
+            monkeypatch.setattr(MemoryConfig, "enable_retrieval", property(lambda _s: False))
+            txt_ret_off, _ = await assemble_dynamic_context(
+                query="老B最近忙啥呢",
+                user_id="100000001",
+                bot_id="b1",
+                persona_name="default",
+                mood_key="calm",
+                group_id="200000001",
+            )
+            assert ANCHOR_LORE_HEADER not in txt_ret_off
+
+            monkeypatch.setattr(MemoryConfig, "enable_retrieval", property(lambda _s: True))
+            from gsuid_core.ai_core.configs.ai_config import ai_config as _ai_cfg
+
+            _orig_get_cfg = _ai_cfg.get_config
+
+            class _FakeCfgVal:
+                def __init__(self, data: object) -> None:
+                    self.data = data
+
+            monkeypatch.setattr(
+                _ai_cfg,
+                "get_config",
+                lambda key: _FakeCfgVal(False) if key == "enable_memory" else _orig_get_cfg(key),
+            )
+            txt_mem_off, _ = await assemble_dynamic_context(
+                query="老B最近忙啥呢",
+                user_id="100000001",
+                bot_id="b1",
+                persona_name="default",
+                mood_key="calm",
+                group_id="200000001",
+            )
+            assert ANCHOR_LORE_HEADER not in txt_mem_off
+            monkeypatch.setattr(_ai_cfg, "get_config", _orig_get_cfg)
+
+            # 私聊直注：仅单向汇聚本人跨群事实（附 [群:gid]），严禁泄露他人
+            dm_anchor = await anchor_mod.build_anchor_lore_block("100000001", None, "聊聊近况")
+            assert "[群:200000001]" in dm_anchor and "[群:200000002]" in dm_anchor and "学吉他" in dm_anchor
+            assert "日本旅游" not in dm_anchor and "新相机" not in dm_anchor
+
+            # lookup_person_memory：群聊按外号查人；私聊查自己通过、查他人拒绝
+            ev_grp = Event(bot_id="b1", bot_self_id="s1", user_id="100000001", group_id="200000001", user_type="group")
+            res_grp = await dossier_mod.lookup_person_memory(make_run_ctx(ev=ev_grp), "老B")
+            assert "测试用户B" in res_grp and "日本旅游" in res_grp
+            res_grp_me = await dossier_mod.lookup_person_memory(make_run_ctx(ev=ev_grp), "我", include_history=False)
+            assert "橘猫" in res_grp_me and "临时出差已过期" not in res_grp_me
+            res_grp_me_hist = await dossier_mod.lookup_person_memory(
+                make_run_ctx(ev=ev_grp), "我", include_history=True
+            )
+            assert "临时出差已过期" in res_grp_me_hist
+            ev_dm = Event(bot_id="b1", bot_self_id="s1", user_id="100000001", group_id=None, user_type="direct")
+            res_dm_self = await dossier_mod.lookup_person_memory(make_run_ctx(ev=ev_dm), "我")
+            assert "[群:200000002]" in res_dm_self and "新相机" not in res_dm_self
+            res_dm_other = await dossier_mod.lookup_person_memory(make_run_ctx(ev=ev_dm), "测试用户B")
+            assert "私聊中只能查询你本人" in res_dm_other
+
+            # 单出口偏好：<=4 通用，且屏蔽 possession/one-off；仅命中领域时带出领域规则
+            pref_plain = await load_speaker_preference_tail("b1", "default", "100000001", query="今天天气不错")
+            assert sum(1 for r in distinct_general_rules if r in pref_plain) == 4
+            assert "物品持有偏好" not in pref_plain and "竖屏比例" not in pref_plain
+            pref_draw = await load_speaker_preference_tail("b1", "default", "100000001", query="帮我画图一张风景")
+            assert "竖屏比例" in pref_draw
+
+            # 活跃群中已有 active 故事线时，>14 天归档故事线仍可在跨会话/时间线/摘要召回中命中
+            from gsuid_core.ai_core.memory.retrieval.dual_route import _load_thread_summaries
+            from gsuid_core.ai_core.memory.retrieval.thread_recall import recall_span_threads
+
+            async with maker() as session:
+                session.add_all(
+                    [
+                        AIMemThread(
+                            id="th_g1_archived",
+                            scope_key="group:200000001",
+                            title="春季京都远足",
+                            summary="去年春天大家一起去京都看樱花",
+                            status="archived",
+                            participant_uids_json='["100000001"]',
+                            first_at=now - timedelta(days=90),
+                            last_at=now - timedelta(days=60),
+                        ),
+                        AIMemEdge(
+                            id="ed_ms_arch",
+                            scope_key="group:200000001",
+                            fact="测试用户A在京都拍了樱花照片",
+                            source_entity_id="a_g1",
+                            target_entity_id="a_g1",
+                            edge_kind="milestone",
+                            thread_id="th_g1_archived",
+                            resolution_state="active",
+                            valid_at=now - timedelta(days=60),
+                            qdrant_id="ed_ms_arch",
+                        ),
+                    ]
+                )
+                await session.commit()
+            _arch_eps, arch_cues = await recall_span_threads(
+                "之前春季京都远足发生过什么", ["group:200000001"], "100000001", "200000001"
+            )
+            assert any("京都拍了樱花" in c["summary"] for c in arch_cues)
+            th_sums = await _load_thread_summaries(
+                ["group:200000001"], is_private=False, user_id="100000001", query="春季京都远足"
+            )
+            assert any(item["id"] == "th_g1_archived" for item in th_sums)
+
+    asyncio.run(scenario())
+
+
+def test_phase4_webconsole_curation_and_reconcile_contracts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """WebConsole 四栏实体详情、在线改名/外号/无损合并/按边无损拆分与全量主键游标对账（无 200 截断）。"""
+    from sqlalchemy import insert
+
+    import gsuid_core.ai_core.memory.identity as identity_mod
+    import gsuid_core.ai_core.memory.database.fts as fts_mod
+    import gsuid_core.ai_core.memory.group_profile as gp_mod
+    import gsuid_core.webconsole.ai_memory_curation as cur_mod
+    import gsuid_core.ai_core.memory.database.models as mem_models
+    from gsuid_core.ai_core.memory.database.models import (
+        AIMemEdge,
+        AIMemEntity,
+        AIMemThread,
+        AIMemEpisode,
+        mem_episode_entity_mentions,
+    )
+
+    async def scenario() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="phase4_cur.db") as (_engine, maker):
+            monkeypatch.setattr(cur_mod, "async_maker", maker)
+            monkeypatch.setattr(mem_models, "async_maker", maker)
+            monkeypatch.setattr(identity_mod, "async_maker", maker)
+            monkeypatch.setattr(fts_mod, "_FTS_READY", None)
+            monkeypatch.setattr("gsuid_core.ai_core.rag.base.client", None)
+
+            async def _noop(*_a: object, **_kw: object) -> None:
+                return None
+
+            captured_edge_upserts: list[dict[str, str | float | None]] = []
+            captured_lifecycle_updates: list[dict[str, str | float | None]] = []
+            captured_ent_payload_patches: list[tuple[str, dict[str, object]]] = []
+
+            async def _cap_edge_upsert(items: list[dict[str, str | float | None]]) -> None:
+                captured_edge_upserts.extend(items)
+
+            async def _cap_lifecycle(updates: list[dict[str, str | float | None]]) -> None:
+                captured_lifecycle_updates.extend(updates)
+
+            async def _cap_ent_patch_batch(updates: list[tuple[str, dict[str, object]]]) -> int:
+                captured_ent_payload_patches.extend(updates)
+                return len(updates)
+
+            monkeypatch.setattr(cur_mod, "_sync_entity_vector_safe", _noop)
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.upsert_edge_vectors_batch", _cap_edge_upsert)
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.update_edge_lifecycle_payloads", _cap_lifecycle)
+            monkeypatch.setattr("gsuid_core.ai_core.memory.vector.ops.set_entity_payloads_batch", _cap_ent_patch_batch)
+            monkeypatch.setattr(gp_mod, "record_member_alias", _noop)
+
+            now = datetime.now(timezone.utc)
+            e1 = AIMemEntity(
+                id="e1",
+                scope_key="group:200000001",
+                name="测试用户A",
+                user_id="100000001",
+                is_speaker=True,
+                entity_kind="speaker",
+                avatar_url="https://q1.qlogo.cn/g?b=qq&nk=100000001&s=100",
+                qdrant_id="e1",
+            )
+            e1.set_pending_aliases([{"alias": "老A", "hits": 1, "windows": ["w1"]}])
+            e2 = AIMemEntity(
+                id="e2",
+                scope_key="group:200000001",
+                name="测试用户A重复节点",
+                is_speaker=False,
+                entity_kind="person",
+                qdrant_id="e2",
+            )
+            e3 = AIMemEntity(
+                id="e3",
+                scope_key="group:200000001",
+                name="测试项目Alpha",
+                is_speaker=False,
+                entity_kind="project",
+                qdrant_id="e3",
+            )
+            async with maker() as session:
+                session.add_all(
+                    [
+                        e1,
+                        e2,
+                        e3,
+                        AIMemEdge(
+                            id="ed_self",
+                            scope_key="group:200000001",
+                            fact="测试用户A爱喝乌龙茶",
+                            source_entity_id="e1",
+                            target_entity_id="e1",
+                            resolution_state="active",
+                            valid_at=now,
+                            qdrant_id="ed_self",
+                        ),
+                        AIMemEdge(
+                            id="ed_rel",
+                            scope_key="group:200000001",
+                            fact="测试用户A维护测试项目Alpha",
+                            source_entity_id="e1",
+                            target_entity_id="e3",
+                            resolution_state="active",
+                            valid_at=now,
+                            qdrant_id="ed_rel",
+                        ),
+                        AIMemEdge(
+                            id="ed_rumor",
+                            scope_key="group:200000001",
+                            fact="传闻测试用户A要换显示器",
+                            source_entity_id="e1",
+                            target_entity_id="e1",
+                            resolution_state="staging",
+                            valid_at=now,
+                            qdrant_id="ed_rumor",
+                        ),
+                        AIMemEdge(
+                            id="ed_hist",
+                            scope_key="group:200000001",
+                            fact="测试用户A旧计划已撤回",
+                            source_entity_id="e1",
+                            target_entity_id="e1",
+                            resolution_state="retracted",
+                            invalid_at=now,
+                            valid_at=now - timedelta(days=2),
+                            qdrant_id="ed_hist",
+                        ),
+                        AIMemEdge(
+                            id="ed_dup_src",
+                            scope_key="group:200000001",
+                            fact="测试用户A擅长写测试",
+                            source_entity_id="e2",
+                            target_entity_id="e2",
+                            resolution_state="active",
+                            valid_at=now,
+                            qdrant_id="ed_dup_src",
+                        ),
+                        AIMemEpisode(
+                            id="ep_m1",
+                            scope_key="group:200000001",
+                            content="测试用户A: 我爱喝乌龙茶",
+                            speaker_ids=["100000001"],
+                            valid_at=now,
+                            qdrant_id="ep_m1",
+                        ),
+                        AIMemThread(
+                            id="th_p4",
+                            scope_key="group:200000001",
+                            title="项目发布",
+                            participant_uids_json='["100000001"]',
+                            first_at=now,
+                            last_at=now,
+                        ),
+                    ]
+                )
+                await session.flush()
+                await session.execute(insert(mem_episode_entity_mentions).values(episode_id="ep_m1", entity_id="e1"))
+                await session.commit()
+
+            # 1) 四栏详情（含非空 episodes 关联）+ 批量计数 + 参与者解析
+            detail = await cur_mod.load_entity_detail_payload("e1")
+            assert detail is not None
+            assert isinstance(detail["episodes"], list) and len(detail["episodes"]) == 1
+            assert isinstance(detail["self_attributes"], list) and len(detail["self_attributes"]) == 1
+            assert isinstance(detail["relations"], list) and len(detail["relations"]) == 1
+            assert isinstance(detail["rumors_and_conflicts"], list) and len(detail["rumors_and_conflicts"]) == 1
+            assert isinstance(detail["history_edges"], list) and len(detail["history_edges"]) == 1
+
+            cnts = await cur_mod.batch_entity_edge_counts(["e1"])
+            assert cnts["e1"]["self_edge_count"] == 3 and cnts["e1"]["relation_edge_count"] == 1
+
+            async with maker() as session:
+                th = await session.get(AIMemThread, "th_p4")
+                assert th is not None
+                pmap = await cur_mod.resolve_thread_participants_batch([th])
+                assert pmap["th_p4"][0]["name"] == "测试用户A" and "q1.qlogo.cn" in pmap["th_p4"][0]["avatar_url"]
+
+            # 2) 在线改名 + 晋升待证外号 + 非人物改类隔离护栏（已绑 UID 禁改非人物；无 UID 改非人物强制去 speaker）
+            ok, _msg, patched = await cur_mod.patch_entity_record(
+                "e1", name="测试用户A改名", promote_pending_alias="老A"
+            )
+            assert ok and patched is not None and patched["name"] == "测试用户A改名"
+            assert (
+                isinstance(patched["aliases"], list)
+                and "测试用户A" in patched["aliases"]
+                and "老A" in patched["aliases"]
+            )
+            ok_bad_kind, _msg_bk, _ = await cur_mod.patch_entity_record("e1", entity_kind="item")
+            assert ok_bad_kind is False
+
+            async with maker() as session:
+                session.add(
+                    AIMemEntity(
+                        id="e_mis_spk",
+                        scope_key="group:200000001",
+                        name="误标机械键盘",
+                        is_speaker=True,
+                        entity_kind="speaker",
+                        tag=["speaker", "item"],
+                        qdrant_id="e_mis_spk",
+                    )
+                )
+                await session.commit()
+            ok_demote, _msg_dm, demoted_p = await cur_mod.patch_entity_record("e_mis_spk", entity_kind="item")
+            assert ok_demote and demoted_p is not None and demoted_p["is_speaker"] is False
+            async with maker() as session:
+                dm_row = await session.get(AIMemEntity, "e_mis_spk")
+                assert dm_row is not None and dm_row.is_speaker is False and "speaker" not in dm_row.tag
+
+            # 3) 无损合并 e2 -> e1 + 非人物合并同步重指世界枢纽认知索引（ent:<src> -> ent:<tgt>）
+            ok_m, _msg_m, merged = await cur_mod.merge_entity_records("e2", "e1")
+            assert ok_m and merged is not None
+            assert isinstance(merged["self_attributes"], list) and len(merged["self_attributes"]) == 2
+
+            from gsuid_core.ai_core.cognition.nodes import AICogEdge, AICogNode
+
+            async with maker() as session:
+                session.add(
+                    AIMemEntity(
+                        id="e3_dup",
+                        scope_key="group:200000001",
+                        name="测试项目Alpha旧名",
+                        is_speaker=False,
+                        entity_kind="project",
+                        qdrant_id="e3_dup",
+                    )
+                )
+                hub_node = AICogNode(
+                    kind="entity",
+                    ref="world:alpha_hub",
+                    scope_key="",
+                    title="测试项目Alpha",
+                    summary="",
+                    source="plugin",
+                )
+                src_cog = AICogNode(
+                    kind="entity",
+                    ref="ent:e3_dup",
+                    scope_key="group:200000001",
+                    title="测试项目Alpha旧名",
+                    summary="",
+                    source="memory",
+                    canon="world:alpha_hub",
+                )
+                session.add_all([hub_node, src_cog])
+                await session.flush()
+                assert hub_node.id is not None and src_cog.id is not None
+                session.add(AICogEdge(src_id=src_cog.id, dst_id=hub_node.id, edge_kind="related"))
+                await session.commit()
+
+            ok_hub_m, _msg_hm, _ = await cur_mod.merge_entity_records("e3_dup", "e3")
+            assert ok_hub_m
+            async with maker() as session:
+                old_cog = (
+                    await session.execute(select(AICogNode).where(col(AICogNode.ref) == "ent:e3_dup"))
+                ).scalar_one_or_none()
+                new_cog = (
+                    await session.execute(select(AICogNode).where(col(AICogNode.ref) == "ent:e3"))
+                ).scalar_one_or_none()
+                assert old_cog is None
+                assert new_cog is not None and new_cog.canon == "world:alpha_hub" and new_cog.id is not None
+                hub_edges = list(
+                    (await session.execute(select(AICogEdge).where(col(AICogEdge.src_id) == new_cog.id)))
+                    .scalars()
+                    .all()
+                )
+                assert len(hub_edges) == 1
+
+            # 4) 按勾选边无损拆出新实体
+            ok_s, _msg_s, split_res = await cur_mod.split_entity_records(
+                "e1", edge_ids=["ed_dup_src"], new_name="拆分独立实体", entity_kind="person", summary="拆分档案"
+            )
+            assert ok_s and split_res is not None and split_res["moved_edges"] == 1
+
+            # 5) 合并/拆分与对账重建向量必须原样透传 resolution_state，禁止把 staging/retracted 复活成 active
+            captured_edge_upserts.clear()
+            captured_lifecycle_updates.clear()
+            async with maker() as session:
+                all_p4_edges = list(
+                    (await session.execute(select(AIMemEdge).where(col(AIMemEdge.scope_key) == "group:200000001")))
+                    .scalars()
+                    .all()
+                )
+            await cur_mod._sync_edges_vectors_safe(all_p4_edges)
+            synced_states = {str(it["edge_id"]): str(it["resolution_state"]) for it in captured_edge_upserts}
+            assert synced_states["ed_rumor"] == "staging" and synced_states["ed_hist"] == "retracted"
+
+            # 6) 全量主键游标对账突破 200 条旧截断 + 缺失边补写与漂移边状态修复均保留真实 resolution_state
+            class _FakePoint:
+                def __init__(self, pid: str, payload: dict[str, str | float | None] | None = None) -> None:
+                    self.id = pid
+                    self.payload = payload
+
+            class _FakeQdrantClient:
+                async def retrieve(
+                    self,
+                    *,
+                    collection_name: str,
+                    ids: list[str],
+                    with_payload: bool | list[str] = False,
+                    with_vectors: bool = False,
+                ) -> list[_FakePoint]:
+                    del with_payload, with_vectors
+                    if collection_name == "memory_edges":
+                        # ed_hist 模拟 Qdrant 漂移成 active，ed_rumor 模拟缺失待补写
+                        return [_FakePoint("ed_hist", {"resolution_state": "active"})] if "ed_hist" in ids else []
+                    return [_FakePoint(pid) for pid in ids]
+
+            captured_edge_upserts.clear()
+            captured_ent_payload_patches.clear()
+            monkeypatch.setattr("gsuid_core.ai_core.rag.base.client", _FakeQdrantClient())
+            rec_g1 = await cur_mod.reconcile_scope_index_full("group:200000001")
+            assert rec_g1["vectors_repaired"] >= 3
+            repaired_states = {str(it["edge_id"]): str(it["resolution_state"]) for it in captured_edge_upserts}
+            assert repaired_states["ed_rumor"] == "staging"
+            assert any(
+                str(u["edge_id"]) == "ed_hist" and str(u["resolution_state"]) == "retracted"
+                for u in captured_lifecycle_updates
+            )
+            assert any(eid == "e1" and pl["name"] == "测试用户A改名" for eid, pl in captured_ent_payload_patches)
+
+            monkeypatch.setattr("gsuid_core.ai_core.rag.base.client", None)
+            async with maker() as session:
+                session.add_all(
+                    [
+                        AIMemEpisode(
+                            id=f"ep_bulk_{i:04d}",
+                            scope_key="group:200000009",
+                            content=f"测试批量对账片段编号{i}",
+                            speaker_ids=["100000001"],
+                            valid_at=now,
+                            qdrant_id=f"ep_bulk_{i:04d}",
+                        )
+                        for i in range(270)
+                    ]
+                )
+                await session.commit()
+            rec_res = await cur_mod.reconcile_scope_index_full("group:200000009")
+            assert rec_res["fts_rows"] == 270
+
+            # 7) 软作废边必须同步置 resolution_state=retracted，删实体必须级联清边/提及/认知节点
+            import gsuid_core.webconsole.ai_memory_api as mem_api_mod
+            import gsuid_core.webconsole.agent_debug_api as dbg_api_mod
+
+            monkeypatch.setattr(dbg_api_mod, "async_maker", maker)
+            monkeypatch.setattr(mem_api_mod, "async_maker", maker)
+            captured_lifecycle_updates.clear()
+            inv_res = await dbg_api_mod.invalidate_memory_edge("ed_self", _user={})
+            assert inv_res["status"] == 0
+            async with maker() as session:
+                inv_edge = await session.get(AIMemEdge, "ed_self")
+                assert inv_edge is not None and inv_edge.invalid_at is not None
+                assert inv_edge.resolution_state == "retracted"
+            assert any(
+                str(u["edge_id"]) == "ed_self" and str(u["resolution_state"]) == "retracted"
+                for u in captured_lifecycle_updates
+            )
+            stats_g1 = await mem_api_mod.get_memory_stats(scope_key="group:200000001", _={})
+            assert stats_g1["status"] == 0
+            assert stats_g1["data"]["active_edge_count"] == stats_g1["data"]["edge_state_counts"]["active"]
+
+            del_res = await mem_api_mod.delete_entity("e3", _={})
+            assert del_res["status"] == 0
+            async with maker() as session:
+                assert await session.get(AIMemEntity, "e3") is None
+                assert (
+                    await session.execute(select(AICogNode).where(col(AICogNode.ref) == "ent:e3"))
+                ).scalar_one_or_none() is None
+                assert (
+                    await session.execute(
+                        select(AIMemEdge).where(
+                            (col(AIMemEdge.source_entity_id) == "e3") | (col(AIMemEdge.target_entity_id) == "e3")
+                        )
+                    )
+                ).scalars().all() == []
+
+            # 8) MySQL 兼容 DDL 契约：每个新增 TEXT 列均具备无字面量默认值的 NULL 兜底与回填语句
+            from gsuid_core.utils.database.startup import exec_list
+
+            for tbl, col_name in (
+                ("aimementity", "aliases_json"),
+                ("aimementity", "pending_aliases_json"),
+                ("aimementity", "avatar_url"),
+                ("aimemthread", "participant_uids_json"),
+            ):
+                assert f"ALTER TABLE {tbl} ADD COLUMN {col_name} TEXT NULL;" in exec_list
+                assert any(sql.startswith(f"UPDATE {tbl} SET {col_name} = ") for sql in exec_list)
+
+    asyncio.run(scenario())

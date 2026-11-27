@@ -297,9 +297,12 @@ from gsuid_core.ai_core.buildin_tools.approval_tools import (
     request_master_approval,
 )
 
-# A-4：群成员称呼 / 身份确定性记忆
+# A-4：群成员称呼 / 身份确定性记忆与人物档案
 from gsuid_core.ai_core.buildin_tools.identity_tools import (
     remember_user_alias,
+)
+from gsuid_core.ai_core.buildin_tools.memory_dossier import (
+    lookup_person_memory,
 )
 
 # 消息发送工具 - 主动发送消息
@@ -395,8 +398,9 @@ __all__ = [
     "request_master_approval",
     # 好感度管理工具（仅主人绝对值覆盖；增量由框架结算）
     "set_user_favorability",
-    # 群成员称呼 / 身份
+    # 群成员称呼 / 身份与人物档案
     "remember_user_alias",
+    "lookup_person_memory",
     # 表情包工具
     "collect_meme",
     "search_meme",

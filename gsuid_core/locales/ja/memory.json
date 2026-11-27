@@ -119,6 +119,7 @@
   "log.memory.observation_queue_race": "メモリ観察キューが競合したため、メッセージを破棄します",
   "log.memory.observer_command_echo_filter": "[Observer] コマンドエコーフィルターに一致したため破棄する: {p0}",
   "log.memory.observer_credential_filtered": "[Observer] 資格情報コマンド/形式のメッセージを破棄",
+  "log.memory.observer_external_bot_filtered": "[Observer] 外部ボットフィルターに一致したため長期記憶の観察をスキップする: {p0}",
   "log.memory.observer_injection_signature_filter_inject": "[Observer] インジェクション特徴フィルターに一致したため破棄する: {p0}",
   "log.memory.observer_repetition_filter_matched": "[Observer] 反復フィルターに一致したため破棄する: {p0}",
   "log.memory.observer_user_command_typo": "[Observer] ユーザーコマンド/typo フィルターに一致したため破棄する: {p0}",
@@ -187,5 +188,11 @@
   "log.memory.time_range_supplemental_retrieval_2": "[Memory] 時間範囲の補足検索で Episode {p0} 件を再取得した（{p1:%Y-%m-%d} ~ {p2:%Y-%m-%d}）",
   "log.memory.total_episode_records_entity": "[Memory] 合計: Episode {p0} 件、Entity {p1} 個、Edge {p2} 件、Category {p3} 個",
   "log.memory.trigger_immediate_flush_correction": "[Memory] 訂正による即時 flush のトリガーに失敗した: {e}",
-  "log.memory.update_group_profile": "[Memory] グループプロファイルの更新に失敗した: {e}"
+  "log.memory.update_group_profile": "[Memory] グループプロファイルの更新に失敗した: {e}",
+  "log.memory.v2_1_backup_done": "[Memory] v2.1 無損失移行のデータベースバックアップを作成しました: {path}",
+  "log.memory.v2_1_migration_fail": "[Memory] v2.1 無損失移行に失敗しました（元DBは保持）: {e}",
+  "log.memory.v2_1_sql_done": "[Memory] v2.1 無損失 SQL 修復完了（{ms}ms）：話者補完 {speakers}、誤標解除 {demoted}、スレッド更新 {threads}、旧認知索引整理 {cog_cleaned}",
+  "log.memory.v2_1_vector_backfill_done": "[Memory] v2.1 バックグラウンド話者ベクトル補完完了: {done} 件",
+  "log.memory.v2_1_vector_backfill_fail": "[Memory] v2.1 バックグラウンド話者ベクトル補完に失敗（コンソールから再試行可）: {e}",
+  "log.memory.v2_1_vector_backfill_start": "[Memory] v2.1 低優先バックグラウンドベクトル補完を開始: 話者 {count}、ペイロード更新 {patches}"
 }

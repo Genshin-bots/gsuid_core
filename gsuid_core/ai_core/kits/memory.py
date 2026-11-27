@@ -403,7 +403,8 @@ class MemoryKit(AgentKit):
             group_id=scope.group_id,
             top_k=top_k,
             enable_user_global=scope.enable_user_global,
-            inject_preferences=True,
+            # 说话人偏好由 load_speaker_preference_tail 单出口分域挂载，此处禁双写。
+            inject_preferences=False,
             preference_contexts=pref_contexts,
             bot_id=scope.bot_id,
             bot_self_id=scope.bot_self_id,
@@ -412,6 +413,26 @@ class MemoryKit(AgentKit):
             memory_intent=memory_intent,
             clock_at=ctx.clock_at,
         )
+        # 纯工具短句跳过跨周闲聊 Episode 注入，保留近 7 天或文档/清单证据。
+        if ctx.intent == "工具" and len(search_q) <= 24 and memory_intent == "point_latest" and not mem.covered:
+            from datetime import datetime, timedelta
+
+            from gsuid_core.ai_core.memory.retrieval.types import Episode
+            from gsuid_core.ai_core.memory.retrieval.lexical_cover import is_ingested_document_episode
+            from gsuid_core.ai_core.memory.retrieval.lexical_excerpt import is_fact_sheet, parse_episode_valid_at
+
+            ref_now = ctx.clock_at if ctx.clock_at is not None else datetime.now()
+            cutoff = ref_now.replace(tzinfo=None) - timedelta(days=7)
+            kept_eps: list[Episode] = []
+            for ep in mem.episodes:
+                raw = ep["content"] or ""
+                if is_fact_sheet(ep) or is_ingested_document_episode(raw):
+                    kept_eps.append(ep)
+                    continue
+                dt = parse_episode_valid_at(ep["valid_at"] or "")
+                if dt is not None and dt.replace(tzinfo=None) >= cutoff:
+                    kept_eps.append(ep)
+            mem.episodes = kept_eps
         from gsuid_core.ai_core.memory.retrieval.types import Episode
         from gsuid_core.ai_core.memory.retrieval.lexical import expand_lexical_recall
 

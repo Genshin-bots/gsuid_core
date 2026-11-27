@@ -17,6 +17,7 @@ class CogKind(str, Enum):
     EPISODE = "episode"
     ENTITY = "entity"
     FACT = "fact"
+    THREAD = "thread"
     PREFERENCE = "preference"
     KNOWLEDGE = "knowledge"
     TOOL_OUTPUT = "tool_output"
@@ -37,6 +38,7 @@ KIND_LABEL: Dict[CogKind, str] = {
     CogKind.EPISODE: "片段",
     CogKind.ENTITY: "实体",
     CogKind.FACT: "事实",
+    CogKind.THREAD: "故事线",
     CogKind.PREFERENCE: "偏好·须遵守",
     CogKind.KNOWLEDGE: "知识",
     CogKind.TOOL_OUTPUT: "落盘·可能过时",
@@ -51,17 +53,19 @@ KIND_LABEL: Dict[CogKind, str] = {
 
 # ⑧ 每轮自动注入的默认切片：与改造前一致（记忆 + 偏好），延迟不回退。
 # 全联邦只在工具调用或问答/回指预取时跑。
-MEMORY_KINDS: FrozenSet[CogKind] = frozenset({CogKind.EPISODE, CogKind.ENTITY, CogKind.FACT, CogKind.PREFERENCE})
+MEMORY_KINDS: FrozenSet[CogKind] = frozenset(
+    {CogKind.EPISODE, CogKind.ENTITY, CogKind.FACT, CogKind.THREAD, CogKind.PREFERENCE}
+)
 KNOWLEDGE_KINDS: FrozenSet[CogKind] = frozenset({CogKind.KNOWLEDGE})
 WORK_KINDS: FrozenSet[CogKind] = frozenset({CogKind.TOOL_OUTPUT, CogKind.ARTIFACT})
 MEDIA_KINDS: FrozenSet[CogKind] = frozenset({CogKind.IMAGE, CogKind.MEME})
 ALL_KINDS: FrozenSet[CogKind] = frozenset(CogKind)
 # 工具未声明 kinds 时的默认面：记忆+知识+落盘。图片/表情/出站/业务记录须显式打开。
 DEFAULT_RECALL_KINDS: FrozenSet[CogKind] = MEMORY_KINDS | KNOWLEDGE_KINDS | WORK_KINDS | frozenset({CogKind.SELF_NOTE})
-# query 点名当前说话人 ID：只查身上的记忆（片段+实体+事实+偏好）。
+# query 点名当前说话人 ID：只查身上的记忆（片段+实体+事实+故事线+偏好）。
 # 不开放知识库/落盘/近窗。近窗只在 DEFAULT_RECALL_KINDS ⊆ kinds 时开，加 EPISODE 不会误开。
 SPEAKER_RECALL_KINDS: FrozenSet[CogKind] = frozenset(
-    {CogKind.EPISODE, CogKind.ENTITY, CogKind.FACT, CogKind.PREFERENCE}
+    {CogKind.EPISODE, CogKind.ENTITY, CogKind.FACT, CogKind.THREAD, CogKind.PREFERENCE}
 )
 
 

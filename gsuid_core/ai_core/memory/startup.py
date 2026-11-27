@@ -69,6 +69,14 @@ async def init_memory_system():
         logger.error(t("log.memory.initialize_qdrant_collection", e=e))
         return
 
+    # 2.5 v2.1 无损存量纠偏（秒级纯 SQLite 原位修复 + Core 就绪后后台低优补向量）
+    try:
+        from gsuid_core.ai_core.migrations.memory_nondestructive_v2_1 import migrate_memory_nondestructive_v2_1
+
+        await migrate_memory_nondestructive_v2_1()
+    except Exception as e:
+        logger.warning(t("log.memory.v2_1_migration_fail", e=e))
+
     # 3. 启动 IngestionWorker 后台任务（主事件循环上的 task，LLM 调用为
     # await 网络 I/O 不阻塞循环；独立线程双循环架构曾因跨循环取消击穿主循环，已废弃）
     global _ingestion_worker

@@ -6,6 +6,7 @@ import math
 
 from gsuid_core.ai_core.memory.retrieval.types import Episode, MemoryEventCue
 from gsuid_core.ai_core.memory.retrieval.event_time import (
+    effective_event_at,
     query_only_item_cap,
     temporal_search_query,
 )
@@ -296,21 +297,29 @@ async def recall_span_threads(
     if not query or not scope_keys:
         return [], []
     from gsuid_core.ai_core.memory.database.models import AIMemEdge, AIMemThread, AIMemEpisode
+    from gsuid_core.ai_core.memory.retrieval.lexical_query import query_tokens
 
     threads: list[AIMemThread] = []
     for sk in scope_keys:
-        threads.extend(await AIMemThread.list_by_scope(sk, limit=80))
+        found = await AIMemThread.list_by_scope(sk, limit=80)
+        threads.extend(found)
     episodes: list[Episode] = []
     cues: list[MemoryEventCue] = []
     if threads:
-        terms = {tok.lower() for tok in _topic_query(query).split() if tok.strip()}
+        raw_terms = query_tokens(_topic_query(query))
+        terms = {tok.lower() for tok in raw_terms if tok.strip()}
         matched = [
             th
             for th in threads
-            if not terms or any(term in f"{th.title} {' '.join(th.aliases)}".lower() for term in terms)
+            if not terms or any(term in f"{th.title} {' '.join(th.aliases)} {th.summary}".lower() for term in terms)
         ]
-        if not matched:
-            matched = threads[:4]
+        if matched:
+            from gsuid_core.ai_core.memory.privacy import utc_timestamp
+
+            matched.sort(key=lambda th: (th.status != "archived", utc_timestamp(th.last_at) or 0.0), reverse=True)
+        else:
+            live = [th for th in threads if th.status != "archived"]
+            matched = live[:4] if live else threads[:4]
         for th in matched[:6]:
             milestones = await AIMemEdge.list_thread_milestones(th.scope_key, th.id, limit=120, ascending=True)
             for edge in milestones:
@@ -359,5 +368,5 @@ async def recall_span_threads(
 
         episodes = await user_episodes_chrono_sample(user_id=user_id, group_id=group_id)
     if episodes:
-        episodes.sort(key=lambda e: e["valid_at"])
+        episodes.sort(key=effective_event_at)
     return episodes, cues

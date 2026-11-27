@@ -271,11 +271,29 @@ async def list_mentions(episode_ids: Sequence[str]) -> list[JsonRow]:
     return out
 
 
+_DEFAULT_FALLBACK_FIELDS: dict[str, JsonValue] = {
+    "aliases_json": "[]",
+    "pending_aliases_json": "[]",
+    "avatar_url": "",
+    "participant_uids_json": "[]",
+    "episode_count": 0,
+}
+
+
+def _sanitize_import_row(row: JsonRow) -> JsonRow:
+    """兼容旧版备份缺列或 NULL 值，补齐 v2.1 增量列默认值。"""
+    patched: JsonRow = dict(row)
+    for k, default_val in _DEFAULT_FALLBACK_FIELDS.items():
+        if k in patched and patched[k] is None:
+            patched[k] = default_val
+    return patched
+
+
 async def insert_rows(model: type[_M], rows: Sequence[JsonRow]) -> int:
     """原样插入（保留 UUID 主键与 qdrant_id）；Episode 同步写 FTS。"""
     if not rows:
         return 0
-    objs = [model.model_validate(row) for row in rows]
+    objs = [model.model_validate(_sanitize_import_row(row)) for row in rows]
     async with sqlite_write_gate, base_models.async_maker() as session:
         session.add_all(objs)
         await session.flush()
@@ -352,6 +370,7 @@ async def vector_batch(
             )
         elif isinstance(row, AIMemEntity):
             tags: list[JsonValue] = [s for s in row.tag if isinstance(s, str)]
+            aliases: list[JsonValue] = list(row.get_aliases())
             out.append(
                 {
                     "_row_id": row.id,
@@ -362,6 +381,9 @@ async def vector_batch(
                     "is_speaker": row.is_speaker,
                     "user_id": row.user_id,
                     "tag": tags,
+                    "aliases": aliases,
+                    "entity_kind": row.entity_kind,
+                    "avatar_url": row.avatar_url,
                     "created_at_ts": _ts(row.created_at),
                 }
             )

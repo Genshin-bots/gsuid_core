@@ -47,8 +47,10 @@ def make_scope_key(scope_type: ScopeType, scope_id: str, secondary_id: str = "")
     """
     if scope_type == ScopeType.USER_IN_GROUP:
         return f"{scope_type.value}:{scope_id}@{secondary_id}"
-    if scope_type == ScopeType.SELF and secondary_id.strip():
-        return f"{scope_type.value}:{scope_id}:{secondary_id.strip()}"
+    if scope_type == ScopeType.SELF:
+        sid = scope_id.strip() or "default"
+        sec = secondary_id.strip()
+        return f"{scope_type.value}:{sid}:{sec}" if sec else f"{scope_type.value}:{sid}"
     return f"{scope_type.value}:{scope_id}"
 
 
