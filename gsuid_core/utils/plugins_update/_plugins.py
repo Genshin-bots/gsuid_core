@@ -1121,9 +1121,9 @@ async def install_plugin_from_zip(
                 return f"❌ 插件注册名 {plugin_name} 不能以 . 或 __ 开头，也不能占用内置插件名"
 
             target = target_root / plugin_name
-            if await asyncio.to_thread((buildin_root / plugin_name).exists):
+            if await asyncio.to_thread(_entry_name_conflict, buildin_root, plugin_name):
                 return f"❌ {plugin_name} 是内置插件，不能覆盖"
-            if await asyncio.to_thread(target.exists):
+            if await asyncio.to_thread(_entry_name_conflict, target_root, plugin_name):
                 return "❌ 该插件已经安装过了!"
 
             await asyncio.to_thread(shutil.move, str(root), str(target))
@@ -1137,3 +1137,11 @@ async def install_plugin_from_zip(
 
 def _looks_like_plugin(root: Path) -> bool:
     return any((root / name).is_file() for name in ("__init__.py", "__full__.py", "__nest__.py"))
+
+
+def _entry_name_conflict(parent: Path, plugin_name: str) -> bool:
+    """ ``plugin_registry`` 按小写 key 去重，避免两个目录会塌成一个。"""
+    if not parent.is_dir():
+        return False
+    lowered = plugin_name.lower()
+    return any(entry.name.lower() == lowered for entry in parent.iterdir())

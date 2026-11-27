@@ -73,13 +73,18 @@ class TestArchiveSafety:
         with pytest.raises(UnsafeArchiveError):
             _extract(_symlink_zip(), tmp_path / "sym")
 
-    def test_rejects_too_many_members(self, tmp_path: Path) -> None:
-        entries = {f"f{i}.py": b"" for i in range(zip_safe.MAX_MEMBERS + 1)}
+    def test_rejects_too_many_members(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 同样把阈值压小，避免真的构造 2001 个条目
+        monkeypatch.setattr(zip_safe, "MAX_MEMBERS", 3)
+        entries = {f"f{i}.py": b"" for i in range(4)}
         with pytest.raises(UnsafeArchiveError):
             _extract(_build_zip(entries), tmp_path / "many")
 
-    def test_rejects_oversized_payload(self, tmp_path: Path) -> None:
-        big = b"\0" * (zip_safe.MAX_TOTAL_BYTES + 1)
+    def test_rejects_oversized_payload(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 真实阈值 200MB，直接构造会瞬间吃掉数百 MB（payload + zipfile 缓冲 + BytesIO 各一份），
+        # CI 并行跑易 OOM。这里把阈值压到 1KB，语义不变。
+        monkeypatch.setattr(zip_safe, "MAX_TOTAL_BYTES", 1024)
+        big = b"\0" * 2048
         with pytest.raises(UnsafeArchiveError):
             _extract(_build_zip({"big.bin": big}), tmp_path / "big")
 
@@ -151,6 +156,26 @@ class TestInstallFromZip:
         with _stub_runtime():
             result = await install_plugin_from_zip(_plugin_zip(), plugins_path=plugins, buildin_path=buildin)
         assert "已经安装过了" in result
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive_duplicate_is_refused(self, plugin_dirs: tuple[Path, Path]) -> None:
+        """已在 demo/ 时装 Demo：Linux 大小写敏感下不能落成两个目录。"""
+        plugins, buildin = plugin_dirs
+        (plugins / "demo").mkdir()
+        with _stub_runtime():
+            result = await install_plugin_from_zip(_plugin_zip(), plugins_path=plugins, buildin_path=buildin)
+        assert "已经安装过了" in result
+        # Windows 大小写不敏感，Demo/demo 是同一目录，只能查条目数
+        assert [p.name for p in plugins.iterdir()] == ["demo"]
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive_buildin_conflict_is_refused(self, plugin_dirs: tuple[Path, Path]) -> None:
+        plugins, buildin = plugin_dirs
+        (buildin / "demo").mkdir()
+        with _stub_runtime():
+            result = await install_plugin_from_zip(_plugin_zip(), plugins_path=plugins, buildin_path=buildin)
+        assert "内置插件" in result
+        assert list(plugins.iterdir()) == []
 
     @pytest.mark.asyncio
     async def test_buildin_name_is_refused(self, plugin_dirs: tuple[Path, Path]) -> None:
