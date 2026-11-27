@@ -20,6 +20,7 @@ from gsuid_core.ai_core.memory.observer import (
     format_pending_line,
     get_observation_queue,
 )
+from gsuid_core.ai_core.persona_reset.guard import is_scope_frozen
 from gsuid_core.ai_core.memory.database.models import AIMemThread, AIMemEpisode
 
 _WINDOW_CAPACITY = 28
@@ -173,6 +174,9 @@ async def _ingest_window_inner(
 
     threads = await AIMemThread.list_active(scope_key, limit=15)
     route = await route_window(scope_key, records, threads, force_settle=force_settle)
+    # 路由要等 LLM；期间若该 scope 进入人格重置冻结，整窗丢弃不落库。
+    if is_scope_frozen(scope_key):
+        return stats
 
     # 只对首次顺延的 open_lines 回放队列；defer_count >= 1 或 force_settle 时必须当轮落库。
     defer_indices: set[int] = set()
@@ -183,6 +187,8 @@ async def _ingest_window_inner(
     settled_indices: set[int] = set()
 
     for cluster in route["clusters"]:
+        if is_scope_frozen(scope_key):
+            return stats
         lines = [i for i in cluster["lines"] if 0 <= i < len(records) and i not in defer_indices]
         if not lines:
             continue
@@ -221,6 +227,8 @@ async def _ingest_window_inner(
             stats["episodes"] += 1
 
         if cluster["action"] == "extract":
+            if is_scope_frozen(scope_key):
+                return stats
             try:
                 extracted = await asyncio.wait_for(
                     extract_cluster(
@@ -242,6 +250,8 @@ async def _ingest_window_inner(
             except (asyncio.TimeoutError, OSError, RuntimeError, ValueError) as e:
                 logger.warning(i18n_t("log.memory.algebra_extract_failed", scope_key=scope_key, e=e))
 
+    if is_scope_frozen(scope_key):
+        return stats
     leftover = [i for i in range(len(records)) if i not in defer_indices and i not in settled_indices]
     if leftover and create_episodes:
         leftover_records = [records[i] for i in leftover]
@@ -280,9 +290,23 @@ class IngestionWorker:
         self._llm_semaphore: asyncio.Semaphore | None = None
         self._flush_lock: asyncio.Lock | None = None
         self._stop_event: asyncio.Event | None = None
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._bg_tasks: set[asyncio.Task[None]] = set()
         self._running = False
         self._priority_flush_at: dict[str, float] = {}
+
+    def _on_bg_flush_done(self, task: asyncio.Task[None]) -> None:
+        self._bg_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(i18n_t("log.memory.flush_fail", e=exc), exc_info=exc)
+
+    def _spawn_flush(self, scope_key: str) -> None:
+        task = asyncio.create_task(self._flush(scope_key), name=f"memory_flush:{scope_key}")
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._on_bg_flush_done)
 
     def start(self) -> None:
         if self._running:
@@ -305,6 +329,11 @@ class IngestionWorker:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(consume_task, timer_task, return_exceptions=True)
+            bg_tasks = [t for t in self._bg_tasks if not t.done()]
+            for task in bg_tasks:
+                task.cancel()
+            if bg_tasks:
+                await asyncio.gather(*bg_tasks, return_exceptions=True)
             try:
                 if self._windows or not self._queue.empty():
                     await asyncio.wait_for(self._flush_all_inner(), timeout=_SHUTDOWN_FLUSH_TIMEOUT)
@@ -322,10 +351,12 @@ class IngestionWorker:
         while self._running:
             try:
                 record: ObservationRecord = self._queue.get_nowait()
+                if is_scope_frozen(record.scope_key):
+                    continue
                 window = self._windows.setdefault(record.scope_key, _ScopeWindowBuffer())
                 window.push(record)
                 if len(window.records) >= _WINDOW_CAPACITY and record.scope_key not in self._flushing:
-                    asyncio.create_task(self._flush(record.scope_key))
+                    self._spawn_flush(record.scope_key)
             except sync_queue.Empty:
                 if self._stop_event is not None:
                     try:
@@ -349,13 +380,16 @@ class IngestionWorker:
             for scope_key, window in list(self._windows.items()):
                 if scope_key in self._flushing or not window.should_flush(now):
                     continue
-                asyncio.create_task(self._flush(scope_key))
+                self._spawn_flush(scope_key)
 
     async def _flush(self, scope_key: str, *, force_settle: bool = False) -> None:
         if scope_key in self._flushing:
             return
         window = self._windows[scope_key] if scope_key in self._windows else None
         if window is None:
+            return
+        if is_scope_frozen(scope_key):
+            window.drain()
             return
         now = time.time()
         force = force_settle or window.expired_by_age(now)
@@ -369,6 +403,8 @@ class IngestionWorker:
             async with self._llm_semaphore:
                 batches = [records[i : i + _WINDOW_MAX_BATCH] for i in range(0, len(records), _WINDOW_MAX_BATCH)]
                 for batch_idx, batch in enumerate(batches, 1):
+                    if is_scope_frozen(scope_key):
+                        break
                     batch_deferred: list[ObservationRecord] = []
                     try:
                         await ingest_window(
@@ -448,7 +484,7 @@ class IngestionWorker:
         if now - last < memory_config.preference_flush_settle_seconds:
             return
         self._priority_flush_at[scope_key] = now
-        asyncio.create_task(self._flush(scope_key))
+        self._spawn_flush(scope_key)
 
     def peek_buffers(self, scope_keys: Collection[str]) -> list[ObservationRecord]:
         wanted = frozenset(scope_keys)
@@ -457,6 +493,35 @@ class IngestionWorker:
             if key in wanted:
                 out.extend(window.snapshot())
         return out
+
+    def drop_frozen_buffers(self) -> int:
+        """人格重置：丢掉冻结 scope 的窗口与队列积压，避免删完又被写回。"""
+        dropped = 0
+        for key in [k for k in self._windows if is_scope_frozen(k)]:
+            dropped += len(self._windows[key].records)
+            del self._windows[key]
+        kept: list[ObservationRecord] = []
+        while True:
+            try:
+                record = self._queue.get_nowait()
+            except sync_queue.Empty:
+                break
+            if is_scope_frozen(record.scope_key):
+                dropped += 1
+            else:
+                kept.append(record)
+        for record in kept:
+            self._queue.put_nowait(record)
+        return dropped
+
+    async def wait_frozen_flush_idle(self, timeout: float) -> bool:
+        """等冻结 scope 上正在跑的 flush 收尾（它们写完我们再删）。超时返回 False。"""
+        deadline = time.monotonic() + timeout
+        while any(is_scope_frozen(k) for k in self._flushing):
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.2)
+        return True
 
 
 async def extract_window(

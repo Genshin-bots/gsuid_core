@@ -17,6 +17,14 @@ from gsuid_core.data_store import get_res_path
 from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.tool_risk import HIGH_RISK_TOOL_NAMES
 from gsuid_core.ai_core.autonomy.models import GroupObservation, CareTargetSnapshot
+from gsuid_core.ai_core.proactive.policy import (
+    ProactiveGateInput,
+    dm_allowed,
+    is_session_busy,
+    evaluate_proactive_gate,
+    is_session_scope_banned,
+    check_target_rate_and_gap,
+)
 from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher, make_target_key
 
 USER_PM = 6
@@ -521,7 +529,7 @@ async def artifact_put(
             scope_key=note_scope,
             owner_user_id=note_owner,
         )
-        return f"已写入笔记《{stem}》（句柄: {handle}）"
+        return f"已写入笔记《{stem}》（句柄: {handle}）（仅作工具参数，严禁写入回复正文）"
     return res
 
 
@@ -594,6 +602,25 @@ def _recent_chat_context_for_send(
         lines = state.allowed_users[dest_user_id].recent_lines[-8:]
         return "\n".join(lines), "[对方近期互动记录（含群聊与私聊）]"
     return "", ""
+
+
+def _attach_target_journal_context(
+    recent_context: str,
+    context_header: str,
+    journal_header: str,
+    journal_brief: str,
+) -> tuple[str, str]:
+    brief = journal_brief.strip()
+    if not brief:
+        return recent_context, context_header
+    parts = [f"{journal_header}\n{brief}"]
+    body = recent_context.strip()
+    if body:
+        if context_header.strip():
+            parts.append(f"{context_header.strip()}\n{body}")
+        else:
+            parts.append(body)
+    return "\n\n".join(parts), ""
 
 
 def _target_addressing(
@@ -681,8 +708,6 @@ async def send_message_by_ai(
         if not u_snap.allow_private_push:
             return "拒绝：对方连续两次未回复你的主动私聊，私聊推送已暂停。请改用笔记或等对方先开口。"
 
-        from gsuid_core.ai_core.autonomy.gates import dm_allowed
-
         # 检查该用户是否有私聊历史
         has_prior_dm = False
         from gsuid_core.message_history import get_history_manager
@@ -713,21 +738,7 @@ async def send_message_by_ai(
     target_key = make_target_key(dest_group_id, dest_user_id or None)
     if target_key in state.silenced_targets:
         return "发送被拦截：本轮已判定此刻不宜向该目标开口，请勿反复重试，可将要点用 artifact_put 存为个人笔记。"
-    dispatcher = get_dispatcher()
-    clock = time.time() if state.now >= 100_000_000 else state.now
-    if dispatcher.should_suppress_by_rate(target_key, max_per_hour=state.hour_cap, max_per_day=state.day_cap):
-        return (
-            "发送被拦截：目标近期主动发言配额已达上限（防打扰）。请勿继续发信，可将成果用 artifact_put 存为个人笔记。"
-        )
-    if dispatcher.should_suppress_heartbeat(target_key):
-        return "发送被拦截：目标当前处于防打扰冷静期。请勿连续打扰，建议转为自我探索并记入笔记。"
 
-    if clock > 0 and dest_group_id and dest_group_id in state.allowed_groups:
-        g_obs = state.allowed_groups[dest_group_id]
-        if g_obs.last_assistant_ts > 0 and (clock - g_obs.last_assistant_ts < 60):
-            return "发送被拦截：AI 刚刚（60秒内）在群内已有发言。为了防刷屏，请勿连续发信。"
-
-    from gsuid_core.models import Event
     from gsuid_core.ai_core.proactive.speak import compose_autonomy_message
     from gsuid_core.ai_core.proactive.emitter import (
         emit_proactive_message,
@@ -745,8 +756,75 @@ async def send_message_by_ai(
         WS_BOT_ID=ws_bot_id or None,
     )
     resolve_event_session_identity(event)
+
+    dispatcher = get_dispatcher()
+    clock = time.time() if state.now >= 100_000_000 else state.now
+    gap_blocked, rate_blocked = check_target_rate_and_gap(
+        dispatcher,
+        target_key,
+        persona_name=state.persona_name,
+        max_per_hour=state.hour_cap,
+        max_per_day=state.day_cap,
+    )
+    last_ai_age: float | None = None
+    if clock > 0 and dest_group_id and dest_group_id in state.allowed_groups:
+        g_obs = state.allowed_groups[dest_group_id]
+        if g_obs.last_assistant_ts > 0:
+            last_ai_age = max(0.0, clock - g_obs.last_assistant_ts)
+    gate = evaluate_proactive_gate(
+        ProactiveGateInput(
+            channel="autonomy_send",
+            persona_name=state.persona_name,
+            target_key=target_key,
+            is_direct=dest_group_id is None,
+            scope_banned=is_session_scope_banned(event.session_id),
+            session_busy=is_session_busy(event.session_id),
+            last_ai_age_sec=last_ai_age,
+            ai_cooldown_sec=60.0 if dest_group_id else 0.0,
+            check_c8_gap=True,
+            c8_gap_blocked=gap_blocked,
+            check_rate=True,
+            rate_blocked=rate_blocked,
+        )
+    )
+    if not gate.allowed:
+        if gate.code == "rate_limit":
+            return (
+                "发送被拦截：目标近期主动发言配额已达上限（防打扰）。"
+                "请勿继续发信，可将成果用 artifact_put 存为个人笔记。"
+            )
+        if gate.code == "c8_min_gap":
+            return "发送被拦截：目标当前处于防打扰冷静期。请勿连续打扰，建议转为自我探索并记入笔记。"
+        if gate.code == "ai_recent_cooldown":
+            return "发送被拦截：AI 刚刚（60秒内）在群内已有发言。为了防刷屏，请勿连续发信。"
+        return f"发送被拦截：{gate.reason}。可将要点用 artifact_put 存为个人笔记。"
     target_is_master, target_name, target_zone_label = _target_addressing(state, dest_user_id)
     recent_context, context_header = _recent_chat_context_for_send(event, state, dest_group_id, dest_user_id)
+    from gsuid_core.pool import to_thread
+    from gsuid_core.ai_core.journal.manager import read_shard_brief
+
+    if dest_group_id:
+        journal_brief = await to_thread(read_shard_brief)(
+            state.persona_name,
+            group_id=dest_group_id,
+            max_chars=220,
+            include_persistent=True,
+        )
+        journal_header = "[本群长期默契与近期手账]"
+    else:
+        journal_brief = await to_thread(read_shard_brief)(
+            state.persona_name,
+            user_id=dest_user_id,
+            max_chars=220,
+            include_persistent=True,
+        )
+        journal_header = "[你与对方的私聊默契与近期手账]"
+    recent_context, context_header = _attach_target_journal_context(
+        recent_context,
+        context_header,
+        journal_header,
+        journal_brief,
+    )
     state.speak_attempts += 1
     outcome = await compose_autonomy_message(
         persona_name=state.persona_name,

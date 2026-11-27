@@ -31,14 +31,12 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.agent_run.mixin import RunOnceMixin
     from gsuid_core.ai_core.agent_run.guards import (
         DeliveryGuard,
-        DeliveryStage,
         ToolCircuitBreaker,
     )
 
 __all__ = [
     "BUDGET_GATE_PASS",
     "DeliveryGuard",
-    "DeliveryStage",
     "RunOnceHost",
     "RunOnceMixin",
     "RunOnceState",
@@ -60,10 +58,6 @@ def __getattr__(name: str) -> Any:
         from gsuid_core.ai_core.agent_run.guards import DeliveryGuard
 
         return DeliveryGuard
-    if name == "DeliveryStage":
-        from gsuid_core.ai_core.agent_run.guards import DeliveryStage
-
-        return DeliveryStage
     if name == "ToolCircuitBreaker":
         from gsuid_core.ai_core.agent_run.guards import ToolCircuitBreaker
 

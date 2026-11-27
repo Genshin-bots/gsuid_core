@@ -69,7 +69,8 @@ from gsuid_core.ai_core.multimodal.payload import (
     prepare_media_payload,
     has_model_visible_content,
 )
-from gsuid_core.ai_core.angle_bracket_guard import strip_protocol_tags
+from gsuid_core.ai_core.control.angle_guard import strip_protocol_tags
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.ai_core.relationship.engine import settle_turn
 from gsuid_core.ai_core.interaction_scaffold import (
     admit_pre_router,
@@ -176,12 +177,18 @@ async def run_passive_interactive_chat(
     hook_ctx.query = query
 
     _is_at_me = bool(event.is_tome) or event.user_type == "direct"
-    if not query.strip() and not has_model_visible_content(event) and not _is_at_me:
+    _has_visible = bool(query.strip()) or has_model_visible_content(event)
+    if not _has_visible and inbox_turn is not None:
+        _has_visible = any(
+            bool((e.event.raw_text or "").strip()) or has_model_visible_content(e.event) for e in inbox_turn.entries
+        )
+    if not _has_visible and not _is_at_me:
         logger.info(t("log.ai.gscore_empty_content_visible"))
         return PassiveChatResult("silence")
 
+    from gsuid_core.ai_core.persona.settings import persona_name_from_event
+
     if not event.group_id and event.user_id:
-        from gsuid_core.ai_core.persona.settings import persona_name_from_event
         from gsuid_core.ai_core.proactive.dm_lease import renew_dm_lease, maybe_switch_dm_lease
 
         # 私聊开头显式点名其他启用人格 → 租约平滑切换（在 renew 与建 session 之前）
@@ -190,7 +197,14 @@ async def run_passive_interactive_chat(
         )
         renew_dm_lease(user_id=event.user_id, bot_id=event.bot_id or "")
 
+    # 重置期间该人格的会话直接早退，不新建或唤醒 AI 会话对象。
+    # 放在租约切换之后：私聊显式换人格时以切换后的目标人格判定冻结。
+    if is_persona_frozen(persona_name_from_event(event)):
+        return PassiveChatResult("silence")
+
     session = await get_ai_session(event)
+    if is_persona_frozen(session.persona_name):
+        return PassiveChatResult("silence")
 
     from gsuid_core.ai_core.persona.speaking_ctx import set_speaking_persona, reset_speaking_persona
 
@@ -419,6 +433,7 @@ async def run_interactive_turn(
         _rcpt_body = (turn.primary.receipt.receipt_text or "[图片]").strip()[:200]
         hook_ctx.router_query = f"[命令回执] 插件={_rcpt_plugin} 内容={_rcpt_body}"
     # 群聊显式 @Bot 直通主模型；但若带引用且原消息作者不明（防残留自动 @），仍过 TurnRouter 辨归属
+    has_confirmed_mention = False
     if inbox_turn is not None and bool(event.group_id):
         _seq_map = {r.link.seq: r.link for r in render_records if r.link is not None}
 
@@ -432,7 +447,12 @@ async def run_interactive_turn(
             _lnk = _seq_map[entry_seq] if entry_seq in _seq_map else None
             return bool(_lnk is not None and _lnk.reply_to_author not in (None, "self"))
 
-        if all(_is_confirmed_mention(e.item.seq, e.item.kind, e.event) for e in turn.entries):
+        has_confirmed_mention = any(_is_confirmed_mention(e.item.seq, e.item.kind, e.event) for e in turn.entries)
+        if has_confirmed_mention and all(
+            _is_confirmed_mention(e.item.seq, e.item.kind, e.event)
+            or (e.receipt is None and e.item.kind in ("followup", "name") and not (e.event.reply_id or e.event.reply))
+            for e in turn.entries
+        ):
             hook_ctx.skip_llm_router = True
     _relation_label = "主人" if rel.is_master else (rel.zone.value if rel.scored else "普通群友")
     _anchor_ts = hook_ctx.clock_at.timestamp() if hook_ctx.clock_at is not None else time.time()
@@ -453,12 +473,13 @@ async def run_interactive_turn(
         hook_ctx.route_decision is not None and hook_ctx.route_decision.memory_intent != "none"
     )
 
-    # 二段入站门：LLM 路由可用时认 TurnRouter.soft_speak；name 降级若明确判为 to_other 亦静默。
+    # 二段入站门：LLM 路由可用时认 TurnRouter.soft_speak；含确认 @Bot 的批次只分类不沉默整轮。
     router_gated = bool(
         soft_triggered
         or (
             inbox_turn is not None
             and bool(event.group_id)
+            and not has_confirmed_mention
             and hook_ctx.route_decision is not None
             and (
                 hook_ctx.route_decision.source == "llm"
@@ -501,7 +522,7 @@ async def run_interactive_turn(
 
     await session.refresh_model_if_changed()
     pending_images = []
-    if not (event.image_id_list or event.image_id):
+    if not any(e.event.image_id_list or e.event.image_id for e in turn.entries):
         pending_images = extract_pending_unread_images(event, session.read_image_ids)
 
     # 线程视图 delta 已在 CLASSIFY 前渲染（路由要看同一份时间线），这里直接入 payload。
@@ -551,7 +572,7 @@ async def run_interactive_turn(
         hook_ctx=hook_ctx,
     )
 
-    from gsuid_core.ai_core.autonomy.dispatch import ack_autonomy_merge, peek_autonomy_merge
+    from gsuid_core.ai_core.autonomy.delivery import ack_autonomy_merge, peek_autonomy_merge
 
     merge_line = peek_autonomy_merge(event, session.persona_name or "")
     if merge_line:
@@ -591,13 +612,13 @@ async def run_interactive_turn(
         answered_uids = {e.item.user_id for e in turn.entries if e.item.seq in turn.answered}
         for uid in answered_uids:
             note_hard_trigger(event.session_id, str(uid), _fw, _fmax)
-        for e in turn.entries:
-            if e.item.kind != "followup":
-                continue
-            if e.item.seq in turn.answered:
-                record_soft_reply(event.session_id, str(e.item.user_id))
-            else:
-                record_gate_silence(event.session_id, str(e.item.user_id))
+        if soft_triggered:
+            followup_uids = {e.item.user_id for e in turn.entries if e.item.kind == "followup"}
+            for uid in followup_uids:
+                if uid in answered_uids:
+                    record_soft_reply(event.session_id, str(uid))
+                else:
+                    record_gate_silence(event.session_id, str(uid))
     if deliver:
         await deliver_run_result(
             bot,

@@ -20,6 +20,7 @@
   "log.scheduler.sched_task_exist_id": "[ScheduledTask] タスクが存在しない: {task_id}",
   "log.scheduler.sched_task_id_exec": "[ScheduledTask] 循环任务执行完毕（已达最大次数）: task_id={task_id}, 执行了 {current_exec} 次",
   "log.scheduler.sched_task_id_fail": "[ScheduledTask] タスクの実行に失敗した: {task_id}, error={e}",
+  "log.scheduler.sched_task_persona_frozen": "[ScheduledTask] 人格のリセット/復元中のため、タスクを延期する: task_id={task_id}, persona={persona}",
   "log.scheduler.sched_task_result_empty_pushed": "[ScheduledTask] タスク結果が空のため、プッシュしない: task_id={task_id}",
   "log.scheduler.sched_task_result_pushed_id": "[ScheduledTask] タスクの実行に成功し、結果をプッシュした: task_id={task_id}",
   "log.scheduler.sched_task_result_suppressed_bot": "[ScheduledTask] タスク結果の送信が抑止された / Bot が利用できない: task_id={task_id}",

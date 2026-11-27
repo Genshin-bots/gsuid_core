@@ -8,14 +8,18 @@
 
 **核心模块**：[`gsuid_core/ai_core/trigger_bridge.py`](../../../gsuid_core/ai_core/trigger_bridge.py:1)
 
-## 4.2 `to_ai` 参数
+## 4.2 `to_ai` 与长耗时后台参数
 
-在所有 `on_xxx` 装饰器上新增 `to_ai: str = ""` 参数：
+在所有 `on_xxx` 装饰器（`on_meta` 除外）上支持以下 AI 工具参数（仅在 `to_ai` 非空时生效；未声明 `to_ai` 却传入 `background=True` 或非默认 `timeout` 时框架会打印警告并忽略）：
 
-| 参数值 | 行为 |
-|--------|------|
-| `""`（默认） | 不注册为 AI 工具，行为完全不变 |
-| 非空字符串 | 将该字符串作为 AI 工具的 docstring，自动注册到 `_TOOL_REGISTRY["by_trigger"]` |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `to_ai` | `str` | `""` | 非空字符串时作为 AI 工具 docstring，自动注册到 `_TOOL_REGISTRY["by_trigger"]` |
+| `covers` | `list[str] \| None` | `None` | 数据/能力覆盖面，拼入 `retrieval_text` 提升跨措辞召回 |
+| `aliases` | `list[str] \| None` | `None` | 带领域前缀的同义问法，拼入 `retrieval_text` |
+| `timeout` | `float \| None` | `60.0` | AI 调用该触发器的最大执行秒数（`None` 不限时）；普通用户直接发命令不受影响 |
+| `background` | `bool` | `False` | 长耗时命令（如每日社区任务、全员重签、资源下载）开启后：交互主会话超 `background_grace` 自动转后台继续执行、立即释放群聊会话锁，完成后回灌主会话播报；同时自动设 `code_callable=False` |
+| `background_grace` | `float` | `5.0` | `background=True` 时的同步宽限秒数；宽限内完成（如未绑定/凭据失效快速报错、任务已完成）直接同步返回给 AI |
 
 ```python
 from gsuid_core.sv import SV
@@ -43,6 +47,20 @@ async def send_stock_img(bot: Bot, ev: Event):
         return await bot.send("请后跟股票代码使用")
     # ... 原有逻辑完全不变 ...
     await bot.send(im)
+
+
+# 长耗时命令示例（耗时超过 60s 的任务务必声明 background=True + timeout）
+@sv.on_fullmatch(
+    "开始获取米游币",
+    to_ai="""自动执行每日社区签到/浏览点赞分享任务。
+    Args:
+        text: 无需参数，留空即可
+    """,
+    timeout=600.0,
+    background=True,
+)
+async def send_daily_coin(bot: Bot, ev: Event):
+    ...
 ```
 
 ## 4.3 `ai_return()` — 向 AI 返回中间文本

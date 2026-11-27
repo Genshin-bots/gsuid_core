@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Literal, Callable, Sequence, Awaitable
+from typing import Callable, Sequence, Awaitable
 from dataclasses import dataclass
 
 from pydantic_ai.messages import (
+    TextPart,
+    ModelMessage,
     ModelRequest,
     ToolCallPart,
     ModelResponse,
@@ -15,10 +17,17 @@ from pydantic_ai.messages import (
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core import output_gate, angle_bracket_guard
+from gsuid_core.ai_core import output_gate
+from gsuid_core.ai_core.control import angle_guard as angle_bracket_guard
 from gsuid_core.ai_core.delivery import send_chat_result
 from gsuid_core.ai_core.thinking import _split_embedded_thinking
-from gsuid_core.ai_core.control.lines import TOOL_FAIL_FUSE_NUDGE
+from gsuid_core.ai_core.control.lines import (
+    TOOL_FAIL_FUSE_NUDGE,
+    PENDING_BACKGROUND_TOOL_HOLD,
+    BACKGROUND_TOOL_PENDING_PREFIX,
+    PENDING_BACKGROUND_TOOL_OPENING,
+    PENDING_BACKGROUND_TOOL_MIXED_NOTE,
+)
 from gsuid_core.ai_core.protocol_text import is_silence_marker, remainder_after_protocol_tags
 from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.utils.resource_manager import RM
@@ -75,9 +84,26 @@ from gsuid_core.ai_core.capability_agents.delegation_contracts import (
     inflight_after_create_subagent_return as _inflight_after_create_subagent_return,
 )
 
-DeliveryStage = Literal["free", "silence_only", "render_delegated", "framework_deliver", "fused"]
-
 _MAX_TOOL_CALLS_PER_RESPONSE = 30
+# 能力代理交付/落盘通道永不被单工具失败熔断封杀，避免收集完数据却无法 artifact_put。
+_CAPABILITY_DELIVERY_TOOLS: frozenset[str] = frozenset(
+    {
+        "artifact_put",
+        "artifact_get",
+        "artifact_list",
+        "record_put",
+        "record_get",
+        "record_list",
+        "record_append",
+        "record_update",
+        "record_summary",
+    }
+)
+
+
+def _is_background_tool_pending(content: object) -> bool:
+    """长耗时工具超宽限转后台后的非终态回执判定（与 check_delegation 进度汇报隔离）。"""
+    return isinstance(content, str) and content.lstrip().startswith(BACKGROUND_TOOL_PENDING_PREFIX)
 
 
 @dataclass(frozen=True)
@@ -87,23 +113,11 @@ class ToolReturnSummary:
     has_tool_return: bool
     tripped_fail_tool: str
     tripped_fail_streak: int
+    tripped_tools: tuple[str, ...] = ()
 
 
 class DeliveryGuard:
     """投递与话术策略小状态机：集中管理出站静默、委派接管、闸门重写与配额拦截。"""
-
-    @staticmethod
-    def stage_of(st: RunOnceState) -> DeliveryStage:
-        """导出当前投递生命周期状态，便于观测与调试。"""
-        if st.ab_abort or (st.context is not None and output_gate.is_fused(st.context.extra)):
-            return "fused"
-        if st.delegated_render and not st.image_sent_this_run:
-            return "render_delegated"
-        if st.speech_policy == "silence_only":
-            return "silence_only"
-        if st.speech_policy == "framework_deliver":
-            return "framework_deliver"
-        return "free"
 
     @staticmethod
     def track_post_final_request(st: RunOnceState) -> None:
@@ -144,9 +158,11 @@ class DeliveryGuard:
         if "image_sent_this_run" not in extra or extra["image_sent_this_run"] is not True:
             return
         st.image_sent_this_run = True
-        st.pending_async_delivery = False
-        if st.speech_policy == "silence_only":
-            st.speech_policy = "framework_deliver" if st.fw_msg else "free"
+        # 发图仅清偿出图委派；同轮仍有后台工具在跑时必须保持在途状态
+        if not st.pending_background_tool:
+            st.pending_async_delivery = False
+            if st.speech_policy == "silence_only":
+                st.speech_policy = "framework_deliver" if st.fw_msg else "free"
 
     @staticmethod
     def apply_create_subagent_return(st: RunOnceState, part: ToolReturnPart, body: str) -> None:
@@ -170,6 +186,7 @@ class DeliveryGuard:
         st.speech_policy = policy
         st.render_ack_seen = ack
         if async_ack:
+            st.pending_background_with_sibling = False
             _require_context(st).extra[_DELEGATION_INFLIGHT_KEY] = True
         if (
             not _tool_return_looks_failed(part)
@@ -181,19 +198,53 @@ class DeliveryGuard:
             st.saw_structured_return = True
 
     @staticmethod
-    def absorb_opening_line(st: RunOnceState, *, session_logger: AISessionLogger) -> None:
+    def apply_background_tool_return(st: RunOnceState, *, has_actionable_sibling: bool = False) -> None:
+        """长耗时工具转后台后的状态转移：记录在途标记；无同轮可交付工具时锁静默策略。"""
+        st.pending_background_tool = True
+        st.pending_async_delivery = True
+        if has_actionable_sibling and st.speech_policy != "silence_only":
+            st.pending_background_with_sibling = True
+        else:
+            st.pending_background_with_sibling = False
+            st.speech_policy = "silence_only"
+
+    @staticmethod
+    def absorb_opening_line(
+        st: RunOnceState,
+        *,
+        session_logger: AISessionLogger,
+        run_history: Sequence[ModelMessage] | None = None,
+    ) -> str:
         """工具代发的开场句记进本轮出站账；未发出则标 opening_missed 供后续补一句。"""
         result = take_opening_result(_require_context(st).extra)
         if result is None:
-            return
+            return ""
         if not result.text:
-            st.opening_missed = True
-            return
+            if result.source in ("create_subagent", "background_tool"):
+                st.opening_missed = True
+            return ""
+        restored = ""
         if result.delivered:
             st.main_channel_sends += 1
+            delivered_text = result.text.strip()
+            for idx, item in enumerate(st.unsent_texts):
+                if item.strip() == delivered_text:
+                    st.unsent_texts.pop(idx)
+                    break
+            # soft_latency_ack 发出时仅往尚未送出过的尾响应补回 TextPart，既保 §1.7 又不丢历史上下文
+            if result.source == "soft_latency_ack":
+                if run_history:
+                    tail = run_history[-1]
+                    if isinstance(tail, ModelResponse) and not any(
+                        isinstance(p, TextPart) and p.content.strip() == delivered_text for p in tail.parts
+                    ):
+                        tail.parts = [TextPart(content=result.text), *tail.parts]
+                else:
+                    restored = result.text
         st.wait_comfort_sent = True
         st.ooc_blocked.clear()
-        session_logger.log_task_ack(result.text, source="create_subagent")
+        session_logger.log_task_ack(result.text, source=result.source)
+        return restored
 
     @staticmethod
     def prescan_render_delegation(st: RunOnceState, parts: Sequence[object]) -> None:
@@ -499,6 +550,14 @@ class ToolCircuitBreaker:
         has_tool_return = False
         tripped_fail_tool = ""
         tripped_fail_streak = 0
+        tripped_tools: list[str] = []
+        batch_failed_tools: set[str] = set()
+        has_non_pending_return = any(
+            isinstance(p, ToolReturnPart)
+            and not _tool_return_is_async_pending(p)
+            and not _is_background_tool_pending(p.content)
+            for p in request.parts
+        )
 
         for part in request.parts:
             if not isinstance(part, ToolReturnPart):
@@ -509,18 +568,27 @@ class ToolCircuitBreaker:
                 if part.tool_call_id and part.tool_call_id in st.effective_tool_names
                 else (part.tool_name or "")
             )
-            if eff_name == "create_subagent" and _tool_return_is_async_pending(part):
+            if (eff_name == "create_subagent" and _tool_return_is_async_pending(part)) or _is_background_tool_pending(
+                part.content
+            ):
                 st.pending_async_delivery = True
             elif not _tool_return_is_async_pending(part):
                 if tool_return_is_hard_error(part):
                     nxt = (st.tool_fail_streaks[eff_name] if eff_name in st.tool_fail_streaks else 0) + 1
                     st.tool_fail_streaks[eff_name] = nxt
-                    st.total_tool_failures += 1
+                    # 同批并行调同一故障工具只记 1 次总失败，避免单源断连 1 轮触发全盘熔断
+                    if not eff_name or eff_name not in batch_failed_tools:
+                        st.total_tool_failures += 1
+                        if eff_name:
+                            batch_failed_tools.add(eff_name)
                     if eff_name:
                         st.failed_tools.add(eff_name)
-                    if nxt >= 4 and nxt > tripped_fail_streak:
-                        tripped_fail_tool = eff_name
-                        tripped_fail_streak = nxt
+                    if nxt >= 4:
+                        if eff_name and eff_name not in tripped_tools:
+                            tripped_tools.append(eff_name)
+                        if nxt > tripped_fail_streak:
+                            tripped_fail_tool = eff_name
+                            tripped_fail_streak = nxt
                 elif eff_name:
                     st.tool_fail_streaks[eff_name] = 0
                     st.succeeded_tools.add(eff_name)
@@ -537,7 +605,10 @@ class ToolCircuitBreaker:
                     )
                 )
                 if type(part) is ToolReturnPart:
-                    part.content = f"[工具 {eff_name} 已生成内容, 但未发送给用户, 资源ID: {resource_id}]"
+                    part.content = (
+                        f"[工具 {eff_name} 已生成内容，未发送给用户，资源ID: {resource_id}；"
+                        "如需发送请调用 send_message_by_ai，严禁把资源ID写入回复正文]"
+                    )
 
             fileos_folded = False
             raw_tr = part.content if isinstance(part.content, str) else None
@@ -635,8 +706,11 @@ class ToolCircuitBreaker:
                         part.content = _summarize_structured_data(part.content) + fold_suffix
                     elif content_is_render_candidate(tool_name=eff_name, content=part.content, fileos_folded=False):
                         st.saw_structured_return = True
+                    raw_bg_body = raw_tr if raw_tr is not None else part.content
                     if eff_name == "create_subagent":
                         DeliveryGuard.apply_create_subagent_return(st, part, part.content)
+                    elif _is_background_tool_pending(raw_bg_body):
+                        DeliveryGuard.apply_background_tool_return(st, has_actionable_sibling=has_non_pending_return)
                     if eff_name == "send_message_by_ai":
                         DeliveryGuard.apply_send_message_return(st)
             elif type(part) is ToolReturnPart and eff_name == "create_subagent":
@@ -644,6 +718,10 @@ class ToolCircuitBreaker:
                     raw_tr if isinstance(raw_tr, str) else (part.content if isinstance(part.content, str) else "")
                 )
                 DeliveryGuard.apply_create_subagent_return(st, part, body_raw)
+            elif type(part) is ToolReturnPart and _is_background_tool_pending(
+                raw_tr if raw_tr is not None else part.content
+            ):
+                DeliveryGuard.apply_background_tool_return(st, has_actionable_sibling=has_non_pending_return)
             elif type(part) is ToolReturnPart and eff_name == "send_message_by_ai":
                 DeliveryGuard.apply_send_message_return(st)
 
@@ -671,6 +749,7 @@ class ToolCircuitBreaker:
             has_tool_return=has_tool_return,
             tripped_fail_tool=tripped_fail_tool,
             tripped_fail_streak=tripped_fail_streak,
+            tripped_tools=tuple(tripped_tools),
         )
 
     @staticmethod
@@ -696,10 +775,21 @@ class ToolCircuitBreaker:
                         streak=summary.tripped_fail_streak or st.total_tool_failures,
                     )
                 )
-            if create_by == "CapabilityAgent" and (summary.tripped_fail_streak >= 6 or cap_exhausted):
-                from gsuid_core.ai_core.tool_risk import TOOLS_EXECUTION_GATED_KEY
-
-                _require_context(st).extra[TOOLS_EXECUTION_GATED_KEY] = True
+            if create_by == "CapabilityAgent":
+                # 仅按故障工具名精确熔断，绝不误用交互聊天的全盘门禁封杀 artifact_put 等交付通道
+                blocked = _require_context(st).blocked_tool_names
+                for tname in summary.tripped_tools:
+                    if tname and tname not in _CAPABILITY_DELIVERY_TOOLS:
+                        blocked.add(tname)
+                if cap_exhausted:
+                    active_failing = [
+                        tname
+                        for tname in st.failed_tools
+                        if tname in st.tool_fail_streaks and st.tool_fail_streaks[tname] > 0
+                    ]
+                    for tname in active_failing or list(st.failed_tools):
+                        if tname and tname not in _CAPABILITY_DELIVERY_TOOLS:
+                            blocked.add(tname)
 
         if summary.has_tool_return and create_by in _INTERACTIVE_CREATE_BY:
             any_fail = False
@@ -707,22 +797,37 @@ class ToolCircuitBreaker:
             for part in request.parts:
                 if type(part) is not ToolReturnPart:
                     continue
-                if _tool_return_is_async_pending(part):
+                if _tool_return_is_async_pending(part) or _is_background_tool_pending(part.content):
                     continue
                 any_actionable = True
                 if _tool_return_looks_failed(part):
                     any_fail = True
             if st.pending_async_delivery:
-                any_actionable = False
-                hold = _PENDING_DELEGATION_HOLD
-                if st.opening_missed and st.main_channel_sends == 0 and not st.wait_comfort_sent:
-                    hold = _PENDING_DELEGATION_OPENING
-                if not any(
-                    isinstance(p, UserPromptPart)
-                    and p.content in (_PENDING_DELEGATION_HOLD, _PENDING_DELEGATION_OPENING)
-                    for p in request.parts
-                ):
-                    request.parts = [*request.parts, UserPromptPart(content=hold)]
+                extra = _require_context(st).extra
+                has_delegation_pending = st.delegated_render or (
+                    _DELEGATION_INFLIGHT_KEY in extra and extra[_DELEGATION_INFLIGHT_KEY] is True
+                )
+                if st.pending_background_tool and not has_delegation_pending and any_actionable:
+                    if not any(
+                        isinstance(p, UserPromptPart) and p.content == PENDING_BACKGROUND_TOOL_MIXED_NOTE
+                        for p in request.parts
+                    ):
+                        request.parts = [*request.parts, UserPromptPart(content=PENDING_BACKGROUND_TOOL_MIXED_NOTE)]
+                else:
+                    any_actionable = False
+                    use_bg_hold = st.pending_background_tool and not has_delegation_pending
+                    if st.opening_missed and st.main_channel_sends == 0 and not st.wait_comfort_sent:
+                        hold = PENDING_BACKGROUND_TOOL_OPENING if use_bg_hold else _PENDING_DELEGATION_OPENING
+                    else:
+                        hold = PENDING_BACKGROUND_TOOL_HOLD if use_bg_hold else _PENDING_DELEGATION_HOLD
+                    hold_markers = (
+                        _PENDING_DELEGATION_HOLD,
+                        _PENDING_DELEGATION_OPENING,
+                        PENDING_BACKGROUND_TOOL_HOLD,
+                        PENDING_BACKGROUND_TOOL_OPENING,
+                    )
+                    if not any(isinstance(p, UserPromptPart) and p.content in hold_markers for p in request.parts):
+                        request.parts = [*request.parts, UserPromptPart(content=hold)]
             if any_actionable:
                 ok_c, fail_c = _post_tool_contracts_for(
                     create_by,

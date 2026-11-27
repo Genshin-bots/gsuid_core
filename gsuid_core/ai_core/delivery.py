@@ -45,7 +45,7 @@ from gsuid_core.ai_core.delivery_present import (
     _try_present_via_render_agent,
     _resolve_and_deliver_leaked_handles,
 )
-from gsuid_core.ai_core.angle_bracket_guard import MEME_TAG_PATTERN
+from gsuid_core.ai_core.control.angle_guard import MEME_TAG_PATTERN
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.inbox.turn import InboxTurn
@@ -320,7 +320,7 @@ async def send_chat_result(
     text = await _resolve_and_deliver_leaked_handles(text, bot, extra_metadata, ev=ev)
     text, report_blocks = _split_speech_and_artifacts(text)
 
-    from gsuid_core.ai_core.angle_bracket_guard import (
+    from gsuid_core.ai_core.control.angle_guard import (
         find_illegal_angle_tags,
         sanitize_illegal_angle_tags,
     )
@@ -551,18 +551,40 @@ async def _send_reply_plan_groups(
         if len(targets) > 1:
             prefix = [MessageSegment.at(uid) for uid, _ in targets]
         else:
+            quote_seq = target_seqs[0]
             msg_id = ""
-            entry = turn.entry_for(target_seqs[0])
+            entry = turn.entry_for(quote_seq)
+            if (
+                not group.explicit
+                and entry is not None
+                and entry is turn.primary
+                and not (entry.event.raw_text or "").strip()
+                and not entry.event.image_id_list
+                and not entry.event.image_id
+                and entry.event.node is None
+            ):
+                for cand in turn.entries:
+                    if cand is entry or cand.receipt is not None or not cand.event.msg_id:
+                        continue
+                    if (cand.event.raw_text or "").strip() or cand.event.image_id_list or cand.event.image_id:
+                        quote_seq = cand.item.seq
+                        entry = cand
+                        break
             if entry is not None and entry.event.msg_id:
                 msg_id = str(entry.event.msg_id)
             elif ev is not None:
-                rec = get_history_manager().find_by_seq(ev, target_seqs[0])
+                rec = get_history_manager().find_by_seq(ev, quote_seq)
                 if rec is not None and "msg_id" in rec.metadata:
                     msg_id = str(rec.metadata["msg_id"])
-            if target_seqs[0] != latest_user_seq and msg_id:
+            # 显式 <reply #seq> 指向批内非最新消息时保留引用消歧；无标签回复在批内无人插话时免引
+            need_quote = quote_seq != latest_user_seq and (group.explicit or latest_user_seq not in pending)
+            if need_quote and msg_id:
                 prefix = [Message("reply", msg_id)]
             elif msg_id:
-                reply_target = (target_seqs[0], msg_id)
+                reply_target = (
+                    latest_user_seq if (not group.explicit and latest_user_seq in pending) else quote_seq,
+                    msg_id,
+                )
 
         gmeta = dict(meta)
         gmeta["reply_to_user_id"] = targets[0][0]

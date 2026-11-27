@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import json
+import time
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 import httpx2
@@ -38,6 +39,10 @@ from gsuid_core.ai_core.rag.qmodels import (
     CollectionsResponse,
     CollectionDescription,
 )
+
+
+class QdrantTransportError(ConnectionError):
+    """Qdrant HTTP 传输断连、超时或熔断快速失败（继承 ConnectionError/OSError）。"""
 
 
 class UnexpectedResponse(Exception):
@@ -321,6 +326,10 @@ def _parse_collection(raw: object) -> CollectionInfo:
     )
 
 
+_CIRCUIT_FAILURE_THRESHOLD = 2
+_CIRCUIT_COOLDOWN_SEC = 30.0
+
+
 class HttpQdrant:
     """Qdrant REST。连接在第一次请求时打开，避免在没有事件循环的线程里建客户端。"""
 
@@ -339,6 +348,16 @@ class HttpQdrant:
         self._trust_env = trust_env
         self._http = http
         self._client: object | None = None
+        self._consec_conn_failures: int = 0
+        self._circuit_open_until: float = 0.0
+
+    @property
+    def is_circuit_open(self) -> bool:
+        return time.monotonic() < self._circuit_open_until
+
+    def reset_circuit_breaker(self) -> None:
+        self._consec_conn_failures = 0
+        self._circuit_open_until = 0.0
 
     def local_collection_map(self) -> dict[str, object] | None:
         return None
@@ -368,8 +387,20 @@ class HttpQdrant:
         body: dict[str, object] | None = None,
         params: dict[str, str] | None = None,
     ) -> object:
+        if time.monotonic() < self._circuit_open_until:
+            raise QdrantTransportError("Qdrant circuit open (recent connection failures)")
         session = await self._session()
-        response = await session.request(method, path, json=body, params=params)
+        try:
+            response = await session.request(method, path, json=body, params=params)
+        except (httpx2.ConnectError, httpx2.ConnectTimeout, httpx2.PoolTimeout, OSError) as exc:
+            self._consec_conn_failures += 1
+            if self._consec_conn_failures >= _CIRCUIT_FAILURE_THRESHOLD:
+                self._circuit_open_until = time.monotonic() + _CIRCUIT_COOLDOWN_SEC
+            raise QdrantTransportError(str(exc) or type(exc).__name__) from exc
+        except httpx2.HTTPError as exc:
+            raise QdrantTransportError(str(exc) or type(exc).__name__) from exc
+        self._consec_conn_failures = 0
+        self._circuit_open_until = 0.0
         if response.status_code >= 400:
             raise UnexpectedResponse(response.text)
         if response.status_code == 204 or response.content == b"":

@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime
 
 from gsuid_core.data_store import get_res_path
-from gsuid_core.ai_core.memory.ingest_time import spread_datetimes
+from gsuid_core.ai_core.memory.retrieval.event_time import spread_datetimes
 
 
 def _parse(raw: object) -> datetime | None:

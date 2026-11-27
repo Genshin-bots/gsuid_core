@@ -160,3 +160,23 @@ async def stock_indicators(ctx: RunContext[ToolContext], stock_code: str) -> str
 - 能力节点 roster 会聚合所辖工具的 `covers` 写成「数据覆盖」行。
 - 实时行情返回体建议加 `[as_of=…\|source=…]`，避免被当成过时 web 摘要。
 - 完整参数表见 [gscore-ai-core-api §2](../../gscore-ai-core-api/references/02-ai-tools-decorator.md)。
+
+## 11.6 长耗时工具：`background=True` 与 `timeout`
+
+`@ai_tools` 默认 `timeout=60.0`。若工具经常耗时超过数十秒（如多步骤外部任务、批量同步、长时下载），建议声明 `background=True` 与更大的 `timeout`：
+
+```python
+@ai_tools(
+    category="common",
+    timeout=600.0,
+    background=True,
+    background_grace=5.0,
+)
+async def sync_remote_assets(ctx: RunContext[ToolContext], target: str) -> str:
+    """同步远端资源到本地缓存。"""
+    ...
+```
+
+- 交互式 WS 主会话内先等待 `background_grace` 秒：快速报错或秒完直接同步返回；超时则不中断任务，转后台跑并立即释放主会话锁，完成后由主会话回灌播报。
+- `background=True` 自动置 `code_callable=False`（禁止放进 `run_code` 沙箱）；HTTP / 评测 / MCP / 子代理等无异步推送通道的入口自动保持同步等待至 `timeout`。
+- 后台返回的图片（`bytes` / `Image.Image` / `Message`）仅登记 RM 资源 ID，不在后台直接 `bot.send()`，防止主会话回灌时重复发图。

@@ -11,6 +11,7 @@ class TokenUsage:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    request_count: int = 0
 
     def add(
         self,
@@ -18,11 +19,13 @@ class TokenUsage:
         output_tokens: int,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
+        request_count: int = 0,
     ) -> None:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         self.cache_read_tokens += cache_read_tokens
         self.cache_write_tokens += cache_write_tokens
+        self.request_count += request_count
 
 
 @dataclass

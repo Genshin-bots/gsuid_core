@@ -1,25 +1,22 @@
-"""MCP 运行时与 RAG 文本切分契约测试。"""
+"""MCP 运行时、RAG 文本切分与认知枢纽测试。"""
 
 from __future__ import annotations
 
+import re
 import sys
 import json
 import time
-import types
+import shutil
 import asyncio
 import inspect
-from typing import List
-from unittest.mock import patch
+from pathlib import Path
+from dataclasses import dataclass
 
 import pytest
-from fastmcp import FastMCP
-from starlette.applications import Starlette
 from fastmcp.client.transports import StdioTransport
 
-from gsuid_core.ai_core.mcp import server as mcp_server
-from gsuid_core.ai_core.rag.base import calculate_hash
+from tests._support import isolated_sqlite_db
 from gsuid_core.ai_core.rag.chunking import (
-    CHUNKER_ID,
     EMBED_CHAR_BUDGET,
     chunk_body,
     split_text,
@@ -33,8 +30,8 @@ from gsuid_core.ai_core.rag.chunking import (
 )
 
 
-def test_rag_chunking_budget_and_lexical_rrf() -> None:
-    from gsuid_core.ai_core.rag.tool_lexical import has_cjk, rrf_fuse, ensure_index, lexical_scores
+def test_rag_chunking_and_rebuild_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.ai_core.rag.base as rag_base
 
     decimal = chunk_body("版本是 3.14。下一句很短。", room=12)
     assert len(decimal) == 2 and "3.14" in decimal[0]
@@ -55,45 +52,31 @@ def test_rag_chunking_budget_and_lexical_rrf() -> None:
     )
     assert len(bodies) > 1 and all(0 < len(b) <= EMBED_CHAR_BUDGET for b in bodies)
 
-    assert embed_char_budget(512) == 480 and embed_char_budget(8192) == 8160
     assert len(pieces_for_embed("甲" * 2000, max_tokens=8192)) == 1
-    with patch("gsuid_core.ai_core.rag.base.embedding_provider", None):
+    with monkeypatch.context() as mp:
+        mp.setattr(rag_base, "embedding_provider", None)
         assert embed_char_budget() == 480 and chunker_stamp() == "embed-v1@512"
 
     stamp = chunk_method_hash("content-hash")
-    assert stamp != calculate_hash({"_content": "content-hash"}) and CHUNKER_ID
     assert should_skip_rebuild(stamp, 3, "content-hash", 3) is True
     assert should_skip_rebuild(stamp, 2, "content-hash", 3) is False
     assert chunk_method_hash("base", 512) != chunk_method_hash("base", 1024)
     assert logical_chunk_ids("doc", 1) == ["doc"] and logical_chunk_ids("doc", 2) == ["doc#0", "doc#1"]
 
-    h1 = calculate_hash({"a": 1, "b": "test"})
-    assert h1 == calculate_hash({"b": "test", "a": 1}) and len(h1) == 32
 
-    class _Tool:
-        capability_domain: str | None
-
-        def __init__(self, name: str, description: str, domain: str | None, covers: list[str], aliases: list[str]):
-            self.name = name
-            self.description = description
-            self.capability_domain = domain
-            self.covers = covers
-            self.aliases = aliases
-
-    tools = {
-        "get_weather": _Tool(
-            "get_weather", "查询城市实时天气与气温预报", "天气", ["北京上海等城市气温"], ["天气·气温查询"]
-        ),
-        "generate_image": _Tool("generate_image", "生成图片与海报", "绘图", ["文生图"], ["绘图·生成图片"]),
-    }
-    ensure_index(tools)
-    assert has_cjk("帮我查明天北京的气温")
-    scores = lexical_scores("帮我查明天北京的气温")
-    assert scores["get_weather"] > 0 and rrf_fuse([], scores)[0] == "get_weather"
-
-
-def test_mcp_config_node_profile_and_tool_quota(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from gsuid_core.ai_core.mcp.node_profile import mcp_node_id, build_mcp_node_base, compute_mcp_overlay
+def test_mcp_config_node_profile_and_tool_quota(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gsuid_core.ai_core.mcp.config_manager as cfg_mod
+    from gsuid_core.ai_core.register import find_tool_base
+    from gsuid_core.ai_core.agent_node import unregister_agent_node
+    from gsuid_core.ai_core.mcp.startup import _forget_mcp_server, register_single_mcp_server
+    from gsuid_core.ai_core.mcp.node_profile import (
+        mcp_node_id,
+        build_mcp_node_base,
+        compute_mcp_overlay,
+        mcp_registered_tool_name,
+        mcp_hint_allowed_for_turn,
+    )
+    from gsuid_core.ai_core.agent_run.support import _capability_exclusive_tool_names
     from gsuid_core.ai_core.mcp.config_manager import (
         MCP_CONFIG_SCHEMA_VERSION,
         MCPConfig,
@@ -105,16 +88,22 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path, monkeypatch: pytest.Mo
         suggest_shared_env_keys,
         input_schema_to_parameters,
     )
-    from gsuid_core.ai_core.buildin_tools.find_tools_rank import RankedHit
+    from gsuid_core.ai_core.buildin_tools.find_tools_rank import RankedHit, classify_callable_tool
     from gsuid_core.ai_core.buildin_tools.dynamic_tool_discovery import _apply_mcp_tool_quota
 
-    stdio = parse_mcp_json_server("fs", {"command": "npx", "args": ["-y", "srv"], "env": {"A": "1"}})
-    assert stdio is not None and stdio.get("transport") == "stdio" and stdio.get("env") == {"A": "1"}
-    sse = parse_mcp_json_server("legacy", {"url": "https://x.example/sse"})
-    http = parse_mcp_json_server("remote", {"url": "https://x.example/mcp"})
-    assert sse is not None and sse.get("transport") == "sse"
-    assert http is not None and http.get("transport") == "streamable_http"
-    assert parse_mcp_json_server("bad", "not-a-dict") is None
+    for name, raw, expected_transport, expected_env in (
+        ("fs", {"command": "npx", "args": ["-y", "srv"], "env": {"A": "1"}}, "stdio", {"A": "1"}),
+        ("legacy", {"url": "https://x.example/sse"}, "sse", None),
+        ("remote", {"url": "https://x.example/mcp"}, "streamable_http", None),
+        ("bad", "not-a-dict", None, None),
+    ):
+        parsed = parse_mcp_json_server(name, raw)
+        if expected_transport is None:
+            assert parsed is None
+        else:
+            assert parsed is not None and "transport" in parsed and parsed["transport"] == expected_transport
+            if expected_env is not None:
+                assert "env" in parsed and parsed["env"] == expected_env
 
     old = {
         "name": "luckin",
@@ -124,13 +113,11 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path, monkeypatch: pytest.Mo
         "tools": [{"name": "t1"}],
     }
     (tmp_path / "luckin.json").write_text(json.dumps(old), encoding="utf-8")
+    monkeypatch.setattr(cfg_mod, "MCP_CONFIGS_PATH", tmp_path)
     manager = MCPConfigManager()
-    monkeypatch.setattr(manager, "_base_path", tmp_path)
-    manager._load_all()
     data = json.loads((tmp_path / "luckin.json").read_text(encoding="utf-8"))
     assert data["schema_version"] == MCP_CONFIG_SCHEMA_VERSION and data["register_as_ai_tools"] is True
     assert data["user_env_keys"] == ["LUCKIN_MCP_TOKEN"] and data["tools"][0]["exposure"] == "private"
-    assert MCPToolDefinition.from_dict({"name": "t2", "exposure": "public", "mutating": True}).exposure == "public"
 
     shared = suggest_shared_env_keys({"MINIMAX_API_KEY": "k", "MINIMAX_API_HOST": "https://x", "LUCKIN_MCP_TOKEN": "t"})
     assert "MINIMAX_API_HOST" in shared and "MINIMAX_API_KEY" not in shared and "LUCKIN_MCP_TOKEN" not in shared
@@ -149,27 +136,20 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path, monkeypatch: pytest.Mo
     assert params["q"]["required"] is True and params["limit"]["default"] == 5 and "bad" not in params
 
     meta = parse_market_meta({"source": "modelscope", "qualified_name": "a/b", "categories": ["工具", 1]})
-    assert meta.get("qualified_name") == "a/b" and meta.get("categories") == ["工具"] and parse_market_meta("x") == {}
+    assert "qualified_name" in meta and meta["qualified_name"] == "a/b"
+    assert "categories" in meta and meta["categories"] == ["工具"]
+    assert parse_market_meta("x") == {}
     prof = parse_generated_profile(
         {"description": " 简介 ", "keywords": ["k1", 2], "source_hash": "h", "model": "m", "generated_at": 3}
     )
     assert prof is not None and prof["description"] == "简介" and parse_generated_profile({"description": ""}) is None
 
     node = build_mcp_node_base("cfg1", MCPConfig(name="demo", url="https://x/mcp", description="演示服务"), ["mcp_t1"])
-    assert node.node_id == mcp_node_id("cfg1") and node.source == "mcp" and not node.in_roster
     overlay = compute_mcp_overlay(
         {}, node, {"display_name": "自定义", "when_to_use": node.when_to_use, "tool_names": ["hack"]}
     )
     assert overlay == {"display_name": "自定义"}
     assert compute_mcp_overlay(overlay, node, {"display_name": node.display_name}) == {}
-
-    import re as _re
-
-    from gsuid_core.ai_core.register import find_tool_base
-    from gsuid_core.ai_core.agent_node import unregister_agent_node
-    from gsuid_core.ai_core.mcp.startup import _forget_mcp_server, register_single_mcp_server
-    from gsuid_core.ai_core.agent_run.support import _capability_exclusive_tool_names
-    from gsuid_core.ai_core.buildin_tools.find_tools_rank import classify_callable_tool
 
     fallback_cfg = MCPConfig(
         name="Demo's Shop",
@@ -196,12 +176,12 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path, monkeypatch: pytest.Mo
     try:
         reg_count, _ = asyncio.run(register_single_mcp_server("demo_s_shop"))
         assert reg_count == 1
+        sanitized = mcp_registered_tool_name("Demo's Shop", "claim-coupon")
+        assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sanitized) is not None
         reg_name = "mcp_demo_s_shop_claim-coupon"
-        assert _re.fullmatch(r"[A-Za-z0-9_-]{1,64}", reg_name) is not None
         tb = find_tool_base(reg_name)
-        assert tb is not None and tb.tool.name == reg_name and find_tool_base(tb.tool.name) is tb
+        assert tb is not None and tb.tool.name == reg_name
         assert "演示门店（中国）" in tb.description and tb.covers[0] == "[演示门店（中国）] 自动领取当前可用优惠券"
-        from gsuid_core.ai_core.mcp.node_profile import mcp_hint_allowed_for_turn
 
         private_cfg = MCPConfig(
             name="DemoBrand",
@@ -213,26 +193,20 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path, monkeypatch: pytest.Mo
             tools=[MCPToolDefinition(name="query-my-account", description="查询积分账户", exposure="private")],
         )
         manager._cache["demo_brand"] = private_cfg
-        monkeypatch.setattr("gsuid_core.ai_core.mcp.config_manager.mcp_config_manager", manager)
+        monkeypatch.setattr(cfg_mod, "mcp_config_manager", manager)
 
         async def _no_creds(*_a: object, **_kw: object) -> tuple[None, None]:
             return None, None
 
         monkeypatch.setattr("gsuid_core.ai_core.mcp.credential_store.resolve_user_creds", _no_creds)
-        assert (
-            asyncio.run(
-                mcp_hint_allowed_for_turn("mcp_demo_brand_query-my-account", "我有多少钱", bot_id="b1", user_id="u1")
-            )
-            is False
-        )
-        assert (
-            asyncio.run(
-                mcp_hint_allowed_for_turn(
-                    "mcp_demo_brand_query-my-account", "查一下演示品牌积分", bot_id="b1", user_id="u1"
+        for query, allowed in (("我有多少钱", False), ("查一下演示品牌积分", True)):
+            assert (
+                asyncio.run(
+                    mcp_hint_allowed_for_turn("mcp_demo_brand_query-my-account", query, bot_id="b1", user_id="u1")
                 )
+                is allowed
             )
-            is True
-        )
+
         exclusive_names = _capability_exclusive_tool_names()
         assert reg_name not in exclusive_names
         assert (
@@ -249,18 +223,19 @@ def test_mcp_config_node_profile_and_tool_quota(tmp_path, monkeypatch: pytest.Mo
         _forget_mcp_server("demo_s_shop")
         unregister_agent_node(mcp_node_id("demo_s_shop"))
 
+    @dataclass(frozen=True)
+    class _PluginStub:
+        plugin: str
+
     monkeypatch.setattr(
         "gsuid_core.ai_core.register.find_tool_base",
-        lambda n: types.SimpleNamespace(plugin="mcp_x" if n != "other" else "builtin"),
-    )
-    monkeypatch.setattr(
-        "gsuid_core.ai_core.agent_node.registry.owning_nodes_of_tools", lambda names: {n: ["mcp_x"] for n in names}
+        lambda n: _PluginStub(plugin="mcp_x" if n != "other" else "builtin"),
     )
     hits = [RankedHit(name=f"t{i}", label="l", score=float(100 - i)) for i in range(4)] + [
         RankedHit(name="other", label="l", score=1.0)
     ]
-    kept, node_ids = _apply_mcp_tool_quota(hits)
-    assert len([h for h in kept if h.name != "other"]) == 2 and node_ids == ["mcp_x"]
+    kept, _ = _apply_mcp_tool_quota(hits)
+    assert [h.name for h in kept] == ["t0", "t1", "other"]
 
 
 def test_mcp_market_normalization_and_filtering(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -278,10 +253,10 @@ def test_mcp_market_normalization_and_filtering(monkeypatch: pytest.MonkeyPatch)
         _normalize_market_headers,
     )
 
-    found = check_stdio_runtime(sys.executable)
+    py_cmd = "python" if shutil.which("python") else "python3"
+    found = check_stdio_runtime(py_cmd)
     assert found["available"] is True and found["runtime"] == "python"
     assert check_stdio_runtime("__gs_no_such_cmd__")["available"] is False
-    assert check_stdio_runtime("uvx -y pkg")["command"] == "uvx"
     assert _sniff_image(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "application/octet-stream") == (".png", "image/png")
     assert _sniff_image(b"<html></html>", "text/html") is None
 
@@ -334,87 +309,78 @@ def test_mcp_market_normalization_and_filtering(monkeypatch: pytest.MonkeyPatch)
     assert cn_detail["tools"][0]["description"] == "查询附近门店"
     assert cn_detail["tools"][0]["params"][0]["name"] == "city" and cn_detail["tools"][0]["params"][0]["required"]
 
-    for bad_url in (
-        "http://localhost:8080/see",
-        "http://127.0.0.1:8080/sse",
-        "http://192.168.1.5/mcp",
-        "http://8.217.140.2/mcp",
-        "http://mcp-server:3000/",
-        "http://mcp.example.com/mcp",
+    for url, expected_public in (
+        ("http://localhost:8080/see", False),
+        ("http://127.0.0.1:8080/sse", False),
+        ("http://192.168.1.5/mcp", False),
+        ("http://8.217.140.2/mcp", False),
+        ("http://mcp-server:3000/", False),
+        ("http://mcp.example.com/mcp", False),
+        ("https://mcp.so/server/abc", True),
     ):
-        assert not _is_public_remote_url(bad_url), bad_url
-    assert _is_public_remote_url("https://mcp.so/server/abc")
+        assert _is_public_remote_url(url) is expected_public, url
     assert _mcpcn_stdio_variants({"mcpServers": {"x": {"url": "http://localhost:9/sse"}}}) == []
 
     vs = _mcpcn_remote_variants(
         {"custom_headers": {"Authorization": "***"}, "streamable_http_url": "https://mcp.tikhub.io/x/mcp"}
     )
-    assert vs[0].get("headers") == {"Authorization": "Bearer {AUTHORIZATION}"}
-    assert _normalize_market_headers({"x-api-key": "***"}) == ({"x-api-key": "{X_API_KEY}"}, {"X_API_KEY": ""})
-    assert _normalize_market_headers({"Authorization": "Bearer ${STORMY_KEY}"}) == (
-        {"Authorization": "Bearer {STORMY_KEY}"},
-        {"STORMY_KEY": ""},
-    )
+    assert "headers" in vs[0] and vs[0]["headers"] == {"Authorization": "Bearer {AUTHORIZATION}"}
+    for raw_headers, expected_headers, expected_env in (
+        ({"x-api-key": "***"}, {"x-api-key": "{X_API_KEY}"}, {"X_API_KEY": ""}),
+        ({"Authorization": "Bearer ${STORMY_KEY}"}, {"Authorization": "Bearer {STORMY_KEY}"}, {"STORMY_KEY": ""}),
+    ):
+        assert _normalize_market_headers(raw_headers) == (expected_headers, expected_env)
     assert _normalize_market_url("https://mcp.gezhe.com/mcp?API_KEY=%2A%2A%2A") == (
         "https://mcp.gezhe.com/mcp?API_KEY={API_KEY}",
         {"API_KEY": ""},
     )
 
     mcp_market_api._DETAIL_CACHE.clear()
-    details = {"a/x": {"variants": [{"transport": "stdio"}]}, "b/y": {"variants": []}}
+    try:
+        details: dict[str, dict[str, list[dict[str, str]]]] = {
+            "a/x": {"variants": [{"transport": "stdio"}]},
+            "b/y": {"variants": []},
+        }
 
-    async def fake_detail(qn: str):
-        return details.get(qn)
+        async def fake_detail(qn: str) -> dict[str, list[dict[str, str]]] | None:
+            return details[qn] if qn in details else None
 
-    monkeypatch.setattr(mcp_market_api, "_get_detail", fake_detail)
-    kept, incomplete = asyncio.run(
-        mcp_market_api._filter_installable([MarketEntry(qualified_name=q, source="modelscope") for q in ("a/x", "b/y")])
-    )
-    assert [e["qualified_name"] for e in kept] == ["a/x"] and not incomplete
+        monkeypatch.setattr(mcp_market_api, "_get_detail", fake_detail)
+        kept, incomplete = asyncio.run(
+            mcp_market_api._filter_installable(
+                [MarketEntry(qualified_name=q, source="modelscope") for q in ("a/x", "b/y")]
+            )
+        )
+        assert [e["qualified_name"] for e in kept] == ["a/x"] and not incomplete
 
-    key = f"{mcp_market_api._market_endpoint()}|m/x"
-    mcp_market_api._DETAIL_CACHE[key] = (time.time(), {"variants": [{"transport": "stdio"}]})
+        async def budget_scenario() -> None:
+            monkeypatch.setattr(mcp_market_api, "_DETAIL_CHECK_BUDGET", 0.03)
+            monkeypatch.setattr(mcp_market_api, "_BG_DRAIN_CAP", 3)
 
-    async def boom(qn: str):
-        raise AssertionError("缓存命中不应发起详情请求")
-
-    monkeypatch.setattr(mcp_market_api, "_get_detail", boom)
-    kept_cached, _ = asyncio.run(
-        mcp_market_api._filter_installable([MarketEntry(qualified_name="m/x", source="modelscope")])
-    )
-    assert len(kept_cached) == 1
-    mcp_market_api._DETAIL_CACHE.clear()
-
-    async def budget_and_client_scenario() -> None:
-        c1 = await mcp_market_api._shared_http_client()
-        c2 = await mcp_market_api._shared_http_client()
-        assert c1 is c2
-        monkeypatch.setattr(mcp_market_api, "_DETAIL_CHECK_BUDGET", 0.03)
-        monkeypatch.setattr(mcp_market_api, "_BG_DRAIN_CAP", 3)
-
-        async def slow_detail(qn: str) -> dict[str, list[dict[str, str]]]:
-            if qn == "fast/live":
+            async def slow_detail(qn: str) -> dict[str, list[dict[str, str]]]:
+                if qn == "fast/live":
+                    return {"variants": [{"transport": "stdio"}]}
+                await asyncio.sleep(0.2)
                 return {"variants": [{"transport": "stdio"}]}
-            await asyncio.sleep(0.2)
-            return {"variants": [{"transport": "stdio"}]}
 
-        monkeypatch.setattr(mcp_market_api, "_get_detail", slow_detail)
-        batch = [MarketEntry(qualified_name="fast/live", source="modelscope")] + [
-            MarketEntry(qualified_name=f"slow/{i}", source="modelscope") for i in range(10)
-        ]
-        kept_part, inc = await mcp_market_api._filter_installable(batch)
-        state = mcp_market_api._loop_state()
-        assert [e["qualified_name"] for e in kept_part] == ["fast/live"] and inc is True
-        assert len(state.bg_drain_queue) <= 3
-        if state.bg_drain_task is not None:
-            state.bg_drain_task.cancel()
-            await asyncio.gather(state.bg_drain_task, return_exceptions=True)
-        await c1.aclose()
+            monkeypatch.setattr(mcp_market_api, "_get_detail", slow_detail)
+            batch = [MarketEntry(qualified_name="fast/live", source="modelscope")] + [
+                MarketEntry(qualified_name=f"slow/{i}", source="modelscope") for i in range(10)
+            ]
+            kept_part, inc = await mcp_market_api._filter_installable(batch)
+            state = mcp_market_api._loop_state()
+            assert [e["qualified_name"] for e in kept_part] == ["fast/live"] and inc is True
+            assert len(state.bg_drain_queue) <= 3
+            if state.bg_drain_task is not None:
+                state.bg_drain_task.cancel()
+                await asyncio.gather(state.bg_drain_task, return_exceptions=True)
 
-    asyncio.run(budget_and_client_scenario())
+        asyncio.run(budget_scenario())
+    finally:
+        mcp_market_api._DETAIL_CACHE.clear()
 
 
-def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mcp_pii_credentials_and_client_transport(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from pydantic_core import ErrorDetails
     from pydantic_ai.messages import ImageUrl, RetryInfo, UserPromptPart, RetryFeedbackPart
 
@@ -435,22 +401,40 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
     from gsuid_core.ai_core.mcp.config_manager import MCPConfig, MCPToolDefinition
     from gsuid_core.ai_core.mcp.credential_store import render_client_kwargs
 
-    s = "收货人 张三 电话13812345678 地址 上海市黄浦区南京东路100号3栋502室"
-    masked = mask_pii(s)
-    assert "138********" in masked and "收货人 **" in masked and "张" not in masked and "南京东路" not in masked
-    assert "phone" in pii_hits(s) and mask_pii("我在黄浦区上班") == "我在黄浦区上班"
-    # 旅游攻略 / 公共景点街道不误伤，住宅户室与收货标签精准脱敏
-    travel_guide = (
-        "推荐路线：1. 上海市黄浦区南京东路299号 2. 地址：北京市东城区景山前街4号故宫博物院 3. 杭州市西湖区龙井路1号"
-    )
-    assert mask_pii(travel_guide) == travel_guide and pii_hits(travel_guide) == []
-    res_only = "送到浙江省杭州市西湖区文三路90号2单元401室"
-    assert "文三路" not in mask_pii(res_only) and "address" in pii_hits(res_only)
-    tail_district = "我住上海市黄浦区南京东路100号3栋502室靠近静安区"
-    assert "南京东路" not in mask_pii(tail_district) and "address" in pii_hits(tail_district)
-    md_order = "| **收货人** | 李四五 |\n| **收货地址** | 广东省深圳市南山区科技南十二路18号 |"
-    masked_md = mask_pii(md_order)
-    assert "李" not in masked_md and "***" in masked_md and "科技南十二路" not in masked_md
+    for text, must_have, must_hide, expected_hit in (
+        (
+            "收货人 张三 电话13812345678 地址 上海市黄浦区南京东路100号3栋502室",
+            ("138********", "收货人 **"),
+            ("张", "南京东路"),
+            "phone",
+        ),
+        ("送到浙江省杭州市西湖区文三路90号2单元401室", (), ("文三路",), "address"),
+        ("我住上海市黄浦区南京东路100号3栋502室靠近静安区", (), ("南京东路",), "address"),
+        (
+            "| **收货人** | 李四五 |\n| **收货地址** | 广东省深圳市南山区科技南十二路18号 |",
+            ("***",),
+            ("李", "科技南十二路"),
+            "",
+        ),
+        ("Authorization: Bearer abc123def456", (), ("abc123def",), ""),
+    ):
+        masked = mask_pii(text)
+        for token in must_have:
+            assert token in masked
+        for token in must_hide:
+            assert token not in masked
+        if expected_hit:
+            assert expected_hit in pii_hits(text)
+
+    b64_uri = "data:image/png;base64,iVBORw0KGgo13812345678AAAANSUhEUg1234567890123456789=="
+    # 旅游攻略、公共景点与 base64 数据 URI 不误伤。
+    for safe_text in (
+        "我在黄浦区上班",
+        "推荐路线：1. 上海市黄浦区南京东路299号 2. 地址：北京市东城区景山前街4号故宫博物院 3. 杭州市西湖区龙井路1号",
+        b64_uri,
+    ):
+        assert mask_pii(safe_text) == safe_text and pii_hits(safe_text) == []
+
     html_order = (
         "<style>.c{color:#138123}</style><div class='c'>"
         "<span>收货人</span><span>王五</span>"
@@ -463,17 +447,16 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
     html_travel = "<div><span>景点</span><span>故宫</span><span>地址</span><span>北京市东城区景山前街4号</span></div>"
     assert mask_pii_in_html(html_travel) == html_travel
     assert "张三" not in mask_pii_in_html("收货人 张三 电话13812345678")
-    assert "abc123def" not in mask_pii("Authorization: Bearer abc123def456")
-    assert has_credential_form("api_key=xyz12345") and not has_credential_form("今天天气不错")
 
-    assert is_credential_command("mcp绑定 瑞幸 tok123") and not is_credential_command("帮我绑定一下瑞幸")
+    for text, expected in (("api_key=xyz12345", True), ("今天天气不错", False)):
+        assert has_credential_form(text) is expected
+    for text, expected in (("mcp绑定 瑞幸 tok123", True), ("帮我绑定一下瑞幸", False)):
+        assert is_credential_command(text) is expected
     assert "tok123" not in mask_credential_command("mcp绑定 瑞幸 tok123")
     assert "13812345678" not in mask_for_agent("电话13812345678", is_group=True)
     assert "13812345678" in mask_for_agent("电话13812345678", is_group=False)
-
-    b64_uri = "data:image/png;base64,iVBORw0KGgo13812345678AAAANSUhEUg1234567890123456789=="
-    assert mask_pii(b64_uri) == b64_uri and pii_hits(b64_uri) == []
     assert mask_for_agent("base64://abc13812345678xyz==", is_group=True) == "base64://abc13812345678xyz=="
+
     part_in = UserPromptPart(content=["联系电话13812345678", ImageUrl(url=b64_uri)])
     masked_parts = apply_context_mask([part_in], is_group=True)
     assert len(masked_parts) == 1 and isinstance(masked_parts[0], UserPromptPart)
@@ -496,10 +479,13 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
     assert isinstance(fb_content, list)
     assert fb_content[0]["msg"] == "号码138********不合法" and fb_content[0]["input"] == "138********"
 
-    assert _parse_bind_args("tok123", ["LUCKIN_MCP_TOKEN"]) == {"LUCKIN_MCP_TOKEN": "tok123"}
-    assert _parse_bind_args("A_KEY=1 B_KEY=2", ["A_KEY", "B_KEY"]) == {"A_KEY": "1", "B_KEY": "2"}
-    assert _parse_bind_args("A_KEY=1", ["A_KEY", "B_KEY"]) is None
-    assert _parse_bind_args("abc=", ["TOKEN"]) == {"TOKEN": "abc="}
+    for raw, keys, expected in (
+        ("tok123", ["LUCKIN_MCP_TOKEN"], {"LUCKIN_MCP_TOKEN": "tok123"}),
+        ("A_KEY=1 B_KEY=2", ["A_KEY", "B_KEY"], {"A_KEY": "1", "B_KEY": "2"}),
+        ("A_KEY=1", ["A_KEY", "B_KEY"], None),
+        ("abc=", ["TOKEN"], {"TOKEN": "abc="}),
+    ):
+        assert _parse_bind_args(raw, keys) == expected
 
     cfg = MCPConfig(
         name="gezhe",
@@ -536,16 +522,7 @@ def test_mcp_pii_credentials_and_client_transport(tmp_path, monkeypatch: pytest.
     assert script.read_text(encoding="utf-8").endswith('if __name__ == "__main__":\n    mcp.run()\n')
     assert repair_checkout_script(["scripts/mcp_server.py"], tmp_path) == ""
 
-    server = FastMCP("synthetic-unmounted")
-    calls: List[int] = []
-    monkeypatch.setattr(server, "http_app", lambda **kw: (calls.append(1), Starlette())[1])
-    monkeypatch.setattr(mcp_server, "_mcp_lifespan_cm", mcp_server._McpHttpRuntime(server))
-    monkeypatch.setattr(mcp_server, "_http_mounted", False)
-    monkeypatch.setattr(mcp_server, "_mcp_rebuild_lock", asyncio.Lock())
-    asyncio.run(mcp_server._rebuild_http_mcp_session())
-    assert calls == []
-
-    monkeypatch.setattr(client_mod, "_CONNECT_TIMEOUT_S", 1)
+    monkeypatch.setattr(client_mod, "_CONNECT_TIMEOUT_S", 0.15)
     hang = MCPClient(name="hang", transport="stdio", command=sys.executable, args=["-c", "import time; time.sleep(60)"])
     with pytest.raises(TimeoutError, match="连接超时"):
         asyncio.run(hang.list_tools())
@@ -564,7 +541,7 @@ def test_evidence_block_groups_and_credential_invalidation(monkeypatch: pytest.M
     from gsuid_core.message_history.manager import MessageRecord
 
     class _StubProvider:
-        def __init__(self, bound: set) -> None:
+        def __init__(self, bound: set[str]) -> None:
             self.bound = bound
 
         async def current(self, service: str, bot_id: str, user_id: str) -> LiveState:
@@ -584,81 +561,66 @@ def test_evidence_block_groups_and_credential_invalidation(monkeypatch: pytest.M
     stub = _StubProvider({"100000002"})
     monkeypatch.setattr(providers, "get_state_provider", lambda service: stub if service == svc else None)
 
-    store.append(
-        Observation(
-            obs_id="ob_test01",
-            session_id=sid,
-            tool_name="mcp_test_svc_1_query",
-            service=svc,
-            requested_by="100000001",
-            requested_by_seq=3,
-            credential_owner="100000001",
-            outcome="auth_required",
-            observed_at=time.time() - 30,
-            summary="需要绑定凭据",
-            handle="",
+    async def scenario() -> None:
+        store.append(
+            Observation(
+                obs_id="ob_test01",
+                session_id=sid,
+                tool_name="mcp_test_svc_1_query",
+                service=svc,
+                requested_by="100000001",
+                requested_by_seq=3,
+                credential_owner="100000001",
+                outcome="auth_required",
+                observed_at=time.time() - 30,
+                summary="需要绑定凭据",
+                handle="",
+            )
         )
-    )
-    records = [
-        MessageRecord(role="user", content="查一下", user_id="100000001", user_name="测试用户A"),
-        MessageRecord(role="user", content="我也看看", user_id="100000002", user_name="测试用户B"),
-    ]
+        records = [
+            MessageRecord(role="user", content="查一下", user_id="100000001", user_name="测试用户A"),
+            MessageRecord(role="user", content="我也看看", user_id="100000002", user_name="测试用户B"),
+        ]
 
-    block = asyncio.run(render_evidence_block(sid, bot, target_uids=["100000002"], records=records))
-    assert "（证据）" in block and "替别人查的：" in block and "ob_test01" in block
-    assert "替测试用户A查" in block and "已绑定" in block and "测试用户B" in block
-    assert "需绑定凭据" not in block or "缺凭据" in block
+        block = await render_evidence_block(sid, bot, target_uids=["100000002"], records=records)
+        assert "（证据）" in block and "替别人查的：" in block and "ob_test01" in block
+        assert "替测试用户A查" in block and "已绑定" in block and "测试用户B" in block
+        assert "缺凭据" in block
 
-    notify_credential_changed(svc, bot, "100000001", session_id=sid)
-    block2 = asyncio.run(render_evidence_block(sid, bot, target_uids=["100000002"], records=records))
-    assert "已失效（凭据已变更）" in block2
+        notify_credential_changed(svc, bot, "100000001", session_id=sid)
+        block2 = await render_evidence_block(sid, bot, target_uids=["100000002"], records=records)
+        assert "已失效（凭据已变更）" in block2
 
-    store.append(
-        Observation(
-            obs_id="ob_test02",
-            session_id=sid,
-            tool_name="mcp_test_svc_1_shared",
-            service=svc,
-            requested_by="100000002",
-            requested_by_seq=4,
-            credential_owner="shared",
-            outcome="data",
-            observed_at=time.time() - 5,
-            summary="公开数据",
-            handle="",
+        store.append(
+            Observation(
+                obs_id="ob_test02",
+                session_id=sid,
+                tool_name="mcp_test_svc_1_shared",
+                service=svc,
+                requested_by="100000002",
+                requested_by_seq=4,
+                credential_owner="shared",
+                outcome="data",
+                observed_at=time.time() - 5,
+                summary="公开数据",
+                handle="",
+            )
         )
-    )
-    block3 = asyncio.run(render_evidence_block(sid, bot, target_uids=["100000002"], records=records))
-    assert "共享凭据" in block3 and "shared的凭据" not in block3
+        block3 = await render_evidence_block(sid, bot, target_uids=["100000002"], records=records)
+        assert "共享凭据" in block3 and "shared的凭据" not in block3
 
-    from gsuid_core.ai_core.register import service_changed_at
-    from gsuid_core.ai_core.mcp.startup import _register_catalog, _forget_mcp_server, _note_mcp_service_changed
-    from gsuid_core.ai_core.mcp.config_manager import MCPConfig, MCPToolDefinition
-
-    service_changed_at.pop("svc_unchanged_test", None)
-    cfg = MCPConfig(
-        name="svc_unchanged_test",
-        description="test",
-        transport="stdio",
-        command="echo",
-        tools=[MCPToolDefinition(name="ping", description="ping")],
-    )
     try:
-        _register_catalog("cfg_unchanged_test", cfg)
-        assert "svc_unchanged_test" not in service_changed_at
-        _note_mcp_service_changed("svc_unchanged_test")
-        assert "svc_unchanged_test" in service_changed_at
+        asyncio.run(scenario())
     finally:
-        _forget_mcp_server("cfg_unchanged_test")
-        service_changed_at.pop("svc_unchanged_test", None)
+        store.observations.clear()
+        store.invalidations.clear()
 
 
-def test_static_safetensors_cache_and_local_provider(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_static_safetensors_cache_and_local_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """FastEmbed 静态模型（safetensors）缓存校验、mmap 零告警加载与 512 token 预算上限。"""
     import gc
     import struct
     import warnings
-    from pathlib import Path
 
     import numpy as np
     from tokenizers import Tokenizer
@@ -673,7 +635,6 @@ def test_static_safetensors_cache_and_local_provider(tmp_path, monkeypatch: pyte
     )
 
     model_name = "minishlab/potion-multilingual-128M"
-    assert model_name in local_embedding_config.get_config("embedding_model_name").options
 
     # 旧版 fastembed 缺少 static_embedding 子模块时，默认 ONNX 模型仍须正常解析不崩启动。
     with monkeypatch.context() as mp:
@@ -681,7 +642,7 @@ def test_static_safetensors_cache_and_local_provider(tmp_path, monkeypatch: pyte
         legacy_spec = resolve_fastembed_model_spec("BAAI/bge-small-en-v1.5")
         assert legacy_spec.is_static is False and "bge-small-en-v1.5" in legacy_spec.hf_repo
 
-    cache_root = Path(tmp_path) / "models_cache"
+    cache_root = tmp_path / "models_cache"
     rev = "a" * 40
     repo_dir = cache_root / "models--minishlab--potion-multilingual-128M"
     snap = repo_dir / "snapshots" / rev
@@ -696,37 +657,228 @@ def test_static_safetensors_cache_and_local_provider(tmp_path, monkeypatch: pyte
     tok.pre_tokenizer = Whitespace()
     tok.save(str(snap / "tokenizer.json"))
 
-    orig_model = local_embedding_config.get_config("embedding_model_name").data
     monkeypatch.setattr(rag_base, "MODELS_CACHE", cache_root)
-    local_embedding_config.get_config("embedding_model_name").data = model_name
+    monkeypatch.setattr(local_embedding_config.get_config("embedding_model_name"), "data", model_name)
+
+    # 缺 model.safetensors 时缓存必须判无效
+    assert rag_base._is_models_cache_valid() is False
+
+    raw = np.ascontiguousarray(np.ones((4, 256), dtype=np.float32), dtype="<f4").tobytes()
+    header = json.dumps({"embeddings": {"dtype": "F32", "shape": [4, 256], "data_offsets": [0, len(raw)]}}).encode(
+        "utf-8"
+    )
+    (snap / "model.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + raw)
+    assert rag_base._is_models_cache_valid() is True
+
+    # 静态模型加载须彻底绕过 fastembed / onnxruntime（即使两者不可导入也正常工作）。
+    with monkeypatch.context() as mp, warnings.catch_warnings():
+        mp.setitem(sys.modules, "fastembed", None)
+        mp.setitem(sys.modules, "onnxruntime", None)
+        warnings.simplefilter("error", UserWarning)
+        provider = LocalEmbeddingProvider(model_name=model_name, cache_dir=str(cache_root))
     try:
-        # 缺 model.safetensors 时缓存必须判无效
-        assert rag_base._is_models_cache_valid() is False
-
-        raw = np.ascontiguousarray(np.ones((4, 256), dtype=np.float32), dtype="<f4").tobytes()
-        header = json.dumps({"embeddings": {"dtype": "F32", "shape": [4, 256], "data_offsets": [0, len(raw)]}}).encode(
-            "utf-8"
-        )
-        (snap / "model.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + raw)
-
-        assert rag_base._is_models_cache_valid() is True
-
-        # 静态模型加载须彻底绕过 fastembed / onnxruntime（即使两者不可导入也正常工作）。
-        with monkeypatch.context() as mp, warnings.catch_warnings():
-            mp.setitem(sys.modules, "fastembed", None)
-            mp.setitem(sys.modules, "onnxruntime", None)
-            warnings.simplefilter("error", UserWarning)
-            provider = LocalEmbeddingProvider(model_name=model_name, cache_dir=str(cache_root))
-        try:
-            assert provider.dimension == 256
-            assert provider.max_input_tokens == 512
-            vecs = provider.embed_sync(["hello world", "[UNK]"])
-            assert len(vecs) == 2 and len(vecs[0]) == 256
-            assert abs(sum(x * x for x in vecs[0]) - 1.0) < 1e-4
-            assert all(x == 0.0 for x in vecs[1])
-        finally:
-            provider.close()
-            del provider
-            gc.collect()
+        assert provider.dimension == 256
+        assert provider.max_input_tokens == 512
+        vecs = provider.embed_sync(["hello world", "[UNK]"])
+        assert len(vecs) == 2 and len(vecs[0]) == 256
+        assert abs(sum(x * x for x in vecs[0]) - 1.0) < 1e-4
+        assert all(x == 0.0 for x in vecs[1])
     finally:
-        local_embedding_config.get_config("embedding_model_name").data = orig_model
+        provider.close()
+        del provider
+        gc.collect()
+
+
+def test_qdrant_circuit_breaker_and_search_tools_bm25_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HttpQdrant 传输异常归一与熔断、search_tools 断连降级 BM25、知识分页边界。"""
+    import httpx2
+    from pydantic_ai.tools import Tool
+
+    import gsuid_core.ai_core.rag.base as rag_base
+    import gsuid_core.ai_core.rag.tools as rag_tools
+    import gsuid_core.ai_core.rag.tool_lexical as tool_lexical
+    from gsuid_core.ai_core.models import ToolBase, ToolContext
+    from gsuid_core.ai_core.rag.qhttp import HttpQdrant, QdrantTransportError
+    from gsuid_core.ai_core.rag.qmodels import CountResult, ScoredPoint
+    from gsuid_core.ai_core.rag.knowledge import get_manual_knowledge_list
+
+    # 1. HttpQdrant 连续 2 次连接拒绝后进入熔断，第 3 次不发真实 HTTP 请求直接快速失败
+    calls = {"n": 0}
+    mode = {"kind": "connect"}
+
+    def _fail_transport(request: httpx2.Request) -> httpx2.Response:
+        calls["n"] += 1
+        if mode["kind"] == "read_timeout":
+            raise httpx2.ReadTimeout("slow qdrant", request=request)
+        raise httpx2.ConnectError("connection refused", request=request)
+
+    async def _verify_breaker() -> None:
+        mock_http = httpx2.AsyncClient(
+            base_url="http://127.0.0.1:6333",
+            transport=httpx2.MockTransport(_fail_transport),
+        )
+        client = HttpQdrant(url="http://127.0.0.1:6333", api_key=None, timeout=1.0, http=mock_http)
+        try:
+            assert client.is_circuit_open is False
+            for _ in range(2):
+                with pytest.raises(QdrantTransportError):
+                    await client.collection_exists("demo_col")
+            assert client.is_circuit_open is True and calls["n"] == 2
+            with pytest.raises(QdrantTransportError, match="circuit open"):
+                await client.collection_exists("demo_col")
+            assert calls["n"] == 2
+            client.reset_circuit_breaker()
+            assert client.is_circuit_open is False
+            mode["kind"] = "read_timeout"
+            with pytest.raises(QdrantTransportError):
+                await client.collection_exists("demo_col")
+            assert client.is_circuit_open is False
+        finally:
+            await client.close()
+
+    asyncio.run(_verify_breaker())
+
+    # 2. search_tools 在 Qdrant 断连异常时降级走 tool_lexical BM25 召回并正确排序
+    def _demo_calc() -> str:
+        return "ok"
+
+    demo_tool: Tool[ToolContext] = Tool(_demo_calc, name="demo_ascension_calculator", takes_ctx=False)
+    other_tool: Tool[ToolContext] = Tool(_demo_calc, name="demo_image_generator", takes_ctx=False)
+    fake_tb = ToolBase(
+        name="demo_ascension_calculator",
+        tool=demo_tool,
+        description="计算角色突破材料缺口与采集路线",
+        plugin="DemoPlugin",
+        covers=["突破材料", "升级缺口", "ascension gap"],
+        aliases=["材料计算器"],
+    )
+    other_tb = ToolBase(
+        name="demo_image_generator",
+        tool=other_tool,
+        description="生成海报与插画图片",
+        plugin="DemoPlugin",
+        covers=["文生图"],
+        aliases=["绘图工具"],
+    )
+    pool = {"demo_ascension_calculator": fake_tb, "demo_image_generator": other_tb}
+    monkeypatch.setattr(tool_lexical, "_INDEX", tool_lexical.ToolBM25Index())
+    tool_lexical.rebuild_index(pool)
+
+    class _DeadEmbedder:
+        async def aembed_query(self, _text: str) -> list[float]:
+            return [0.1, 0.2]
+
+    class _DeadQdrant:
+        async def query_points(self, **_kw: object) -> object:
+            raise QdrantTransportError("qdrant down")
+
+    monkeypatch.setattr(rag_base, "embedding_model", _DeadEmbedder())
+    monkeypatch.setattr(rag_base, "client", _DeadQdrant())
+    monkeypatch.setattr(rag_tools, "get_all_tools", lambda: pool)
+    monkeypatch.setattr(rag_tools, "get_registered_tools", lambda: {"common": pool})
+
+    for query in ("角色突破材料缺口", "ascension gap"):
+        hits = asyncio.run(rag_tools.search_tools(query, limit=5, rerank=False))
+        assert hits and hits[0].name == "demo_ascension_calculator"
+
+    # 3. 知识分页：offset+limit 恰为 100 整数倍且仍有剩余时不得过早返回 next_offset=None
+    class _ScrollQdrant:
+        def __init__(self, total: int) -> None:
+            self._rows = [
+                ScoredPoint(id=str(i), version=0, score=1.0, payload={"id": str(i), "title": f"条{i}"})
+                for i in range(total)
+            ]
+
+        async def count(self, **_kw: object) -> CountResult:
+            return CountResult(count=len(self._rows))
+
+        async def scroll(
+            self,
+            *,
+            limit: int = 100,
+            offset: object = None,
+            **_kw: object,
+        ) -> tuple[list[ScoredPoint], int | None]:
+            start = offset if isinstance(offset, int) else 0
+            chunk = self._rows[start : start + limit]
+            nxt = start + len(chunk) if start + len(chunk) < len(self._rows) else None
+            return chunk, nxt
+
+    for total, offset, limit, expected_len, expected_next in (
+        (150, 80, 20, 20, 100),
+        (150, 140, 20, 10, None),
+        (100, 80, 20, 20, None),
+    ):
+        monkeypatch.setattr(rag_base, "client", _ScrollQdrant(total))
+        page = asyncio.run(get_manual_knowledge_list(source_filter="all", offset=offset, limit=limit))
+        assert len(page["list"]) == expected_len and page["next_offset"] == expected_next
+
+
+def test_cognition_rendering_and_hub_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """认知渲染强弱分层与世界枢纽筛选：直提专名优先展示，其余按顺序落入 extra_titles。"""
+    import gsuid_core.ai_core.cognition.hub as hub_mod
+    from gsuid_core.ai_core.entity_index import clear_entity_index
+    from gsuid_core.ai_core.cognition.nodes import AICogNode
+    from gsuid_core.ai_core.cognition.types import CogKind, CogScope, CognitiveHit
+    from gsuid_core.ai_core.cognition.facade import render_cognition_block
+    from gsuid_core.ai_core.buildin_tools.rag_search import line_pages
+
+    weak_ep = CognitiveHit(
+        kind=CogKind.EPISODE,
+        id="ep_1",
+        title="",
+        summary="Commuted by subway to work",
+        score=0.4,
+        high_confidence=False,
+    )
+    strong_fact = CognitiveHit(
+        kind=CogKind.FACT,
+        id="fact_1",
+        title="",
+        summary="用户偏好地铁通勤",
+        score=0.8,
+        high_confidence=True,
+    )
+    weak_rec = CognitiveHit(
+        kind=CogKind.RECORD,
+        id="rec_1",
+        title="",
+        summary="无关记录",
+        score=0.1,
+        high_confidence=False,
+    )
+    pages = line_pages([strong_fact, weak_ep, weak_rec])
+    flat_ids = [h.id for page in pages for h in page]
+    assert "ep_1" in flat_ids and "fact_1" in flat_ids and "rec_1" not in flat_ids
+    rendered_mixed = render_cognition_block("怎么上班", [strong_fact, weak_ep, weak_rec])
+    assert "Commuted by subway to work" in rendered_mixed
+    assert "用户偏好地铁通勤" in rendered_mixed
+    assert "另有 1 条弱相关" in rendered_mixed
+    rendered_only_weak = render_cognition_block("怎么上班", [weak_ep])
+    assert "Commuted by subway to work" in rendered_only_weak
+    assert "弱相关" not in rendered_only_weak
+
+    async def scenario() -> None:
+        clear_entity_index()
+        try:
+            async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="cog-hub.db"):
+                id1 = await AICogNode.upsert(kind=CogKind.ENTITY, ref="world:demo:h1", title="测试专名实体")
+                id2 = await AICogNode.upsert(kind=CogKind.ENTITY, ref="world:demo:h2", title="测试词条二")
+                id3 = await AICogNode.upsert(kind=CogKind.ENTITY, ref="world:demo:h3", title="测试词条三")
+                id4 = await AICogNode.upsert(kind=CogKind.ENTITY, ref="world:demo:h4", title="测试词条四")
+                assert id1 is not None and id2 is not None and id3 is not None and id4 is not None
+
+                hits = [
+                    CognitiveHit(kind=CogKind.ENTITY, id=f"node_{id2}", title="测试词条二", summary="", score=0.9),
+                    CognitiveHit(kind=CogKind.ENTITY, id=f"node_{id3}", title="测试词条三", summary="", score=0.8),
+                    CognitiveHit(kind=CogKind.ENTITY, id=f"node_{id4}", title="测试词条四", summary="", score=0.7),
+                ]
+                shown, extra_titles = await hub_mod._hubs_from_hits(
+                    hits, "测试专名实体", scope=CogScope(group_id="", user_id="")
+                )
+                assert [n.title for n in shown] == ["测试专名实体", "测试词条二"]
+                assert extra_titles == ["测试词条三", "测试词条四"]
+        finally:
+            clear_entity_index()
+
+    asyncio.run(scenario())

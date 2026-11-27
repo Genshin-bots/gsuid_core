@@ -183,29 +183,31 @@ def _remove_repo_dir(path: Path) -> None:
 
 def _clone_target(url: str) -> tuple[str, Optional[str]]:
     """返回 (clone_url, fallback_url)；fallback 仅镜像模式给到 GitHub 原链。"""
-    from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
-    from gsuid_core.utils.plugins_update.git_mirror import (
+    from gsuid_core.plugin_registry import (
+        GITHUB_HOST,
         SSH_GITHUB_TEMPLATE,
-        _is_ssh_mode,
-        _is_proxy_prefix,
-        _extract_repo_name,
-        _extract_owner_repo,
+        parse_repo_identity,
+        validate_mirror_prefix,
+        resolve_target_mirror_mode,
     )
+    from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
+    from gsuid_core.utils.plugins_update.git_mirror import get_current_mirror_mode
 
-    git_mirror: str = core_plugins_config.get_config("GitMirror").data
+    git_mirror: str = core_plugins_config.get_config("GitMirror").data.strip()
     if not git_mirror:
         return url, None
-    if _is_ssh_mode(git_mirror):
-        owner_repo = _extract_owner_repo(url)
-        if owner_repo is not None and "github.com" in url:
-            return SSH_GITHUB_TEMPLATE.format(owner=owner_repo[0], repo=owner_repo[1]), None
+    ident = parse_repo_identity(url)
+    if ident is None or ident.host.lower() != GITHUB_HOST:
         return url, None
-    if _is_proxy_prefix(git_mirror):
-        return f"{git_mirror.rstrip('/')}/{url}", None
-    repo_name = _extract_repo_name(url)
-    if repo_name is None:
+    mode = resolve_target_mirror_mode(git_mirror, get_current_mirror_mode())
+    if mode == "ssh":
+        return SSH_GITHUB_TEMPLATE.format(owner=ident.owner, repo=ident.repo), None
+    # 人格仓库不在插件官方扁平镜像组织中，仅对保真反代通道生效，避免撞名拉错仓库
+    if mode != "proxy":
         return url, None
-    return f"{git_mirror.rstrip('/')}/{repo_name}", url
+    if validate_mirror_prefix(git_mirror) is not None:
+        return url, None
+    return f"{git_mirror.rstrip('/')}/{ident.canonical_url}.git", None
 
 
 def _reconcile_files(persona: Persona, root: Path) -> None:

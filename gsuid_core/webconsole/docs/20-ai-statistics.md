@@ -16,7 +16,7 @@ GET /api/ai/statistics/summary
 - `total_cache_read_tokens`: 命中提示词缓存、按缓存价计费的读取 Token 总量（Anthropic / OpenAI 等的 prompt caching）
 - `total_cache_write_tokens`: 写入提示词缓存所产生的 Token 总量
 - `total_cost`: 基于 `genai-prices` 估算的预估总费用（美元 USD）
-- `by_model` / `by_type`: 按模型名 / 会话类型（group / private）拆分，每项均含上述四类 Token（`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`）；`by_model` 额外返回该模型的预估费用 `cost`（美元 USD）
+- `by_model` / `by_type`: 按模型名 / 任务记账键（`chat_type`）拆分，每项均含上述四类 Token（`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`）；`by_model` 额外返回该模型的预估费用 `cost`（美元 USD），`by_type` 额外返回该类型的实际模型请求次数 `request_count`（与小时级性能统计同口径，按每次 LLM 请求计数；补列前的历史行按 `0` 返回）
 
 > 缓存 Token 字段对今日实时（内存）与历史（数据库）数据均返回；旧版本写入的历史行无缓存数据时按 `0` 返回。
 
@@ -47,14 +47,16 @@ GET /api/ai/statistics/summary
                     "input_tokens": 80000,
                     "output_tokens": 40000,
                     "cache_read_tokens": 32000,
-                    "cache_write_tokens": 6000
+                    "cache_write_tokens": 6000,
+                    "request_count": 42
                 },
                 {
                     "type": "private",
                     "input_tokens": 70000,
                     "output_tokens": 40000,
                     "cache_read_tokens": 28000,
-                    "cache_write_tokens": 6000
+                    "cache_write_tokens": 6000,
+                    "request_count": 35
                 }
             ]
         },
@@ -293,8 +295,8 @@ GET /api/ai/statistics/token-by-range
   `avg_agent_runs_per_user_turn`
 - `efficiency`: 区间汇总的效率（回合数/运行数累加，均值按区间合计重算）
 - `by_model`: 跨天聚合的按模型 Token 分布，按 `total_tokens` **降序**排列，用于占比图
-- `by_type`: 跨天聚合的按 `chat_type` Token 分布，同样按 `total_tokens` 降序。与 `by_model`
-  同区间同口径，前端的「各模型 / 各类型」两张构成卡直接吃这份，一次请求即可
+- `by_type`: 跨天聚合的按 `chat_type` Token 与请求次数（`request_count`，按每次 LLM 模型请求计数，补列前历史行为 `0`）分布，同样按 `total_tokens` 降序。与 `by_model`
+  同区间同口径，前端的「各模型 / 各类型」两张构成卡与任务路由图谱直接吃这份，一次请求即可
 - `latency`: 区间延迟（秒）。`avg` 由各日 `avg_latency` 按当日 `latency_sample_count`
   **加权**得出 —— 每日样本量实测能差两个数量级（439 vs 3339），直接取算术平均会被小样本日拉偏；
   `p95` 是区间内各日 P95 的**最大值**，逐日 P95 无法合并成一个真 P95，前端据此标注成「峰值」；
@@ -413,6 +415,7 @@ interface TokenRangeByModel extends TokenBucket {
 
 interface TokenRangeByType extends TokenBucket {
   type: string;
+  request_count: number;
 }
 
 interface TokenRangeLatency {

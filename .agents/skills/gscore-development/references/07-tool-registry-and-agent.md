@@ -22,6 +22,10 @@ _TOOL_REGISTRY: Dict[str, Dict[str, ToolBase]] = {}
     covers=None,          # 数据覆盖面 → 检索文本
     aliases=None,         # 领域同义问法（须带领域前缀）
     visible_when=None,
+    timeout=60.0,
+    background=False,     # 超宽限转后台执行并回灌主会话（自动 code_callable=False）
+    background_grace=5.0,
+    approval=None,
     **check_kwargs,
 )
 async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
@@ -34,6 +38,9 @@ async def my_tool(ctx: RunContext[ToolContext], ...) -> str: ...
 | `covers` | 数据/能力覆盖面列表；进 `ToolBase.retrieval_text` 与节点 roster「数据覆盖」 |
 | `aliases` | 同义问法列表，**须带领域前缀**（如 `原神·深渊阵容`） |
 | `visible_when` | 可选谓词 `(ctx)->bool`。**是否展示**阶段决定模型能否看到该工具（见 §7.6） |
+| `timeout` | 单次执行超时秒数（默认 `60.0`，`None` 不限时） |
+| `background` / `background_grace` | 长耗时工具后台宽限执行（见 §7.1c），开启后自动 `code_callable=False` |
+| `approval` | 强制审批级别（`"user"` / `"master"`），批准后经 `_execute_post_approval` 复用完整超时与后台链路 |
 | `**check_kwargs` | 传给 check_func 的额外参数 |
 
 > **智能参数注入**：`@ai_tools` 自动分析函数签名，把 `RunContext[ToolContext]` / `Event` /
@@ -61,6 +68,17 @@ worker 子进程，脚本在那些 worker 里跑，不在 Core 的 Python 解释
 单次上限约 128 次宿主调用、16MB 堆、沙箱自己的执行时间 3 秒（等待宿主时不计）。
 整段脚本墙钟 230 秒；到点会取消还在跑的宿主回调（搜索 / 抓页的包装函数体一并停）。
 不挂文件系统，不开网络。一个 worker 崩溃只丢掉这一次脚本，池子自己换掉它。
+
+## 7.1c 长耗时工具后台执行与共享回灌（`background_tools.py` + `async_delivery.py`）
+
+`@ai_tools` 与 `SV.on_*(..., to_ai=...)` 共用 `register.execute_guarded_tool` 执行脊柱：
+`check_func → tool_health 熔断门 → approval 审批闸 → _execute_post_approval（后台宽限 / 同步超时 → 健康度 → 归一化）`。
+
+- **准入闸（`should_detach_background`）**：仅当 `allow_user_outbound=True`、非 `TEST`/`mcp_server`、`return_mode != "return"`、`ev.task_event is None` 且具备存活 WS 推送通道（`WS_BOT_ID in gss.active_bot` 或 `bot.bot.bot is not None`）时允许转后台；HTTP 接口、评测端点与子代理一律同步等待至 `timeout`。
+- **短宽限同步 → 超限转后台**：先等 `background_grace` 秒（默认 `5.0`），宽限内完成直返（内部 `asyncio.TimeoutError` 与同步路径一致记失败不炸环）；超限后保留任务在后台继续跑、释放主会话锁，返回以 `BACKGROUND_TOOL_PENDING_PREFIX` 开头的非终态回执，并联动开场句（含 `soft_latency_ack` 已发场景）。
+- **去重与生命周期**：按 `(tool_name, session/scope, user_id, sha256(args_key)[:12])` 去重防连点（异参/跨群不误吞）；`unregister_tools_of_plugin` 热重载卸载插件时取消在途任务，`cancel_background_tools_on_shutdown`（`priority=-10`）早于会话落盘取消在途任务。
+- **共享回灌内核（`async_delivery.py`）**：与 `kanban_executor` 共用 `build_delivery_event`（清空旧 `msg_id`/附件/`raw_text`/`task_event`）、`resolve_live_bot/session`、`build_delivery_hints`、`sanitize_fallback_spoken`（无 session 降级剥离资源 ID 与内部提示词）与 `note_delivery_followup_if_sent`。后台纯归一化只登记 RM 资源 ID、绝不提前 `bot.send()` 防重复发图。
+- **DeliveryGuard 隔离**：`RunOnceState.pending_background_tool` 与 `create_subagent` 委派分离——不写 `_DELEGATION_INFLIGHT_KEY`（不阻塞同轮委派）、使用专属 `PENDING_BACKGROUND_TOOL_*` 控制句（`control/lines.py`）、`send_message_by_ai` 发图不清后台在途态、同轮混合普通工具时不强切 `silence_only`。`lean_delivery_frame` 保留 `res_`/`img_` 句柄，`prepare.py` 同步置位 `delivery_has_image`。
 
 ## 7.2 工具分类（category）与加载方式
 
@@ -312,7 +330,7 @@ search_tools_by_domain(query, domain_limit=3, per_domain_limit=6, recall=12)
 
 插件 `@sv.on_command(..., to_ai="...")` 声明非空 `to_ai`（作为 AI 工具 docstring）→ 插件加载时
 `_register_trigger_as_ai_tool()` 把触发器包成 AI 工具，注册到 `_TOOL_REGISTRY["by_trigger"]`，
-向量检索按需加载。
+向量检索按需加载。装饰器同时支持透传 `covers`、`aliases`、`timeout`、`background`、`background_grace`（仅 `to_ai` 非空时生效；`background=True` 自动置 `code_callable=False`，未填 `to_ai` 却传入非默认 `timeout`/`background=True` 时打 warning 忽略）。
 
 AI 调用时：
 

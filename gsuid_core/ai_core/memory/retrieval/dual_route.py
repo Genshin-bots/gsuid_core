@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 import asyncio
-from typing import Callable, Optional
+from typing import Callable, Optional, Awaitable
 from datetime import datetime, timezone
 
 from gsuid_core.i18n import t as i18n_t
@@ -33,7 +33,6 @@ from .prompt_render import (
     _fact_mentions_speaker as _fact_mentions_speaker,
     compute_edge_confidence,
     _get_sensitive_extra_terms as _get_sensitive_extra_terms,
-    _filter_point_lookup_episodes as _filter_point_lookup_episodes,
 )
 from .route_helpers import (
     _merge_edges as _merge_edges,
@@ -132,7 +131,7 @@ async def _fetch_user_preferences(
     preference_contexts: Optional[list[str]],
     watermark_ts: float,
 ) -> list[PreferencePrompt]:
-    from gsuid_core.ai_core.memory.database.models import AIMemPreference
+    from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
     if not (memory_config.enable_preference_memory and pref_scope_keys and inject_preferences):
         return []
@@ -272,90 +271,102 @@ async def _gather_candidate_episodes(
         else None
     )
 
-    s1_res, fts_res = await asyncio.gather(s1_task, fts_task)
-    s1: System1Result = s1_res if isinstance(s1_res, System1Result) else System1Result()
-    fts_eps: list[Episode] = fts_res if isinstance(fts_res, list) else []
+    all_tasks = (s1_task, fts_task, cover_task, span_task, temporal_task)
+    try:
+        s1_res, fts_res = await asyncio.gather(s1_task, fts_task)
+        s1: System1Result = s1_res if isinstance(s1_res, System1Result) else System1Result()
+        fts_eps: list[Episode] = fts_res if isinstance(fts_res, list) else []
 
-    keep_asst = memory_intent == "broad_summary"
-    episodes = _rrf_fuse_episodes(s1.episodes, fts_eps, keep_asst)
+        keep_asst = memory_intent == "broad_summary"
+        episodes = _rrf_fuse_episodes(s1.episodes, fts_eps, keep_asst)
 
-    covered: list[Episode] = []
-    if cover_task is not None:
-        try:
-            covered = await cover_task
-        except (OSError, RuntimeError, ValueError) as exc:
-            logger.warning(i18n_t("log.memory.document_coverage_failed", e=exc))
-            covered = []
+        covered: list[Episode] = []
+        if cover_task is not None:
+            try:
+                covered = await cover_task
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning(i18n_t("log.memory.document_coverage_failed", e=exc))
+                covered = []
 
-    if not covered:
-        episodes = await _expand_document_siblings(episodes, scope_keys)
+        if not covered:
+            episodes = await _expand_document_siblings(episodes, scope_keys)
 
-    pending = pending_episodes_for_scopes(scope_keys, cap=16)
-    if pending:
-        q_stripped = query.strip()
-        q_toks = query_tokens(query)
-        matched_pending: list[Episode] = []
-        for ep in pending:
-            raw = (ep["content"] or "").strip()
-            if not raw or (q_stripped and raw.endswith(f": {q_stripped}")):
-                continue
-            if not q_toks or any(token_in_text(t, raw) for t in q_toks):
-                matched_pending.append(ep)
-        if matched_pending:
-            episodes = _merge_episodes(episodes, matched_pending)
+        pending = pending_episodes_for_scopes(scope_keys, cap=16)
+        if pending:
+            q_stripped = query.strip()
+            q_toks = query_tokens(query)
+            matched_pending: list[Episode] = []
+            for ep in pending:
+                raw = (ep["content"] or "").strip()
+                if not raw or (q_stripped and raw.endswith(f": {q_stripped}")):
+                    continue
+                if not q_toks or any(token_in_text(t, raw) for t in q_toks):
+                    matched_pending.append(ep)
+            if matched_pending:
+                episodes = _merge_episodes(episodes, matched_pending)
 
-    span_eps: list[Episode] = []
-    thread_cues: list[MemoryEventCue] = []
-    if span_task is not None:
-        try:
-            span_eps, thread_cues = await asyncio.wait_for(span_task, timeout=6.0)
-        except (TimeoutError, OSError, RuntimeError, ConnectionError, ValueError) as e:
-            logger.debug(i18n_t("log.memory.thread_recall_fail", e=e))
-            span_eps, thread_cues = [], []
-    if span_eps:
-        episodes = _merge_episodes(episodes, span_eps)
+        span_eps: list[Episode] = []
+        thread_cues: list[MemoryEventCue] = []
+        if span_task is not None:
+            try:
+                span_eps, thread_cues = await asyncio.wait_for(span_task, timeout=6.0)
+            except (TimeoutError, OSError, RuntimeError, ConnectionError, ValueError) as e:
+                logger.debug(i18n_t("log.memory.thread_recall_fail", e=e))
+                span_eps, thread_cues = [], []
+        if span_eps:
+            episodes = _merge_episodes(episodes, span_eps)
 
-    if temporal_task is not None:
-        try:
-            temporal_eps = await temporal_task
-            if temporal_eps:
-                episodes = _merge_episodes(episodes, temporal_eps)
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.debug(i18n_t("log.memory.time_range_supplemental_retrieval", e=e))
+        if temporal_task is not None:
+            try:
+                temporal_eps = await temporal_task
+                if temporal_eps:
+                    episodes = _merge_episodes(episodes, temporal_eps)
+            except (OSError, RuntimeError, ValueError) as e:
+                logger.debug(i18n_t("log.memory.time_range_supplemental_retrieval", e=e))
 
-    if time_range is not None and memory_intent in ("timeline_order", "version_diff", "broad_summary"):
-        from gsuid_core.ai_core.memory.database.models import AIMemEpisode
+        if time_range is not None and memory_intent in ("timeline_order", "version_diff", "broad_summary"):
+            from gsuid_core.ai_core.memory.database.models import AIMemEpisode
 
-        start, end = time_range
-        window_cap = max(80, min(len(scope_keys) * 40, 400))
-        in_window: list[Episode] = [
-            {
-                "id": row.id,
-                "content": row.content,
-                "valid_at": str(row.valid_at),
-                "scope_key": row.scope_key,
-                "embedding": [],
-                "session_id": row.session_id or "",
-                "thread_id": row.thread_id or "",
-                "turn_index": row.turn_index,
-            }
-            for row in await AIMemEpisode.search_by_valid_at_range_scopes(
-                scope_keys,
-                start,
-                end,
-                limit=window_cap,
-                ascending=True,
-            )
-        ]
-        if in_window:
-            episodes = _merge_episodes(episodes, in_window)
+            start, end = time_range
+            window_cap = max(80, min(len(scope_keys) * 40, 400))
+            in_window: list[Episode] = [
+                {
+                    "id": row.id,
+                    "content": row.content,
+                    "valid_at": str(row.valid_at),
+                    "scope_key": row.scope_key,
+                    "embedding": [],
+                    "session_id": row.session_id or "",
+                    "thread_id": row.thread_id or "",
+                    "turn_index": row.turn_index,
+                }
+                for row in await AIMemEpisode.search_by_valid_at_range_scopes(
+                    scope_keys,
+                    start,
+                    end,
+                    limit=window_cap,
+                    ascending=True,
+                )
+            ]
+            if in_window:
+                episodes = _merge_episodes(episodes, in_window)
 
-    if covered:
-        from gsuid_core.ai_core.memory.retrieval.lexical_cover import merge_coverage_with_metric_hits
+        if covered:
+            from gsuid_core.ai_core.memory.retrieval.lexical_cover import merge_coverage_with_metric_hits
 
-        episodes = merge_coverage_with_metric_hits(covered, episodes)
+            episodes = merge_coverage_with_metric_hits(covered, episodes)
 
-    return s1, episodes, covered, thread_cues
+        return s1, episodes, covered, thread_cues
+    finally:
+        pending_tasks = [t for t in all_tasks if t is not None and not t.done()]
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            drain: list[Awaitable[object]] = list(pending_tasks)
+            await asyncio.gather(*drain, return_exceptions=True)
+        for task in all_tasks:
+            if task is not None and task.done() and not task.cancelled():
+                _ = task.exception()
 
 
 async def _finalize_memory_context(

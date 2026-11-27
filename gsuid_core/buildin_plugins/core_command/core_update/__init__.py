@@ -6,6 +6,11 @@ from gsuid_core.bot import Bot
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
+from gsuid_core.plugin_registry import (
+    SSH_PREFIX,
+    normalize_mirror_config_pair,
+    validate_mirror_prefix_async,
+)
 from gsuid_core.utils.plugins_update._plugins import (
     is_reload,
     run_install,
@@ -74,19 +79,23 @@ async def send_core_set_mirror(bot: Bot, ev: Event):
     }
 
     mirror_prefix = mirror_map.get(mirror_input.lower(), mirror_input)
+    norm_prefix, saved_mode = normalize_mirror_config_pair(mirror_prefix, "auto")
 
-    if mirror_prefix and not mirror_prefix.startswith(("http", "https", "ssh://")):
-        await bot.send(
-            await bot.t(
-                "你可能输入了一个错误的镜像地址...\n"
-                "支持的快捷名称: gitcode, cnb, ghproxy, ssh, github\n"
-                "或直接输入完整的镜像前缀URL"
+    if norm_prefix and norm_prefix != SSH_PREFIX:
+        ssrf_err = await validate_mirror_prefix_async(norm_prefix)
+        if ssrf_err is not None:
+            await bot.send(
+                await bot.t(
+                    "你可能输入了一个错误的镜像地址...\n"
+                    "支持的快捷名称: gitcode, cnb, ghproxy, ssh, github\n"
+                    "或直接输入完整的镜像前缀URL"
+                )
             )
-        )
-        return
+            return
 
-    core_plugins_config.set_config("GitMirror", mirror_prefix)
-    display = mirror_prefix if mirror_prefix else "GitHub (默认)"
+    core_plugins_config.set_config("GitMirror", norm_prefix)
+    core_plugins_config.set_config("GitMirrorMode", saved_mode)
+    display = norm_prefix if norm_prefix else "GitHub (默认)"
     await bot.send(
         await bot.t(
             "设置成功!\n当前镜像源为: {display}\n"
@@ -113,19 +122,27 @@ async def send_core_apply_mirror(bot: Bot, ev: Event):
         "空": "",
     }
 
-    mirror_prefix = mirror_map.get(mirror_input.lower(), mirror_input)
-
-    if mirror_prefix and not mirror_prefix.startswith(("http", "https", "ssh://")):
-        await bot.send(
-            await bot.t(
-                "你可能输入了一个错误的镜像地址...\n"
-                "支持的快捷名称: gitcode, cnb, ghproxy, ssh, github\n"
-                "或直接输入完整的镜像前缀URL"
-            )
-        )
+    if not mirror_input:
+        log_list = await set_proxy_all_plugins(None)
+        await bot.send(log_list)
         return
 
-    log_list = await set_proxy_all_plugins(mirror_prefix)
+    mirror_prefix = mirror_map.get(mirror_input.lower(), mirror_input)
+    norm_prefix, _ = normalize_mirror_config_pair(mirror_prefix, "auto")
+
+    if norm_prefix and norm_prefix != SSH_PREFIX:
+        ssrf_err = await validate_mirror_prefix_async(norm_prefix)
+        if ssrf_err is not None:
+            await bot.send(
+                await bot.t(
+                    "你可能输入了一个错误的镜像地址...\n"
+                    "支持的快捷名称: gitcode, cnb, ghproxy, ssh, github\n"
+                    "或直接输入完整的镜像前缀URL"
+                )
+            )
+            return
+
+    log_list = await set_proxy_all_plugins(norm_prefix)
     await bot.send(log_list)
 
 

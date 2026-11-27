@@ -92,7 +92,17 @@ class RunOnceState:
     speech_policy: str = "free"
     status_inquiry: bool = False
     pending_async_delivery: bool = False
+    pending_background_tool: bool = False
+    pending_background_with_sibling: bool = False
     image_sent_this_run: bool = False
+
+    @property
+    def blocks_user_speech(self) -> bool:
+        """在途异步任务是否压制本轮主通道回答（混合批兄弟普通工具放行）。"""
+        return self.pending_async_delivery and not (
+            self.pending_background_with_sibling and self.speech_policy != "silence_only"
+        )
+
     has_status_tool_call: bool = False
     last_block_reason: str = ""
     silence_reason: str = ""
@@ -176,6 +186,7 @@ class RunOnceState:
     # 已开始的模型请求次数。超轮数拿不到 result.usage，用量按请求累加。
     model_requests: int = 0
     iter_nudged: bool = False
+    usage_requests: int = 0
     usage_input_tokens: int = 0
     usage_output_tokens: int = 0
     usage_cache_read_tokens: int = 0

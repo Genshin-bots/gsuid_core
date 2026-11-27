@@ -132,9 +132,9 @@ async def ensure_scope_threads(scope_key: str) -> int:
         assigned[row["session_id"]] = tid
 
     now = datetime.now(timezone.utc)
-    from gsuid_core.ai_core.memory.ingestion.eval_write_lock import db_write_guard
+    from gsuid_core.utils.database.write_gate import sqlite_write_gate
 
-    async with db_write_guard(), async_maker() as session:
+    async with sqlite_write_gate, async_maker() as session:
         for tid, row in created:
             session.add(
                 AIMemThread(

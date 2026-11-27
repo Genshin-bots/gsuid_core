@@ -16,6 +16,22 @@ from gsuid_core.logger import logger
 
 DYNAMIC_PACK = "dynamic"
 TASK_BASICS_PACK = "task_basics"
+INTERNAL_DATA_PACK = "internal_data"
+
+# 内部只读数据族：仅框架内部库查询与产物留档，不含 run_code / web_search / web_fetch。
+_INTERNAL_DATA_TOOLS: List[str] = [
+    "artifact_put",
+    "artifact_get",
+    "artifact_list",
+    "state_get",
+    "state_list",
+    "record_get",
+    "record_list",
+    "record_summary",
+    "search_cognition",
+    "read_handle",
+    "list_persisted_outputs",
+]
 
 # 任务基础族：能力代理 task-mode 的常备工具（原 runner._ALWAYS_TOOLS）。
 # 刻意不含破坏性的 record_delete——需要删行的节点在 tool_names 显式声明。
@@ -41,7 +57,10 @@ _TASK_BASICS_TOOLS: List[str] = [
     "list_persisted_outputs",
 ]
 
-_STATIC_PACKS: Dict[str, List[str]] = {TASK_BASICS_PACK: list(_TASK_BASICS_TOOLS)}
+_STATIC_PACKS: Dict[str, List[str]] = {
+    TASK_BASICS_PACK: list(_TASK_BASICS_TOOLS),
+    INTERNAL_DATA_PACK: list(_INTERNAL_DATA_TOOLS),
+}
 
 
 def register_tool_pack(pack_name: str, tool_names: List[str]) -> None:

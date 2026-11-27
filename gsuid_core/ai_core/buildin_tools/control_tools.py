@@ -58,18 +58,50 @@ async def check_delegation(
         from gsuid_core.ai_core.planning.models import AIAgentTask
         from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
         from gsuid_core.ai_core.planning.kanban_executor import (
+            get_delivery_phase,
+            release_inline_claim,
             claim_inline_delivery,
+            record_inline_claimed_root,
             format_task_delivery_receipt,
-            is_delivery_in_flight_or_just_sent,
         )
 
-        if claim_inline_delivery(deleg.root_task_id):
-            task_row = await AIAgentTask.get_by_id(deleg.root_task_id)
-            if task_row is not None:
-                allow_render = persona_allows_capability_agent(task_row.persona_name, "render_agent")
-                return await format_task_delivery_receipt(task_row, allow_render=allow_render)
-        elif is_delivery_in_flight_or_just_sent(deleg.root_task_id):
-            return f"✅ 任务#{deleg.ordinal} 已完成并正由交付通道发送给用户，本轮勿重复下发同一产物。"
+        if deleg.status == "done":
+            if claim_inline_delivery(deleg.root_task_id, track_delivery=True):
+                task_row = await AIAgentTask.get_by_id(deleg.root_task_id)
+                if task_row is not None:
+                    record_inline_claimed_root(ctx.deps.extra, deleg.root_task_id)
+                    allow_render = persona_allows_capability_agent(task_row.persona_name, "render_agent")
+                    return await format_task_delivery_receipt(task_row, allow_render=allow_render, inline_claimed=True)
+                release_inline_claim(deleg.root_task_id)
+                return format_delegation(deleg)
+            phase = get_delivery_phase(deleg.root_task_id)
+            if phase == "delivered":
+                return (
+                    f"✅ 任务#{deleg.ordinal} 已完成并已送达用户 [delivery_state=delivered]；本轮勿重复下发同一产物。"
+                )
+            if phase == "completed_queued":
+                return (
+                    f"⏳ 任务#{deleg.ordinal} 已产出，正排队等待主通道交付 [delivery_state=completed_queued]；"
+                    "尚未送达群/用户，严禁声称「已发出」，请简短告知马上送达且勿重复派发。"
+                )
+            base = format_delegation(deleg)
+            return (
+                f"{base}\n[delivery_state=completed_untracked]（交付追踪已过期或跨重启未记录，"
+                "请先核对最近对话/群聊记录确认是否已发送给用户；确认未发再按需发送，已发勿重复。）"
+            )
+        else:
+            if claim_inline_delivery(deleg.root_task_id, track_delivery=False):
+                task_row = await AIAgentTask.get_by_id(deleg.root_task_id)
+                if task_row is not None:
+                    return await format_task_delivery_receipt(task_row, allow_render=False, inline_claimed=False)
+                return format_delegation(deleg)
+            base = format_delegation(deleg)
+            phase = get_delivery_phase(deleg.root_task_id)
+            if phase == "delivered":
+                return f"{base}\n（该终态结果已通知过用户，本轮勿重复播报。）"
+            if phase == "completed_queued":
+                return f"{base}\n（该终态结果正由主通道通知中，勿重复派发。）"
+            return base
     return format_delegation(deleg)
 
 

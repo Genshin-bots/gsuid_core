@@ -244,14 +244,19 @@ async def replay(
         link = rec.link
         if link is None:
             continue
+        has_at_others = bool(link.at_targets)
+        in_followup = ib.user_id in window_until and clock.now() <= window_until[ib.user_id] and not ib.at_list
+        in_settle_continuation = (
+            bool(ev.group_id) and not has_at_others and sched.is_awaiting_speaker(ev.session_id, "replay", ib.user_id)
+        )
         kind = classify_wake(
             user_type=ev.user_type or "group",
             at_self=link.at_self,
             reply_to_author=link.reply_to_author,
             raw_text=ib.raw_text,
             wake_names=names,
-            in_followup=ib.user_id in window_until and clock.now() <= window_until[ib.user_id] and not ib.at_list,
-            has_at_others=bool(link.at_targets),
+            in_followup=in_followup or in_settle_continuation,
+            has_at_others=has_at_others,
         )
         if kind is None:
             continue
@@ -291,7 +296,7 @@ async def main() -> None:
     events = parse_log(args.log, args.group)
     if not events:
         raise SystemExit("该群在日志里没有入站事件")
-    from gsuid_core.ai_core.inbox.scheduler import _SOFT_SETTLE_S
+    from gsuid_core.ai_core.inbox.scheduler import _SOFT_SETTLE_S, _INBOX_SETTLE_MAX_S, _GROUP_HARD_SETTLE_S
 
     names = [n.strip() for n in args.names.split(",") if n.strip()]
     debounce = _SOFT_SETTLE_S
@@ -316,7 +321,10 @@ async def main() -> None:
         p50, p95 = _pct(lat, 0.5), _pct(lat, 0.95)
         l50, l95 = _pct(legacy_lat, 0.5), _pct(legacy_lat, 0.95)
         print(f"首响等待 P50/P95：收件箱 {p50:.1f}s/{p95:.1f}s，旧链路近似 {l50:.1f}s/{l95:.1f}s")
-        print(f"增量 P50 {p50 - l50:+.1f}s（≤ +1.5s）P95 {p95 - l95:+.1f}s（≤ +5s）")
+        print(
+            f"增量 P50 {p50 - l50:+.1f}s（≤ +{_GROUP_HARD_SETTLE_S:.1f}s）"
+            f"P95 {p95 - l95:+.1f}s（≤ +{_INBOX_SETTLE_MAX_S:.0f}s）"
+        )
         if lat:
             print(f"平均 {statistics.mean(lat):.1f}s")
 

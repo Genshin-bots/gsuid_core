@@ -84,6 +84,8 @@ PLUGIN_PREFS_PATH = gs_data_path / "webconsole_plugin_prefs.json"
 GITHUB_AUTH_PATH = gs_data_path / "webconsole_github.json"
 # GitHub 仓库 star 数磁盘缓存（跨重启复用，避免频繁重启耗尽匿名 REST 配额）
 GITHUB_STARS_CACHE_PATH = gs_data_path / "webconsole_github_stars.json"
+# 离线插件商店索引快照（仅 {plugin_id: link}，供断网启动识别官方仓与 Fork）
+PLUGIN_STORE_INDEX_CACHE_PATH = gs_data_path / "plugin_store_index.json"
 
 # Live Chat（控制台实时聊天）多文件目录：
 #   identity.json / index.json / conversations/{id}.json

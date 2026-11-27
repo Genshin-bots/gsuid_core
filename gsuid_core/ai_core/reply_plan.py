@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 
 from gsuid_core.ai_core.protocol_text import is_silence_marker, remainder_after_protocol_tags
-from gsuid_core.ai_core.angle_bracket_guard import _REPLY_TAG_RE
+from gsuid_core.ai_core.control.angle_guard import _REPLY_TAG_RE
 
 # 标签行：行首 <reply ...>，可独占一行或后接同组首句正文
 _REPLY_LINE_RE = re.compile(
@@ -24,6 +24,7 @@ _REPLY_REF_RE = re.compile(r"#\s*(\d+)")
 class ReplyGroup:
     seqs: tuple[int, ...]
     text: str
+    explicit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,12 +79,17 @@ def parse_reply_plan(
     # max_targets 是整轮预算（一轮最多指向几名待回应用户），不是每组上限。
     remaining = max_targets
     for tag, lines in chunks:
+        explicit = False
         if tag is not None:
             keep = [s for s in tag if s in valid_seqs]
             for s in tag:
                 if s not in valid_seqs:
                     invalid.append(s)
-            seqs = tuple(keep) if keep else default_seqs
+            if keep:
+                seqs = tuple(keep)
+                explicit = True
+            else:
+                seqs = default_seqs
         else:
             seqs = default_seqs
         body = remainder_after_protocol_tags("\n".join(lines))
@@ -95,7 +101,7 @@ def parse_reply_plan(
         else:
             seqs = seqs[:remaining]
             remaining -= len(seqs)
-        groups.append(ReplyGroup(seqs=seqs, text=body))
+        groups.append(ReplyGroup(seqs=seqs, text=body, explicit=explicit))
 
     if silence:
         groups = []

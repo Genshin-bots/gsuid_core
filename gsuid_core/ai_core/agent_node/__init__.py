@@ -31,6 +31,7 @@ from .registry import (
 from .tool_packs import (
     DYNAMIC_PACK,
     TASK_BASICS_PACK,
+    INTERNAL_DATA_PACK,
     has_dynamic_pack,
     list_static_packs,
     register_tool_pack,
@@ -68,6 +69,7 @@ __all__ = [
     "list_persona_nodes",
     "DYNAMIC_PACK",
     "TASK_BASICS_PACK",
+    "INTERNAL_DATA_PACK",
     "register_tool_pack",
     "resolve_pack_tool_names",
     "has_dynamic_pack",

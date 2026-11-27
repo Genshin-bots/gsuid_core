@@ -20,7 +20,6 @@ from gsuid_core.ai_core.models import ToolContext
 from gsuid_core.ai_core.agent_errors import notify_master_of_budget_block
 from gsuid_core.ai_core.control.lines import UNMET_TOOL_REMINDER
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
-from gsuid_core.ai_core.persona.config import ASIDE_MODE
 from gsuid_core.ai_core.agent_run.state import (
     BUDGET_GATE_PASS,
     RunOnceState,
@@ -42,6 +41,7 @@ from gsuid_core.ai_core.agent_run.budget_ctx import (
     set_user_turn_id,
     _current_budget_scope,
 )
+from gsuid_core.ai_core.persona.config_rules import ASIDE_MODE
 from gsuid_core.ai_core.agent_run.speech_policy import resolve_speech_policy
 from gsuid_core.ai_core.control.outbound_detectors import (
     spoken_user_body_len,
@@ -208,6 +208,7 @@ class PreparePhase:
             "speech_policy": "free",
             "has_status_tool": False,
             "parent_create_by": self.create_by,
+            "return_mode": st.return_mode,
             MODEL_DECLARES_VIDEO_KEY: self._model_declares_video(),
         }
         # 记录原始用户问题，供话术策略与后续总结共用
@@ -262,7 +263,11 @@ class PreparePhase:
             if _probe_for_policy.lstrip().startswith("[框架·任务未完成]"):
                 st.run_extra["delivery_failed"] = True
             remember_outbound_topic(st.run_extra, _probe_for_policy)
-            if "主图：`" in _probe_for_policy:
+            if (
+                "主图：`" in _probe_for_policy
+                or "图片，资源ID:" in _probe_for_policy
+                or "[已生成图片，资源ID:" in _probe_for_policy
+            ):
                 st.run_extra["delivery_has_image"] = True
         st.in_flight_short = (not st.fw_msg) and st.has_active_task and spoken_user_body_len(_probe_for_policy) <= 48
         if self.route_decision is not None:
@@ -359,7 +364,7 @@ class PreparePhase:
 
             _has_sched = False
             if st.ev is not None and st.ev.user_id:
-                from gsuid_core.ai_core.tool_state_signals import user_has_active_schedules
+                from gsuid_core.ai_core.tool_health import user_has_active_schedules
 
                 _has_sched = await user_has_active_schedules(st.ev.user_id)
             _manage_form = interaction_scaffold.is_manage_ellipsis_form(st.tg.message_text)
@@ -445,7 +450,7 @@ class PreparePhase:
             return
         marker = INNER_OS_MARKER if ai_config.get_config("enable_deepseek_rp").data else ""
         persona_name = self.persona_name or ""
-        group_id = st.ev.group_id if st.ev is not None else None
+        group_id = st.ev.group_id if (st.ev is not None and st.ev.user_type != "direct") else None
         user_id = st.ev.user_id if st.ev is not None else None
         st.final_user_message, st.lean_user_message, where, latest_ts = _ensure_session_anchor_on_first_user(
             self.history,
@@ -456,7 +461,10 @@ class PreparePhase:
             user_id=user_id,
             marker=marker,
             is_framework=st.fw_msg,
+            force_reanchor=self._session_anchor_due,
         )
+        if not st.fw_msg and self._session_anchor_due:
+            self._session_anchor_due = False
         if where in ("history", "current"):
             if latest_ts > 0.0:
                 self._anchor_journal_ts = latest_ts

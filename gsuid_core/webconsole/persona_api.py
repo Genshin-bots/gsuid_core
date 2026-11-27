@@ -12,6 +12,7 @@ from fastapi import Body, Depends, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 
+import gsuid_core.webconsole.persona_reset_api  # noqa: F401
 import gsuid_core.webconsole.persona_store_api  # noqa: F401
 import gsuid_core.webconsole.persona_bundle_api  # noqa: F401
 from gsuid_core.ai_core.persona import (
@@ -40,6 +41,7 @@ from gsuid_core.ai_core.persona.settings import (
     persona_settings_manager,
 )
 from gsuid_core.webconsole.session_store import SessionRecord
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.utils.plugins_config.models import GsDivider
 
 from ._api_tags import PERSONA
@@ -804,13 +806,6 @@ def _parse_persona_config_update(
     takeover_conflicts: bool,
 ) -> tuple[str | None, _ParsedPersonaConfigUpdate]:
     """整单解析与前置校验：任一字段非法直接返回错误，保证无半写入或提前抢占。"""
-    from gsuid_core.ai_core.persona.config import (
-        AI_MODE_OPTIONS,
-        CURIOSITY_FOCUS_VALUES,
-        normalize_ai_modes,
-        autonomy_settings_error,
-        autonomy_settings_from_mapping,
-    )
     from gsuid_core.ai_core.persona.chat_style import (
         CHAT_STYLE_MAX,
         CHAT_STYLE_MIN,
@@ -819,6 +814,13 @@ def _parse_persona_config_update(
     )
     from gsuid_core.ai_core.persona.meme_style import MEME_FREQUENCY_MAX, MEME_FREQUENCY_MIN
     from gsuid_core.ai_core.prompt_group.store import group_exists
+    from gsuid_core.ai_core.persona.config_rules import (
+        AI_MODE_OPTIONS,
+        CURIOSITY_FOCUS_VALUES,
+        normalize_ai_modes,
+        autonomy_settings_error,
+        autonomy_settings_from_mapping,
+    )
 
     parsed = _ParsedPersonaConfigUpdate()
 
@@ -1514,7 +1516,7 @@ class PersonaJournalCompactResponse(TypedDict):
 @app.get("/api/persona/{persona_name}/journal", summary="获取指定人格的生活手账", tags=PERSONA)
 async def get_persona_journal(
     persona_name: str,
-    _: SessionRecord = Depends(require_auth),
+    _: SessionRecord = Depends(require_admin),
 ) -> PersonaJournalResponse:
     """获取指定人格的生活手账全文及解析后的多尺度分片结构。"""
     from gsuid_core.pool import to_thread
@@ -1558,7 +1560,7 @@ async def get_persona_journal_archives(
     month: str = "",
     shard_id: str = "",
     date: str = "",
-    _: SessionRecord = Depends(require_auth),
+    _: SessionRecord = Depends(require_admin),
 ) -> PersonaJournalArchivesResponse:
     """按月/分片/日期读取无损 JSONL 归档流水（含昨日流水与历史冷归档）。"""
     from gsuid_core.pool import to_thread
@@ -1601,6 +1603,8 @@ async def update_persona_journal(
     """保存生活手账 Markdown（支持单分片加锁写回或全景写回）。"""
     from gsuid_core.ai_core.journal.manager import save_journal_content_async
 
+    if is_persona_frozen(persona_name):
+        return {"status": 1, "msg": "人格正在重置或还原，暂时不能保存手账", "data": {"persona_name": persona_name}}
     await save_journal_content_async(persona_name, data.content, shard_id=data.shard_id)
     return {
         "status": 0,

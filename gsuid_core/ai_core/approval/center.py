@@ -24,9 +24,16 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
-from .halt import APPROVAL_HOLD_MARK, DEFAULT_APPROVAL_TTL, halt_line, action_failed
-from .models import AIApprovalRequest
-from .session_ctx import note_pending_session, clear_pending_session, current_caller_session_id
+from .models import (
+    APPROVAL_HOLD_MARK,
+    DEFAULT_APPROVAL_TTL,
+    AIApprovalRequest,
+    halt_line,
+    action_failed,
+    note_pending_session,
+    clear_pending_session,
+    current_caller_session_id,
+)
 
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _CODE_LEN = 6
@@ -327,7 +334,7 @@ async def submit(
         _PENDING_OPERATORS.add(operator)
     delivered = False
     if status == "pending" and code:
-        from .notify import send_confirm_dm
+        from .delivery import send_confirm_dm
 
         delivered = await send_confirm_dm(row, code)
         note_pending_session(caller)
@@ -424,7 +431,7 @@ async def _expire_one(row: AIApprovalRequest) -> bool:
     _TOOL_BODIES.pop(row.request_id, None)
     if row.confirm_code_hash:
         await _fail_linked_task(row, "超时")
-        from .notify import notify_closed
+        from .delivery import notify_closed
 
         await notify_closed(row, expired=True)
     logger.info(t("log.ai.approval_category_expired_entries_cleanup", p0=row.category, n=1))
@@ -573,7 +580,7 @@ async def resolve_row(
     if not row.confirm_code_hash:
         return text
     if not approved:
-        from .notify import notify_closed
+        from .delivery import notify_closed
 
         await notify_closed(row, expired=False)
         return text
@@ -582,7 +589,7 @@ async def resolve_row(
         return text
     if text.startswith(APPROVAL_HOLD_MARK):
         return text[len(APPROVAL_HOLD_MARK) :]
-    from .resume import reinject_approved
+    from .delivery import reinject_approved
 
     await reinject_approved(row, text)
     return text
@@ -616,7 +623,7 @@ async def _on_resolve_tool_call(row: AIApprovalRequest, approved: bool, note: st
     if not approved:
         return f"已拒绝 #{row.short_id}（{row.ref_key}）。{note}".strip()
     if body is None:
-        from .notify import _payload_str
+        from .delivery import _payload_str
 
         grant_tool_call(row.operator_user_id, row.ref_key, _payload_str(row.payload_json, "args"))
         return f"已批准 #{row.short_id}。原来的调用不在这个进程里了。用相同参数再调用一次该工具会放行。"
@@ -656,7 +663,7 @@ async def match_confirm_message(ev: Event) -> bool:
         return False
     if not _sender_may_confirm(row, str(ev.user_id)):
         return False
-    from .notify import ack_direct
+    from .delivery import ack_direct
 
     ws = ev.WS_BOT_ID or ""
     if row.status != "pending":

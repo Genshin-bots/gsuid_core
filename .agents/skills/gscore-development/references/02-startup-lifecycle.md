@@ -169,6 +169,7 @@ HTTP Agent 路由在 `app_life` 构造 app 时按总开关决定是否 `include_
 
 | 钩子 | 模块 | 优先级 | 功能 |
 |------|------|--------|------|
+| `cancel_background_tools_on_shutdown` | `ai_core/startup.py` | -10 | 先于会话落盘取消所有在途后台长耗时工具及监控协程 |
 | `flush_ai_sessions_on_shutdown` | `ai_core/startup.py` | 0 | 强制把未达兜底间隔的 AI 会话日志落盘 |
 | `_flush_user_buffer_on_shutdown` | `handler.py` | 0 | 用户写缓冲区最终刷写 |
 | `save_global_val` | `core_command/.../command_global_val.py` | 0 | 持久化 Bot 流量统计 |

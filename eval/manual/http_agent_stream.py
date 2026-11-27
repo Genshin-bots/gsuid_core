@@ -18,7 +18,7 @@ from pathlib import Path
 import httpx
 
 from gsuid_core.data_store import get_res_path
-from gsuid_core.ai_core.http_agent.keys import HttpAgentKeyStore
+from gsuid_core.ai_core.http_agent.auth import HttpAgentKeyStore
 from gsuid_core.ai_core.http_agent.protocol import SseFrame, parse_sse_chunk
 
 

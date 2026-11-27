@@ -10,10 +10,12 @@ import json
 from typing import Dict, List, Tuple, Union, Literal, Optional, Sequence
 
 from pydantic_ai.messages import (
+    ImageUrl,
     UserContent,
     ModelMessage,
     ModelRequest,
     ToolCallPart,
+    BinaryContent,
     ToolReturnPart,
     UserPromptPart,
 )
@@ -69,9 +71,11 @@ def absorb_run_image_delivered(st: RunOnceState) -> None:
     if not take_run_image_delivered():
         return
     st.image_sent_this_run = True
-    st.pending_async_delivery = False
-    if st.speech_policy == "silence_only":
-        st.speech_policy = "framework_deliver" if st.fw_msg else "free"
+    # 发图仅清偿出图委派；同轮仍有后台工具在跑时保持在途状态
+    if not st.pending_background_tool:
+        st.pending_async_delivery = False
+        if st.speech_policy == "silence_only":
+            st.speech_policy = "framework_deliver" if st.fw_msg else "free"
 
 
 def _tool_return_is_effectual_write(name: str, content: str, *, failed: bool) -> bool:
@@ -197,13 +201,14 @@ def _ensure_session_anchor_on_first_user(
     user_id: Optional[str] = None,
     marker: str = "",
     is_framework: bool = False,
+    force_reanchor: bool = False,
 ) -> Tuple[UserTurnText, UserTurnText, InnerOsInjectWhere, float]:
     """会话首轮锚点（生活手账 + INNER_OS），只往当前 request 追加，持久后进入 history[0]。"""
     if is_framework:
         return current, lean, "skipped", 0.0
 
     first = _first_real_user_prompt_part(history)
-    if first is not None:
+    if first is not None and not force_reanchor:
         return current, lean, "already", 0.0
 
     if _user_content_contains(current, _SESSION_ANCHOR_NEEDLE) or (
@@ -460,27 +465,24 @@ def _pool_overlaps_capability_agent(tool_names_in_pool: set[str]) -> str:
 
 
 def _capability_exclusive_tool_names() -> set[str]:
-    """能力代理**专属**工具名（不含主人格保底/日常基建）。
+    """能力代理**专属**工具名（不含主人格保底/日常基建与显式共享工具）。
 
-    主人格交互会话应剥离专业域工具，只留 create_subagent 委派入口——否则模型永远
-    走「直接调专业工具」捷径。共享集合 = task_basics + 保底分类(self/buildin/meta)
-    + 与主人格日常对话重叠的 common 基建（提醒管理/审批/表情等）——
-    能力代理可复用这些工具，但不得把它们从主人格池里「独占剥离」。
-    节点域下非 shared 工具全部 exclusive（含未写入 tool_names 的同域名）。
+    仅剥离节点显式声明的非共享 ``tool_names``，以及 ``tool_packs`` 中整族声明的域工具；
+    不再按单工具的 ``capability_domain`` 连坐封杀同域未列出的只读工具。
     """
     from gsuid_core.ai_core.register import (
-        find_tool_base,
         get_registered_tools,
         get_tools_by_capability_domain,
     )
     from gsuid_core.ai_core.agent_node import (
         DYNAMIC_PACK,
         TASK_BASICS_PACK,
+        INTERNAL_DATA_PACK,
         list_nodes,
         resolve_pack_tool_names,
     )
 
-    shared: set[str] = set(resolve_pack_tool_names([TASK_BASICS_PACK]))
+    shared: set[str] = set(resolve_pack_tool_names([TASK_BASICS_PACK, INTERNAL_DATA_PACK]))
     registered = get_registered_tools()
     # 保底分类永不独占剥离；common 只保留日常基建（有域白名单 / 无域=通用基建）
     for cat in ("self", "buildin", "meta"):
@@ -493,30 +495,19 @@ def _capability_exclusive_tool_names() -> set[str]:
             if not _dom or _dom in _daily_common_domains:
                 shared.add(_name)
 
+    skip_packs = frozenset({DYNAMIC_PACK, TASK_BASICS_PACK, INTERNAL_DATA_PACK})
     exclusive: set[str] = set()
     for node in list_nodes():
         if node.source in ("persona", "mcp") or node.node_id == "capability_evaluator":
             continue
+        node_shared = shared | set(node.shared_tool_names)
         owned = set(resolve_pack_tool_names(node.tool_packs) + list(node.tool_names))
-        exclusive |= owned - shared
-        domains: set[str] = set()
+        exclusive |= owned - node_shared
         for pack in node.tool_packs:
-            if pack in (DYNAMIC_PACK, TASK_BASICS_PACK):
+            if pack in skip_packs or pack in _daily_common_domains:
                 continue
-            domain_tools = get_tools_by_capability_domain(pack)
-            if domain_tools:
-                domains.add(pack)
-        for name in owned:
-            tb = find_tool_base(name)
-            if tb is not None:
-                dom = tb.capability_domain
-                if dom:
-                    domains.add(dom)
-        for dom in domains:
-            if dom in _daily_common_domains:
-                continue
-            for tb in get_tools_by_capability_domain(dom):
-                if tb.name not in shared:
+            for tb in get_tools_by_capability_domain(pack):
+                if tb.name not in node_shared:
                     exclusive.add(tb.name)
     return exclusive
 
@@ -666,6 +657,61 @@ def wall_clock_budget_action(
 
 
 _STALE_TOOL_FOLD_MARK = "…[前轮长输出已折叠"
+_STALE_IMAGE_PRUNE_MARK = "[前轮图片已省略]"
+
+
+def _is_inline_image_item(item: object) -> bool:
+    if isinstance(item, ImageUrl):
+        return True
+    return isinstance(item, BinaryContent) and str(item.media_type or "").startswith("image/")
+
+
+def prune_stale_capability_images(
+    messages: Sequence[ModelMessage],
+    *,
+    max_groups: int = 3,
+    keep_first: int = 1,
+    keep_recent: int = 1,
+) -> int:
+    """能力代理视觉长跑护栏：历史内联图按注入分组超 ``max_groups`` 组时成批剪枝。
+
+    同一 ``UserPromptPart`` 的图片属同一组（read_image 动图合帧/大图切片一次注入多张），
+    整组保留或整组剪除；保最初 ``keep_first`` 组（初始任务参考图）与最近 ``keep_recent``
+    组，中间组图片移除并在首图位置留单条省略标记。与 ``fold_stale_capability_tool_returns``
+    同采用高水位成批剪枝，避免每轮改写前缀破坏 KV 缓存。
+    """
+    keep_first = max(0, keep_first)
+    keep_recent = max(0, keep_recent)
+    max_groups = max(keep_first + keep_recent, max_groups)
+    image_parts: list[UserPromptPart] = []
+    for msg in messages:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if not isinstance(part, UserPromptPart) or isinstance(part.content, str):
+                continue
+            if any(_is_inline_image_item(item) for item in part.content):
+                image_parts.append(part)
+    if len(image_parts) <= max_groups:
+        return 0
+    tail_parts = image_parts[-keep_recent:] if keep_recent > 0 else []
+    protected_ids = {id(p) for p in image_parts[:keep_first] + tail_parts}
+    pruned = 0
+    for part in image_parts:
+        if id(part) in protected_ids or isinstance(part.content, str):
+            continue
+        new_items: list[UserContent] = []
+        marked = False
+        for item in part.content:
+            if _is_inline_image_item(item):
+                if not marked:
+                    new_items.append(_STALE_IMAGE_PRUNE_MARK)
+                    marked = True
+                pruned += 1
+            else:
+                new_items.append(item)
+        part.content = new_items
+    return pruned
 
 
 def fold_stale_capability_tool_returns(
@@ -732,6 +778,7 @@ def add_response_usage(
     response_model: str | None,
 ) -> None:
     """按单次模型响应累加。超轮数没有 result.usage，会话日志靠这份合计。"""
+    st.usage_requests += 1
     st.usage_input_tokens += input_tokens
     st.usage_output_tokens += output_tokens
     st.usage_cache_read_tokens += cache_read_tokens

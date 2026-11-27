@@ -32,11 +32,11 @@ TurnRunner = Callable[[InboxTurn, "_Bot"], Awaitable["TurnOutcome"]]
 # runner 执行失败后退回 pending 的最多重试次数；超限记 expired
 _MAX_RETRIES = 1
 # 私聊 / 群聊 hard 唤醒、未说完起手式与软唤醒静默窗（秒）
-_PRIVATE_HARD_SETTLE_S = 0.8
-_GROUP_HARD_SETTLE_S = 1.5
-_INCOMPLETE_OPENER_SETTLE_S = 4.0
-_SOFT_SETTLE_S = 5.0
-_INBOX_SETTLE_MAX_S = 5.0
+_PRIVATE_HARD_SETTLE_S = 4.0
+_GROUP_HARD_SETTLE_S = 4.0
+_INCOMPLETE_OPENER_SETTLE_S = 8.0
+_SOFT_SETTLE_S = 8.0
+_INBOX_SETTLE_MAX_S = 12.0
 _READ_SEQ_CAP = 1024
 _EXACT_DEDUP_TTL_S = 90.0
 _EXACT_DEDUP_PER_SESSION_CAP = 16
@@ -134,6 +134,31 @@ class InboxScheduler:
         self._last_read_seq: OrderedDict[tuple[str, str], int] = OrderedDict()
         self._recent_exact: OrderedDict[tuple[str, str], OrderedDict[_ExactDedupKey, _SettledExact]] = OrderedDict()
 
+    def has_active_session(self, session_id: str) -> bool:
+        """指定会话是否有待收敛或正在执行的收件箱轮次。"""
+        return any(
+            sid == session_id and (inbox.phase != "idle" or bool(inbox.items))
+            for (sid, _persona), inbox in self._inboxes.items()
+        )
+
+    def is_awaiting_speaker(self, session_id: str, persona_name: str, user_id: str) -> bool:
+        """该说话人是否有尚未开跑（settling 或排队待下一轮）的非回执唤醒项。"""
+        key = (session_id, persona_name)
+        if not user_id or key not in self._inboxes:
+            return False
+        inbox = self._inboxes[key]
+        if inbox.phase == "idle":
+            return False
+        now = self._clock()
+        return any(
+            e.item.state == "pending"
+            and e.item.user_id == user_id
+            and e.receipt is None
+            and e.item.seq not in inbox.in_flight_seqs
+            and (now - e.item.created_at) <= WAKE_TTL_SECONDS[e.item.kind]
+            for e in inbox.items.values()
+        )
+
     def submit(self, ws: _Bot, entry: PendingEntry) -> None:
         key = (entry.event.session_id, entry.persona_name)
         self._ws[key] = ws
@@ -165,8 +190,9 @@ class InboxScheduler:
             for s, e in inbox.items.items()
         )
         if entry.item.user_id == inbox.last_speaker:
+            quiet_s = _PRIVATE_HARD_SETTLE_S if entry.event.user_type == "direct" else _GROUP_HARD_SETTLE_S
             inbox.settle_deadline = min(
-                max(inbox.settle_deadline, now) + SAME_SPEAKER_EXTEND_S,
+                max(inbox.settle_deadline + SAME_SPEAKER_EXTEND_S, now + quiet_s),
                 inbox.settle_started + self._settle_max_s(),
             )
         elif entry.item.strength == "hard" and not had_hard:
@@ -250,10 +276,18 @@ class InboxScheduler:
         return _SOFT_SETTLE_S
 
     def _resume_settle_s(self, inbox: SessionInbox) -> float:
-        for entry in inbox.items.values():
-            if entry.item.state == "pending" and entry.item.strength == "hard":
-                return self._initial_settle_s(entry)
-        return _SOFT_SETTLE_S
+        pending = [e for e in inbox.items.values() if e.item.state == "pending"]
+        if not pending:
+            return _SOFT_SETTLE_S
+        first = min(pending, key=lambda e: (e.item.strength != "hard", e.item.seq))
+        if first.item.strength != "hard":
+            return _SOFT_SETTLE_S
+        if first.event.user_type == "direct":
+            return _PRIVATE_HARD_SETTLE_S
+        same_uid = [e for e in pending if e.item.user_id == first.item.user_id and e.receipt is None]
+        if same_uid and all(_is_incomplete_opener(e) for e in same_uid):
+            return min(_INCOMPLETE_OPENER_SETTLE_S, self._settle_max_s())
+        return _GROUP_HARD_SETTLE_S
 
     def _drop(self, key: tuple[str, str]) -> None:
         """会话清空后的三张表一起收，_ws 里的 _Bot 引用不留着常驻。"""
@@ -272,6 +306,7 @@ class InboxScheduler:
             inbox.read_seq = 0
             inbox.items.clear()
             inbox.dirty = False
+            inbox.in_flight_seqs = frozenset()
             if inbox.phase != "running":
                 task = self._settle_tasks.pop(key, None)
                 if task is not None and not task.done():
@@ -305,8 +340,10 @@ class InboxScheduler:
             return
         inbox.phase = "running"
         inbox.dirty = False
+        inbox.in_flight_seqs = frozenset(e.item.seq for e in turn.entries)
         if key not in self._ws:
             inbox.phase = "idle"
+            inbox.in_flight_seqs = frozenset()
             return
         ws = self._ws[key]
         coro = self._run_turn(key, turn, ws)
@@ -336,9 +373,9 @@ class InboxScheduler:
         if not pending:
             return None
         ordered = sorted(pending, key=lambda e: (e.item.strength != "hard", e.item.seq))
-        # 单轮只合同一说话人的连发；其他说话人的 pending 留待下一轮独立处理
+        # 单轮只合同一说话人的连发（按时间线 seq 升序）；其他说话人留待下一轮
         target_uid = ordered[0].item.user_id
-        same_speaker = [e for e in ordered if e.item.user_id == target_uid]
+        same_speaker = sorted((e for e in pending if e.item.user_id == target_uid), key=lambda e: e.item.seq)
         kept: list[PendingEntry] = []
         seen_batch: set[_ExactDedupKey] = set()
         for entry in same_speaker:
@@ -373,6 +410,7 @@ class InboxScheduler:
         if key not in self._inboxes:
             return
         inbox = self._inboxes[key]
+        inbox.in_flight_seqs = frozenset()
         batch = {e.item.seq: e for e in turn.entries}
         if outcome.error:
             for seq in batch:

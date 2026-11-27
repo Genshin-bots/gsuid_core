@@ -74,6 +74,7 @@ class RunOnceHost(Protocol):
     _unmet_tool_promise: bool
     _last_drift_push_count: int
     _anchor_journal_ts: float
+    _session_anchor_due: bool
     _recent_tool_families: dict[str, int]
     _recent_user_texts: list[str]
     _last_assembled_domains: set[str]

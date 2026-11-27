@@ -3,6 +3,7 @@
   "log.ai.agentnode_node_id_empty_ignore": "[AgentNode] node_id is empty, ignored",
   "log.ai.agentnode_persona_projection_refreshed": "[AgentNode] persona projection refreshed: {persona_name}",
   "log.ai.agentnode_registered_node_source": "[AgentNode] Registered node: {p0} ({p1}, source={p2})",
+  "log.ai.agentnode_shared_tool_not_mounted": "[AgentNode] Node {p0} has unmounted entries in shared_tool_names (possible typo): {p1}",
   "log.ai.agentnode_semantic_cache_updated": "[AgentNode] semantic routing cache updated: {p0}/{p1} nodes re-embedded",
   "log.ai.agentnode_semantic_sync_fail": "[AgentNode] semantic routing cache sync failed (fallback to keyword routing): {e}",
   "log.ai.ai_core_background_initialization_start": "[AI Core] Starting background AI core initialization...",
@@ -496,7 +497,7 @@
   "log.ai.proactiveemitter_source_target_key_send": "[ProactiveEmitter] Sent source={source} target={target_key} reason={trigger_reason}",
   "log.ai.providerrouter_config_full_name_fail": "[ProviderRouter] Config {full_name} marked as unavailable, cooldown {cooldown:.0f}s",
   "log.ai.providerrouter_task_level_chosen": "[ProviderRouter] {task_level} 级请求路由至备用配置 {chosen} (主配置 {primary} 并发满/冷却中)",
-  "log.ai.providerrouter_wait_slot_timeout_fail": "[ProviderRouter] Wait slot timeout, forced to use primary config {primary}",
+  "log.ai.providerrouter_wait_slot_timeout_fail": "[ProviderRouter] Wait slot timeout, forcing config {primary}",
   "log.ai.provision_downloading_url": "[Provision] Downloading {p0} v{p1} ← {url}",
   "log.ai.provision_installation_bin_path": "[Provision] {p0} v{p1} installation completed → {bin_path}",
   "log.ai.rag_shell_skip": "[AI Core] AI is off; the knowledge base import is skipped",
@@ -690,5 +691,14 @@
   "log.ai.migrations_isolation_marker_read_failed": "[Migrations] Failed to read cross-group isolation watermark marker: {e} (treating as unmigrated)",
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] Search: {query}, returned {p0} results",
   "log.ai.kanban_node_hard_timeout": "[Kanban] Subtask node hit hard timeout task={task} ({mins}min)",
-  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] Stale interactive group task archived silently without waking chat task={task} elapsed={mins}min"
+  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] Stale interactive group task archived silently without waking chat task={task} elapsed={mins}min",
+  "log.ai.artifact_index_drain_fail": "[Artifact] Failed to drain in-flight artifact index tasks before shutdown: {e}",
+  "log.ai.persona_reset_start": "[PersonaReset] Starting memory reset for persona {persona} (items: {items})",
+  "log.ai.persona_reset_done": "[PersonaReset] Memory reset completed for persona {persona} (counts: {counts})",
+  "log.ai.persona_reset_fail": "[PersonaReset] Memory reset failed for persona {persona}: {e}",
+  "log.ai.persona_reset_tps_fail": "[PersonaReset] Failed to benchmark embedding throughput, skipping ETA: {e}",
+  "log.ai.persona_restore_start": "[PersonaRestore] Starting backup restore for persona {persona} from {file} (items: {items})",
+  "log.ai.persona_restore_done": "[PersonaRestore] Backup restore completed for persona {persona} (counts: {counts})",
+  "log.ai.persona_restore_fail": "[PersonaRestore] Backup restore failed for persona {persona}: {e}",
+  "log.ai.persona_restore_vectors_fail": "[PersonaRestore] Vector rebuild interrupted for persona {persona} (cursor saved for resume): {e}"
 }

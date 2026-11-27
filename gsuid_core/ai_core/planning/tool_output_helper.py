@@ -16,8 +16,8 @@ from gsuid_core.models import Event
 from gsuid_core.ai_core.memory.scope import scope_key_for_conversation
 from gsuid_core.ai_core.planning.models import AIAgentTask
 from gsuid_core.ai_core.planning.workspace import ARTIFACT_ROOT
-from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
-from gsuid_core.ai_core.planning.tool_output_protocol import (
+from gsuid_core.ai_core.planning.tool_output_store import (
+    AIToolOutputRecord,
     PersistedHandleCard,
     extract_inline_head,
     extract_info_summary,
@@ -302,8 +302,19 @@ async def persist_subagent_result(
         )
         from gsuid_core.ai_core.agent_node.registry import get_node
 
-        is_private = (task.scope_key or "").startswith("user_global:") and not task.group_id
-        if not is_private:
+        raw_scope = (task.scope_key or "").strip()
+        gid = str(task.group_id).strip() if task.group_id else ""
+        req_uid = (task.owner_user_id or "").strip()
+        if not req_uid and raw_scope.startswith("user_global:"):
+            req_uid = raw_scope[len("user_global:") :].strip()
+        is_private = (not gid) and (raw_scope.startswith("user_global:") or bool(req_uid))
+        owner_persona = resolve_persona_for_group_or_session(
+            persona_name=task.persona_name,
+            session_id=task.session_id or "",
+            group_id=gid,
+        )
+        # 私聊任务必须同时有明确 owner 与人格，绝不回退 self.md 或广播所有人格
+        if not (is_private and (not req_uid or owner_persona is None)):
             node = get_node(profile)
             raw_tag = (node.display_name if node else profile) or "后台任务"
             tag = clean_journal_tag(raw_tag, max_chars=18)
@@ -314,12 +325,6 @@ async def persist_subagent_result(
             )
             if clean_summary:
                 now_dt = datetime.now()
-                gid = str(task.group_id or "") if task.group_id else ""
-                owner_persona = resolve_persona_for_group_or_session(
-                    persona_name=task.persona_name,
-                    session_id=task.session_id or "",
-                    group_id=gid,
-                )
                 entry = JournalEntry(
                     timestamp=now_dt.timestamp(),
                     date_str=now_dt.strftime("%Y-%m-%d"),
@@ -329,13 +334,13 @@ async def persist_subagent_result(
                     handle_id=card.id,
                     group_id=gid,
                     is_silent_check=silent_flag,
-                    requested_by=task.owner_user_id or "",
+                    requested_by=req_uid,
                 )
                 asyncio.create_task(
                     record_journal_entry(
                         entry,
                         target_personas=[owner_persona] if owner_persona else None,
-                        fanout_all_active=(owner_persona is None and not bool(gid)),
+                        fanout_all_active=(not is_private and owner_persona is None and not bool(gid)),
                     )
                 )
     return card
@@ -535,7 +540,7 @@ async def _index_chunks_safe(
     retries: int = 2,
 ) -> None:
     from gsuid_core.ai_core.rag.chunking import split_text
-    from gsuid_core.ai_core.planning.tool_output_index import index_tool_output_chunks
+    from gsuid_core.ai_core.planning.tool_output_store import index_tool_output_chunks
 
     chunks = split_text(content, max_chars=400, overlap=60)
     payload = {

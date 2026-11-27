@@ -10,6 +10,7 @@
 - openai_files.py: OpenAI 兼容 file 块（LiteLLM 中转视频：inline base64 / /v1/files）
 - document.py: 文档内容提取管道（PDF/Word/Excel → Markdown）
 - payload.py: 图片/视频媒体载荷构造与物化
+- inbound_prepare.py: 入站用户消息的视频/图片适配预处理
 """
 
 from __future__ import annotations

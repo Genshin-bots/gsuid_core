@@ -13,10 +13,7 @@ from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.journal import storage
 from gsuid_core.ai_core.journal.dream import ArchiveRecord, read_journal_archive_sync
-from gsuid_core.ai_core.persona.config import (
-    is_persona_enabled,
-    persona_config_manager,
-)
+from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.journal.storage import (
     _CACHE_LOCK,
     _STATE_LOCK,
@@ -25,6 +22,7 @@ from gsuid_core.ai_core.journal.storage import (
     _RECENT_ENTRY_TS,
     _SHARD_UPDATE_TS,
     SILENT_SCAN_WINDOW,
+    _TRAILING_HANDLE_RE,
     DELTA_LINE_MAX_CHARS,
     _ARCHIVE_MONTH_STEM_RE,
     ANCHOR_TOTAL_MAX_CHARS,
@@ -69,6 +67,8 @@ from gsuid_core.ai_core.journal.sanitizer import (
     is_rejected_journal_body,
     sanitize_journal_summary,
 )
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
+from gsuid_core.ai_core.persona.config_rules import is_persona_enabled
 
 
 def get_journal_path(persona_name: str, group_id: str = "") -> Path:
@@ -272,6 +272,7 @@ async def record_journal_entry(
     else:
         targets = ["default"]
 
+    targets = [name for name in targets if not is_persona_frozen(name)]
     if not targets:
         return
     if entry.group_id and entry.group_id.strip():
@@ -767,6 +768,56 @@ def read_life_journal_view(
     if not sections:
         return "目前生活手账里还没有新的记录。"
     return "\n\n".join(sections)
+
+
+def read_shard_brief(
+    persona_name: str,
+    *,
+    group_id: str = "",
+    user_id: str = "",
+    max_chars: int = 80,
+    include_persistent: bool = False,
+) -> str:
+    """读取单个群或私聊分片的精简摘要（仅供确定发送目标后的发声轮隔离注入）。"""
+    gid = group_id.strip()
+    uid = user_id.strip()
+    if gid:
+        shard_id = gid
+    elif uid:
+        shard_id = _user_shard_id(uid)
+    else:
+        return ""
+    doc = _load_shard_sync(_safe_token(persona_name), shard_id, create_if_missing=False)
+    if doc is None:
+        return ""
+    buckets: List[List[str]] = [doc.yesterday, doc.monthly]
+    if include_persistent:
+        buckets.insert(0, doc.persistent)
+    cap_items = 4 if include_persistent else 2
+    items: List[str] = []
+    for bucket in buckets:
+        for raw in bucket:
+            text = raw.lstrip("-*• ").strip()
+            if not text or _is_placeholder_bullet(text):
+                continue
+            text = _TRAILING_HANDLE_RE.sub("", text).strip()
+            if text and text not in items:
+                items.append(text)
+            if len(items) >= cap_items:
+                break
+        if len(items) >= cap_items:
+            break
+    # 当日新建分片尚未做梦时，降级摘取最近非静默流水，避免首日底片/发声盲区
+    if not items and doc.timeline:
+        for ln in reversed(_non_silent_lines(doc.timeline)[-2:]):
+            parsed = parse_timeline_line(ln)
+            body = parsed.text.strip() if parsed is not None else ln.lstrip("-*• ").strip()
+            body = _TRAILING_HANDLE_RE.sub("", body).strip()
+            if body and body not in items:
+                items.append(body)
+    if not items:
+        return ""
+    return truncate_at_boundary("；".join(items), max_chars=max_chars)
 
 
 def get_journal_content(persona_name: str) -> str:

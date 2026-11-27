@@ -29,11 +29,34 @@ GET /api/plugins/list
                     "confirm_message": { "zh-CN": "...", "en-US": "...", "ja-JP": "..." },
                     "icon": "layout-dashboard"
                 }
-            ]
+            ],
+            "is_git": true,
+            "source_kind": "official",
+            "upstream_host": "github.com",
+            "upstream_url": "https://github.com/Genshin-bots/ZZZeroUID",
+            "layout": "nested"
         }
     ]
 }
 ```
+
+> **新增元信息字段**（`GET /api/plugins/list` 与 `GET /api/plugins/{plugin_name}` 均提供，向后兼容）：
+> - `is_git`：是否为具备 `origin` 远端的 Git 插件；
+> - `source_kind`：`official` / `fork` / `third_party` / `git_local_only` / `local`；
+> - `upstream_host` / `upstream_url`：规范化上游域名与仓库地址；
+> - `layout`：`nested` / `full` / `package` / `single` / `unknown`。
+
+### 3.1.1 获取磁盘全量本地插件元信息
+```
+GET /api/plugins/local?fresh=false
+```
+返回 `plugins/` 目录下全部用户插件（含未加载、单下划线禁用与加载失败插件及 `last_error`），用于本地插件管理与排障。
+
+### 3.1.2 手动刷新本地插件元信息中心（管理员）
+```
+POST /api/plugins/refresh
+```
+触发 single-flight 全量磁盘与 commit 重扫，返回 `{ total, git_count, local_count, disabled_count, failed_count }`。
 
 ---
 

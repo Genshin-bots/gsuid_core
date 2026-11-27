@@ -68,8 +68,9 @@ async def _resolve_and_deliver_leaked_handles(
     extra_metadata: Optional[Mapping[str, object]] = None,
     ev: Event | None = None,
 ) -> str:
-    """处理泄漏进正文的资源句柄：尽量把短指路对应的真实资源补发出去并抹掉句柄。"""
-    if not any(h in text for h in _RESOURCE_HANDLE_HINTS):
+    """处理泄漏进正文的内部句柄：补发未发送过的真实图片并清净剥离全部句柄。"""
+    lower = text.lower()
+    if not any(h in lower for h in _RESOURCE_HANDLE_HINTS):
         return text
 
     handles: list[str] = []
@@ -81,11 +82,11 @@ async def _resolve_and_deliver_leaked_handles(
         return text
 
     stripped = re.sub(r"[ \t]{2,}", " ", _strip_resource_handles(text)).strip()
-
-    # 正文本身已够长（≥120 字）→ 模型已把内容讲清楚，只是顺带提了句柄 → 不重复交付
-    if bot is None or len(stripped) >= 120:
+    if bot is None:
         return stripped
 
+    # 120 字阈值只约束内联文本 artifact 展开；未发出的真实光栅图片句柄始终补发（带去重）。
+    allow_inline_text = len(stripped) < 120
     inline_texts: list[str] = []
     for h in handles:
         try:
@@ -94,11 +95,16 @@ async def _resolve_and_deliver_leaked_handles(
                     lookup_res_owner,
                     speaker_may_take_res,
                     release_image_delivery,
+                    has_run_delivered_image,
                     note_run_image_delivered,
                     try_claim_image_delivery,
                 )
                 from gsuid_core.ai_core.planning.models import AIAgentArtifact
-                from gsuid_core.ai_core.planning.kanban_executor import claim_inline_delivery
+                from gsuid_core.ai_core.planning.kanban_executor import (
+                    mark_root_delivered,
+                    claim_inline_delivery,
+                )
+                from gsuid_core.ai_core.planning.tool_output_store import is_raster_image_mime
 
                 art = await AIAgentArtifact.get_by_id(h)
                 if art is None:
@@ -117,7 +123,9 @@ async def _resolve_and_deliver_leaked_handles(
                         )
                     )
                     continue
-                if art.payload_path and (art.mime or "").startswith("image/"):
+                if art.payload_path and is_raster_image_mime(art.mime or ""):
+                    if has_run_delivered_image(h):
+                        continue
                     # 先确认是这张图再占位，发送失败需释放避免 7 天内无法重发
                     image_data = await asyncio.to_thread(_read_image_artifact_bytes, art.payload_path)
                     if image_data is None:
@@ -135,17 +143,20 @@ async def _resolve_and_deliver_leaked_handles(
                         continue
                     if looked.root_task_id:
                         claim_inline_delivery(looked.root_task_id)
-                    note_run_image_delivered()
+                        mark_root_delivered(looked.root_task_id)
+                    note_run_image_delivered(h)
                     logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
-                elif art.payload_inline and art.payload_inline.strip():
+                elif allow_inline_text and art.payload_inline and art.payload_inline.strip():
                     inline_texts.append(art.payload_inline.strip())
             elif h.startswith("img_"):
-                from gsuid_core.ai_core.outbound import note_run_image_delivered
+                from gsuid_core.ai_core.outbound import has_run_delivered_image, note_run_image_delivered
 
+                if has_run_delivered_image(h):
+                    continue
                 await bot.send(MessageSegment.image(await RM.get(h)), extra_metadata=extra_metadata)
-                note_run_image_delivered()
+                note_run_image_delivered(h)
                 logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
-            # 非图片落盘文件与 aud_/vid_ 仅抹句柄不补发
+            # 非图片落盘文件与 to_/sa_/dlg_/note:/kb_*/journal:/aud_/vid_ 仅剥离不补发
         except Exception as e:
             logger.debug(i18n_t("log.ai.send_leaked_handle_could_not", h=h, e=e))
 
@@ -503,9 +514,10 @@ async def _send_registered_image(
         try_claim_image_delivery,
     )
     from gsuid_core.ai_core.planning.models import AIAgentArtifact
+    from gsuid_core.ai_core.planning.tool_output_store import is_raster_image_mime
 
     art = await AIAgentArtifact.get_by_id(handle)
-    if art is None or not art.payload_path or not art.mime.startswith("image/"):
+    if art is None or not art.payload_path or not is_raster_image_mime(art.mime or ""):
         return False
     image_data = await asyncio.to_thread(_read_image_artifact_bytes, art.payload_path)
     if image_data is None:
@@ -521,7 +533,7 @@ async def _send_registered_image(
         if claim.occupied:
             await release_image_delivery(ev, handle)
         return False
-    note_run_image_delivered()
+    note_run_image_delivered(handle)
     logger.info(i18n_t("log.ai.send_chat_result_render_agent_image", p0=len(image_data)))
     return True
 

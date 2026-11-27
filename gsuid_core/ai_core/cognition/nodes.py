@@ -24,7 +24,8 @@ from sqlalchemy.sql.elements import ColumnElement
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.cognition.types import CogKind
-from gsuid_core.utils.database.base_models import with_session, with_read_session
+from gsuid_core.utils.database.base_models import escape_like, with_session, with_read_session
+from gsuid_core.ai_core.persona_reset.guard import is_scope_frozen
 
 # 属主可见类型：严格按 owner_user_id 行级过滤，防止群内跨用户越权查看任务产物。
 OWNER_REQUIRED_KINDS = frozenset({CogKind.TOOL_OUTPUT.value, CogKind.ARTIFACT.value, CogKind.RECORD.value})
@@ -333,6 +334,296 @@ class AICogNode(SQLModel, table=True):
 
         return result.rowcount if isinstance(result, CursorResult) else 0
 
+    @classmethod
+    @with_session
+    async def purge_scope_keys(cls, session: AsyncSession, scope_keys: List[str]) -> int:
+        """清掉这些 scope 下的节点，连带涉及它们的边与挂件（人格重置用）。"""
+        if not scope_keys:
+            return 0
+        rows = (await session.execute(select(col(cls.id)).where(col(cls.scope_key).in_(scope_keys)))).scalars().all()
+        node_ids = [r for r in rows if isinstance(r, int)]
+        for start in range(0, len(node_ids), 400):
+            chunk = node_ids[start : start + 400]
+            await session.execute(
+                delete(AICogEdge).where(or_(col(AICogEdge.src_id).in_(chunk), col(AICogEdge.dst_id).in_(chunk)))
+            )
+            await session.execute(delete(AICogAttachment).where(col(AICogAttachment.node_id).in_(chunk)))
+            await session.execute(delete(cls).where(col(cls.id).in_(chunk)))
+        await session.commit()
+        return len(node_ids)
+
+    @classmethod
+    @with_read_session
+    async def list_scope_keys_by_prefixes(cls, session: AsyncSession, prefixes: List[str]) -> List[str]:
+        found: set[str] = set()
+        for prefix in prefixes:
+            escaped = escape_like(prefix)
+            stmt = select(col(cls.scope_key)).where(col(cls.scope_key).like(f"{escaped}%", escape="\\")).distinct()
+            for value in (await session.execute(stmt)).scalars().all():
+                if isinstance(value, str) and value:
+                    found.add(value)
+        return sorted(found)
+
+    @classmethod
+    @with_read_session
+    async def count_by_scope_keys(cls, session: AsyncSession, scope_keys: List[str]) -> int:
+        if not scope_keys:
+            return 0
+        total = 0
+        for start in range(0, len(scope_keys), 200):
+            chunk = scope_keys[start : start + 200]
+            stmt = select(func.count()).select_from(cls).where(col(cls.scope_key).in_(chunk))
+            raw = (await session.execute(stmt)).scalar()
+            total += raw if isinstance(raw, int) else 0
+        return total
+
+    @classmethod
+    @with_read_session
+    async def export_by_scope_keys(
+        cls,
+        session: AsyncSession,
+        scope_keys: List[str],
+    ) -> Tuple[List["CogNodeExportRow"], List["CogEdgeExportRow"], List["CogAttExportRow"]]:
+        """按 scope 导出认知节点及其关联边/挂件；边和挂件改为自然键 ``(kind, ref)`` 供还原重映射 ID。"""
+        if not scope_keys:
+            return [], [], []
+        nodes: List[AICogNode] = []
+        for start in range(0, len(scope_keys), 200):
+            chunk = scope_keys[start : start + 200]
+            rows = (await session.execute(select(cls).where(col(cls.scope_key).in_(chunk)))).scalars().all()
+            nodes.extend(rows)
+        if not nodes:
+            return [], [], []
+        node_by_id: dict[int, Tuple[str, str]] = {n.id: (n.kind, n.ref) for n in nodes if isinstance(n.id, int)}
+        node_ids = list(node_by_id.keys())
+        edges_raw: List[AICogEdge] = []
+        atts_raw: List[AICogAttachment] = []
+        for start in range(0, len(node_ids), 400):
+            chunk = node_ids[start : start + 400]
+            e_stmt = select(AICogEdge).where(or_(col(AICogEdge.src_id).in_(chunk), col(AICogEdge.dst_id).in_(chunk)))
+            edges_raw.extend((await session.execute(e_stmt)).scalars().all())
+            a_stmt = select(AICogAttachment).where(col(AICogAttachment.node_id).in_(chunk))
+            atts_raw.extend((await session.execute(a_stmt)).scalars().all())
+        # 边另一端可能是公共枢纽（scope_key=""），需要补查其 (kind, ref)。
+        extra_ids = {eid for e in edges_raw for eid in (e.src_id, e.dst_id) if eid not in node_by_id}
+        if extra_ids:
+            extra_list = sorted(extra_ids)
+            for start in range(0, len(extra_list), 400):
+                chunk = extra_list[start : start + 400]
+                for extra in (await session.execute(select(cls).where(col(cls.id).in_(chunk)))).scalars().all():
+                    if isinstance(extra.id, int):
+                        node_by_id[extra.id] = (extra.kind, extra.ref)
+        out_nodes: List[CogNodeExportRow] = [
+            {
+                "kind": n.kind,
+                "ref": n.ref,
+                "scope_key": n.scope_key,
+                "owner_user_id": n.owner_user_id,
+                "title": n.title,
+                "summary": n.summary,
+                "as_of": n.as_of,
+                "source": n.source,
+                "handle": n.handle,
+                "canon": n.canon,
+                "decay": n.decay,
+                "created_at": n.created_at,
+                "updated_at": n.updated_at,
+            }
+            for n in nodes
+        ]
+        seen_edges: set[Tuple[str, str, str, str, str]] = set()
+        out_edges: List[CogEdgeExportRow] = []
+        for e in edges_raw:
+            if e.src_id not in node_by_id or e.dst_id not in node_by_id:
+                continue
+            sk, sr = node_by_id[e.src_id]
+            dk, dr = node_by_id[e.dst_id]
+            key = (sk, sr, dk, dr, e.edge_kind)
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            out_edges.append(
+                {
+                    "src_kind": sk,
+                    "src_ref": sr,
+                    "dst_kind": dk,
+                    "dst_ref": dr,
+                    "edge_kind": e.edge_kind,
+                    "confidence": e.confidence,
+                    "created_at": e.created_at,
+                }
+            )
+        out_atts: List[CogAttExportRow] = []
+        for a in atts_raw:
+            if a.node_id not in node_by_id:
+                continue
+            nk, nr = node_by_id[a.node_id]
+            out_atts.append(
+                {
+                    "node_kind": nk,
+                    "node_ref": nr,
+                    "slot": a.slot,
+                    "title": a.title,
+                    "summary": a.summary,
+                    "as_of": a.as_of,
+                    "source": a.source,
+                    "writable": a.writable,
+                    "ref": a.ref,
+                    "handle": a.handle,
+                    "created_at": a.created_at,
+                    "updated_at": a.updated_at,
+                }
+            )
+        return out_nodes, out_edges, out_atts
+
+    @classmethod
+    async def restore_exported(
+        cls,
+        nodes: List["CogNodeExportRow"],
+        edges: List["CogEdgeExportRow"],
+        attachments: List["CogAttExportRow"],
+    ) -> int:
+        """分块幂等写回认知节点、边与挂件，避免大备份一次长占 SQLite 写闸门。"""
+        restored = 0
+        for start in range(0, len(nodes), 200):
+            restored += await cls._restore_nodes_chunk(nodes[start : start + 200])
+        for start in range(0, len(edges), 200):
+            await cls._restore_edges_chunk(edges[start : start + 200])
+        for start in range(0, len(attachments), 200):
+            await cls._restore_attachments_chunk(attachments[start : start + 200])
+        return restored
+
+    @classmethod
+    @with_session
+    async def _restore_nodes_chunk(cls, session: AsyncSession, nodes: List["CogNodeExportRow"]) -> int:
+        for item in nodes:
+            stmt = select(cls).where(and_(col(cls.kind) == item["kind"], col(cls.ref) == item["ref"]))
+            existing = (await session.execute(stmt)).scalars().first()
+            if existing is None:
+                session.add(
+                    cls(
+                        kind=item["kind"],
+                        ref=item["ref"],
+                        scope_key=item["scope_key"],
+                        owner_user_id=item["owner_user_id"],
+                        title=item["title"],
+                        summary=item["summary"],
+                        as_of=item["as_of"],
+                        source=item["source"],
+                        handle=item["handle"],
+                        canon=item["canon"],
+                        decay=item["decay"],
+                        created_at=item["created_at"],
+                        updated_at=item["updated_at"],
+                    )
+                )
+            else:
+                existing.scope_key = item["scope_key"]
+                existing.owner_user_id = item["owner_user_id"]
+                existing.title = item["title"]
+                existing.summary = item["summary"]
+                existing.as_of = item["as_of"]
+                existing.source = item["source"]
+                existing.handle = item["handle"]
+                existing.canon = item["canon"]
+                existing.decay = item["decay"]
+                existing.updated_at = item["updated_at"]
+        await session.commit()
+        return len(nodes)
+
+    @classmethod
+    @with_session
+    async def _restore_edges_chunk(cls, session: AsyncSession, edges: List["CogEdgeExportRow"]) -> None:
+        id_map: dict[Tuple[str, str], int] = {}
+
+        async def _resolve(kind: str, ref: str) -> Optional[int]:
+            key = (kind, ref)
+            if key in id_map:
+                return id_map[key]
+            stmt = select(cls).where(and_(col(cls.kind) == kind, col(cls.ref) == ref))
+            row = (await session.execute(stmt)).scalars().first()
+            if row is not None and isinstance(row.id, int):
+                id_map[key] = row.id
+                return row.id
+            return None
+
+        for e in edges:
+            src_id = await _resolve(e["src_kind"], e["src_ref"])
+            dst_id = await _resolve(e["dst_kind"], e["dst_ref"])
+            if src_id is None or dst_id is None or src_id == dst_id:
+                continue
+            exists_e = (
+                (
+                    await session.execute(
+                        select(AICogEdge).where(
+                            and_(
+                                col(AICogEdge.src_id) == src_id,
+                                col(AICogEdge.dst_id) == dst_id,
+                                col(AICogEdge.edge_kind) == e["edge_kind"],
+                            )
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if exists_e is None:
+                session.add(
+                    AICogEdge(
+                        src_id=src_id,
+                        dst_id=dst_id,
+                        edge_kind=e["edge_kind"],
+                        confidence=e["confidence"],
+                        created_at=e["created_at"],
+                    )
+                )
+        await session.commit()
+
+    @classmethod
+    @with_session
+    async def _restore_attachments_chunk(cls, session: AsyncSession, attachments: List["CogAttExportRow"]) -> None:
+        id_map: dict[Tuple[str, str], int] = {}
+        for a in attachments:
+            key = (a["node_kind"], a["node_ref"])
+            if key in id_map:
+                nid: Optional[int] = id_map[key]
+            else:
+                stmt = select(cls).where(and_(col(cls.kind) == key[0], col(cls.ref) == key[1]))
+                row = (await session.execute(stmt)).scalars().first()
+                nid = row.id if row is not None and isinstance(row.id, int) else None
+                if nid is not None:
+                    id_map[key] = nid
+            if nid is None:
+                continue
+            exists_a = (
+                (
+                    await session.execute(
+                        select(AICogAttachment).where(
+                            and_(col(AICogAttachment.node_id) == nid, col(AICogAttachment.ref) == a["ref"])
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if exists_a is None:
+                session.add(
+                    AICogAttachment(
+                        node_id=nid,
+                        slot=a["slot"],
+                        title=a["title"],
+                        summary=a["summary"],
+                        as_of=a["as_of"],
+                        source=a["source"],
+                        writable=a["writable"],
+                        ref=a["ref"],
+                        handle=a["handle"],
+                        created_at=a["created_at"],
+                        updated_at=a["updated_at"],
+                    )
+                )
+        await session.commit()
+
 
 class AICogAttachment(SQLModel, table=True):
     """枢纽挂文索引（表名 ``aicogattachment``）。只存元数据，正文仍在原库。"""
@@ -573,6 +864,8 @@ async def sync_node(
     调用点走 ``cognition.remember``（落盘 / 任务终态 / 笔记 / record / artifact）。
     ``OWNER_REQUIRED_KINDS`` 的节点缺 ``owner_user_id`` 时会被 upsert 拒绝。
     """
+    if scope_key and is_scope_frozen(scope_key):
+        return None
     try:
         return await AICogNode.upsert(
             kind=kind,
@@ -607,6 +900,47 @@ async def link_nodes(
     except Exception as e:
         logger.debug(i18n_t("log.ai.cognition_edge_link_fail", e=e))
         return False
+
+
+class CogNodeExportRow(TypedDict):
+    kind: str
+    ref: str
+    scope_key: str
+    owner_user_id: str
+    title: str
+    summary: str
+    as_of: str
+    source: str
+    handle: str
+    canon: str
+    decay: float
+    created_at: int
+    updated_at: int
+
+
+class CogEdgeExportRow(TypedDict):
+    src_kind: str
+    src_ref: str
+    dst_kind: str
+    dst_ref: str
+    edge_kind: str
+    confidence: float
+    created_at: int
+
+
+class CogAttExportRow(TypedDict):
+    node_kind: str
+    node_ref: str
+    slot: str
+    title: str
+    summary: str
+    as_of: str
+    source: str
+    writable: bool
+    ref: str
+    handle: str
+    created_at: int
+    updated_at: int
 
 
 class CogNodeDict(TypedDict):

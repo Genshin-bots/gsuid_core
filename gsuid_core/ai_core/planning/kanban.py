@@ -7,9 +7,10 @@
 
 import shutil
 import asyncio
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Mapping, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
+from dataclasses import dataclass
 
 from sqlmodel import col, select, update
 from sqlalchemy import delete
@@ -38,23 +39,141 @@ _ROOT_REFRESH_LOCKS: Dict[str, asyncio.Lock] = {}
 DEFAULT_RESPAWN_LIMIT = 3
 # 默认每棵任务树最多子任务数（防 LLM 拆爆）
 DEFAULT_MAX_SUBTASKS = 20
+_DELETE_STAT_KEYS: tuple[str, ...] = (
+    "tasks_deleted",
+    "logs_deleted",
+    "artifacts_deleted",
+    "files_deleted",
+    "dirs_deleted",
+    "unscheduled_jobs",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _TaskRouting:
+    """任务节点共享的属主与路由上下文（建树 / 克隆共用，防字段漂移）。"""
+
+    owner_user_id: str
+    scope_key: str
+    bot_id: str
+    bot_self_id: str
+    group_id: Optional[str]
+    user_type: str
+    WS_BOT_ID: Optional[str]
+    session_id: str
+    user_pm: int
+    persona_name: Optional[str]
+
+    @classmethod
+    def from_task(cls, task: AIAgentTask) -> "_TaskRouting":
+        return cls(
+            owner_user_id=task.owner_user_id,
+            scope_key=task.scope_key,
+            bot_id=task.bot_id,
+            bot_self_id=task.bot_self_id,
+            group_id=task.group_id,
+            user_type=task.user_type,
+            WS_BOT_ID=task.WS_BOT_ID,
+            session_id=task.session_id,
+            user_pm=task.user_pm,
+            persona_name=task.persona_name,
+        )
+
+
+def _spec_str(spec: Mapping[str, object], key: str) -> str:
+    val = spec[key] if key in spec else None
+    return str(val) if val else ""
+
+
+async def _patch_task(task_id: str, **fields: object) -> None:
+    await AIAgentTask.update_data_by_data(select_data={"id": task_id}, update_data=fields)
+
+
+def _parse_optional_datetime(raw: object) -> Optional[datetime]:
+    if isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    return None
+
+
+async def _create_task_node(
+    routing: _TaskRouting,
+    *,
+    goal: str,
+    display_name: str,
+    node_kind: str,
+    agent_profile: str = "",
+    broadcast_targets: Optional[List[str]] = None,
+    interval_seconds: int = 0,
+    parent_task_id: Optional[str] = None,
+    root_task_id: Optional[str] = None,
+    params_override: Optional[Dict[str, object]] = None,
+    dependency_task_ids: Optional[List[str]] = None,
+    not_before: Optional[datetime] = None,
+    template_root_id: Optional[str] = None,
+    template_subtask_id: Optional[str] = None,
+    recurring_trigger: Optional[str] = None,
+    recurring_until: Optional[datetime] = None,
+    recurring_status: str = RecurringStatus.NONE,
+) -> AIAgentTask:
+    extra: Dict[str, object] = {
+        "bot_self_id": routing.bot_self_id,
+        "group_id": routing.group_id,
+        "user_type": routing.user_type,
+        "WS_BOT_ID": routing.WS_BOT_ID,
+        "session_id": routing.session_id,
+        "user_pm": routing.user_pm,
+        "persona_name": routing.persona_name,
+        "broadcast_targets": broadcast_targets or [],
+        "display_name": display_name,
+        "interval_seconds": interval_seconds,
+        "agent_profile": agent_profile,
+        "status": "pending",
+        "node_kind": node_kind,
+        "parent_task_id": parent_task_id,
+        "recurring_trigger": recurring_trigger,
+        "recurring_status": recurring_status,
+    }
+    optionals: Dict[str, object] = {
+        "root_task_id": root_task_id,
+        "params_override": params_override,
+        "dependency_task_ids": dependency_task_ids,
+        "not_before": not_before,
+        "template_root_id": template_root_id,
+        "template_subtask_id": template_subtask_id,
+        "recurring_until": recurring_until,
+    }
+    extra.update({k: v for k, v in optionals.items() if v is not None})
+    task = await AIAgentTask.create_task(
+        goal=goal,
+        owner_user_id=routing.owner_user_id,
+        scope_key=routing.scope_key,
+        bot_id=routing.bot_id,
+        **extra,
+    )
+    if node_kind == "root":
+        await _patch_task(task.id, root_task_id=task.id)
+        task.root_task_id = task.id
+    return task
+
+
+def _get_or_create_lock(registry: Dict[str, asyncio.Lock], key: str) -> asyncio.Lock:
+    if key not in registry:
+        registry[key] = asyncio.Lock()
+    return registry[key]
 
 
 def get_task_node_lock(task_id: str) -> asyncio.Lock:
     """取该子任务节点的执行锁；不存在则懒建。"""
-    lock = _TASK_NODE_LOCKS.get(task_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _TASK_NODE_LOCKS[task_id] = lock
-    return lock
+    return _get_or_create_lock(_TASK_NODE_LOCKS, task_id)
 
 
 def get_root_refresh_lock(root_task_id: str) -> asyncio.Lock:
-    lock = _ROOT_REFRESH_LOCKS.get(root_task_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _ROOT_REFRESH_LOCKS[root_task_id] = lock
-    return lock
+    return _get_or_create_lock(_ROOT_REFRESH_LOCKS, root_task_id)
 
 
 # 创建：任务树
@@ -124,11 +243,12 @@ async def create_kanban_tree(
         raise ValueError(t("create_kanban_tree: 周期模板不支持叶子根（请显式建子任务）"))
 
     # 子任务级周期触发的依赖关系硬约束：禁止任何子任务 depends_on 周期子任务。
-    # 周期子任务永不"完成"（armed 持续到 recurring_until 才 disarm），下游若依赖
-    recurring_indexes = {i for i, spec in enumerate(subtasks) if (spec.get("recurring_trigger") or "").strip()}
+    # 周期子任务永不"完成"（armed 持续到 recurring_until 才 disarm），下游若依赖会死锁。
+    recurring_indexes = {i for i, spec in enumerate(subtasks) if _spec_str(spec, "recurring_trigger").strip()}
     if recurring_indexes:
         for spec in subtasks:
-            for dep in spec.get("depends_on") or []:
+            raw_deps = spec["depends_on"] if "depends_on" in spec else None
+            for dep in raw_deps or []:
                 if isinstance(dep, int) and dep in recurring_indexes:
                     raise ValueError(
                         t(
@@ -137,10 +257,7 @@ async def create_kanban_tree(
                         )
                     )
 
-    # 1) 根任务（模板状态/普通状态均为 pending；模板由 recurring_status 区分）
-    #    叶子根模式下根任务自身带 agent_profile，被 kanban_executor 直接派出。
-    root = await AIAgentTask.create_task(
-        goal=goal,
+    routing = _TaskRouting(
         owner_user_id=owner_user_id,
         scope_key=scope_key,
         bot_id=bot_id,
@@ -151,92 +268,57 @@ async def create_kanban_tree(
         session_id=session_id,
         user_pm=user_pm,
         persona_name=persona_name,
-        broadcast_targets=broadcast_targets or [],
+    )
+
+    # 1) 根任务（模板状态/普通状态均为 pending；叶子根带 agent_profile）
+    root = await _create_task_node(
+        routing,
+        goal=goal,
         display_name=display_name,
-        interval_seconds=interval_seconds,
-        agent_profile=root_agent_profile,
-        status="pending",
         node_kind="root",
-        parent_task_id=None,
+        agent_profile=root_agent_profile,
+        broadcast_targets=broadcast_targets or [],
+        interval_seconds=interval_seconds,
         recurring_trigger=recurring_trigger,
         recurring_until=recurring_until,
         recurring_status=RecurringStatus.ARMED if is_template else RecurringStatus.NONE,
     )
-    # 根任务 root_task_id = 自身 id
-    await AIAgentTask.update_data_by_data(select_data={"id": root.id}, update_data={"root_task_id": root.id})
-    root.root_task_id = root.id
 
     # 2) 子任务（先批量插入，再回填 dependency 的实际 id）
     child_ids: List[str] = []
     children: List[AIAgentTask] = []
     for spec in subtasks:
-        not_before_val = spec.get("not_before")
-        # 兼容 ISO 字符串 / datetime 两种入参
-        if isinstance(not_before_val, str) and not_before_val:
-            try:
-                not_before_val = datetime.fromisoformat(not_before_val)
-            except ValueError:
-                not_before_val = None
-        elif not isinstance(not_before_val, datetime):
-            not_before_val = None
-
-        # 子任务级周期触发参数
-        sub_recurring_trigger = (spec.get("recurring_trigger") or "").strip() or None
-        sub_recurring_until = spec.get("recurring_until")
-        if isinstance(sub_recurring_until, str) and sub_recurring_until:
-            try:
-                sub_recurring_until = datetime.fromisoformat(sub_recurring_until)
-            except ValueError:
-                sub_recurring_until = None
-        elif not isinstance(sub_recurring_until, datetime):
-            sub_recurring_until = None
-
-        child = await AIAgentTask.create_task(
-            goal=str(spec.get("description") or "").strip() or goal,
-            owner_user_id=owner_user_id,
-            scope_key=scope_key,
-            bot_id=bot_id,
-            bot_self_id=bot_self_id,
-            group_id=group_id,
-            user_type=user_type,
-            WS_BOT_ID=WS_BOT_ID,
-            session_id=session_id,
-            user_pm=user_pm,
-            persona_name=persona_name,
-            broadcast_targets=[],
-            display_name=str(spec.get("description") or "")[:64] or display_name,
-            interval_seconds=0,
-            agent_profile=str(spec.get("agent_profile") or "").strip(),
-            # 周期子任务模板自身不进 ready 队列；
-            # 注册时直接挂上 APScheduler
-            status="pending",
+        raw_desc = _spec_str(spec, "description")
+        raw_trig = _spec_str(spec, "recurring_trigger").strip() or None
+        raw_profile = _spec_str(spec, "agent_profile").strip()
+        raw_params = spec["params_hint"] if "params_hint" in spec and isinstance(spec["params_hint"], dict) else {}
+        child = await _create_task_node(
+            routing,
+            goal=raw_desc.strip() or goal,
+            display_name=raw_desc[:64] or display_name,
             node_kind="subtask",
+            agent_profile=raw_profile,
             parent_task_id=root.id,
             root_task_id=root.id,
-            params_override=spec.get("params_hint") or {},
-            not_before=not_before_val,
-            recurring_trigger=sub_recurring_trigger,
-            recurring_until=sub_recurring_until,
-            # 模板子任务的 recurring_status 入库时为空——首次依赖满足时由 executor
-            # 转 "armed"；arm 失败时（trigger 解析错）转 "disarmed" 不阻塞下游。
-            recurring_status=RecurringStatus.NONE,
+            params_override=raw_params,
+            not_before=_parse_optional_datetime(spec["not_before"] if "not_before" in spec else None),
+            recurring_trigger=raw_trig,
+            recurring_until=_parse_optional_datetime(spec["recurring_until"] if "recurring_until" in spec else None),
         )
         child_ids.append(child.id)
         children.append(child)
 
     # 3) 把 depends_on 的 0-based 下标转为兄弟子任务 id
     for child, spec in zip(children, subtasks):
-        deps_idx = [int(x) for x in (spec.get("depends_on") or []) if isinstance(x, int)]
-        dep_ids: List[str] = []
-        for i in deps_idx:
-            if 0 <= i < len(child_ids) and child_ids[i] != child.id:
-                dep_ids.append(child_ids[i])
+        raw_deps = spec["depends_on"] if "depends_on" in spec else None
+        dep_ids = [
+            child_ids[i]
+            for i in (raw_deps or [])
+            if isinstance(i, int) and 0 <= i < len(child_ids) and child_ids[i] != child.id
+        ]
         if dep_ids:
             child.dependency_task_ids = dep_ids
-            await AIAgentTask.update_data_by_data(
-                select_data={"id": child.id},
-                update_data={"dependency_task_ids": dep_ids},
-            )
+            await _patch_task(child.id, dependency_task_ids=dep_ids)
 
     await AIAgentTaskLog.add_log(
         root.id,
@@ -270,62 +352,26 @@ async def clone_tree_for_fire(
     开火实例"挂到模板下展示。
     """
     template_children = await _query_children(template_root.id)
-
-    instance_root = await AIAgentTask.create_task(
+    instance_root = await _create_task_node(
+        _TaskRouting.from_task(template_root),
         goal=template_root.goal,
-        owner_user_id=template_root.owner_user_id,
-        scope_key=template_root.scope_key,
-        bot_id=template_root.bot_id,
-        bot_self_id=template_root.bot_self_id,
-        group_id=template_root.group_id,
-        user_type=template_root.user_type,
-        WS_BOT_ID=template_root.WS_BOT_ID,
-        session_id=template_root.session_id,
-        user_pm=template_root.user_pm,
-        persona_name=template_root.persona_name,
-        broadcast_targets=list(template_root.broadcast_targets or []),
         display_name=f"{template_root.display_name} #{template_root.fire_count + 1}"[:64],
-        interval_seconds=0,
-        agent_profile="",
-        status="pending",
         node_kind="root",
-        parent_task_id=None,
-        # 关键：实例根反向指回模板
+        broadcast_targets=list(template_root.broadcast_targets or []),
         template_root_id=template_root.id,
-        # 实例本身不是周期任务
-        recurring_trigger=None,
-        recurring_status=RecurringStatus.NONE,
     )
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": instance_root.id},
-        update_data={"root_task_id": instance_root.id},
-    )
-    instance_root.root_task_id = instance_root.id
 
     # 模板子任务的旧 id → 新实例子任务的 id 映射，用于重映射 dependency_task_ids
     id_map: Dict[str, str] = {}
     instance_children: List[AIAgentTask] = []
     for tpl_child in template_children:
-        # 注意：模板上的 not_before 是绝对时间，克隆到实例时通常已经过期；
-        # 周期模板自身的 cron 表达式已经决定了"什么时候开火"，子任务级再叠 not_before
-        new_child = await AIAgentTask.create_task(
+        # 模板上的 not_before 是绝对时间，克隆实例不沿用；开火时机由模板 cron 控制
+        new_child = await _create_task_node(
+            _TaskRouting.from_task(tpl_child),
             goal=tpl_child.goal,
-            owner_user_id=tpl_child.owner_user_id,
-            scope_key=tpl_child.scope_key,
-            bot_id=tpl_child.bot_id,
-            bot_self_id=tpl_child.bot_self_id,
-            group_id=tpl_child.group_id,
-            user_type=tpl_child.user_type,
-            WS_BOT_ID=tpl_child.WS_BOT_ID,
-            session_id=tpl_child.session_id,
-            user_pm=tpl_child.user_pm,
-            persona_name=tpl_child.persona_name,
-            broadcast_targets=[],
             display_name=tpl_child.display_name,
-            interval_seconds=0,
-            agent_profile=tpl_child.agent_profile,
-            status="pending",
             node_kind="subtask",
+            agent_profile=tpl_child.agent_profile,
             parent_task_id=instance_root.id,
             root_task_id=instance_root.id,
             params_override=dict(tpl_child.params_override or {}),
@@ -339,16 +385,10 @@ async def clone_tree_for_fire(
         new_deps = [id_map[d] for d in old_deps if d in id_map]
         if new_deps:
             new_child.dependency_task_ids = new_deps
-            await AIAgentTask.update_data_by_data(
-                select_data={"id": new_child.id},
-                update_data={"dependency_task_ids": new_deps},
-            )
+            await _patch_task(new_child.id, dependency_task_ids=new_deps)
 
     # 模板的 fire_count +1
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": template_root.id},
-        update_data={"fire_count": template_root.fire_count + 1},
-    )
+    await _patch_task(template_root.id, fire_count=template_root.fire_count + 1)
     await AIAgentTaskLog.add_log(
         template_root.id,
         "decision",
@@ -433,41 +473,22 @@ async def clone_subtask_for_fire(template: AIAgentTask) -> Optional[AIAgentTask]
         await disarm_subtask_template(fresh.id)
         return None
 
-    new_child = await AIAgentTask.create_task(
+    new_child = await _create_task_node(
+        _TaskRouting.from_task(fresh),
         goal=fresh.goal,
-        owner_user_id=fresh.owner_user_id,
-        scope_key=fresh.scope_key,
-        bot_id=fresh.bot_id,
-        bot_self_id=fresh.bot_self_id,
-        group_id=fresh.group_id,
-        user_type=fresh.user_type,
-        WS_BOT_ID=fresh.WS_BOT_ID,
-        session_id=fresh.session_id,
-        user_pm=fresh.user_pm,
-        persona_name=fresh.persona_name,
-        broadcast_targets=[],
         display_name=f"{fresh.display_name} #{fresh.fire_count + 1}"[:64],
-        interval_seconds=0,
-        agent_profile=fresh.agent_profile,
-        status="pending",
         node_kind="subtask",
+        agent_profile=fresh.agent_profile,
         parent_task_id=fresh.root_task_id,
         root_task_id=fresh.root_task_id,
         params_override=dict(fresh.params_override or {}),
-        # 实例不挂依赖——每次 fire 独立。下游需要"等周期收尾"的场景请用 not_before
-        # 给汇总子任务设定时间锚点。
+        # 实例不挂依赖、反向指向模板；每次 fire 独立
         dependency_task_ids=[],
-        # 关键：反向指针，便于 webconsole 把"近 N 次开火"挂到模板下展示
         template_subtask_id=fresh.id,
-        recurring_trigger=None,
-        recurring_status=RecurringStatus.NONE,
     )
 
     # 模板 fire_count +1（条件 UPDATE）
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": fresh.id},
-        update_data={"fire_count": fresh.fire_count + 1},
-    )
+    await _patch_task(fresh.id, fire_count=fresh.fire_count + 1)
     await AIAgentTaskLog.add_log(
         fresh.id,
         "decision",
@@ -510,25 +531,15 @@ async def arm_recurring_subtask(template: AIAgentTask, trigger_spec: str) -> Tup
         end_date=end_date_iso,
     )
     if not ok:
-        await AIAgentTask.update_data_by_data(
-            select_data={"id": template.id},
-            update_data={"recurring_status": RecurringStatus.DISARMED},
-        )
+        await _patch_task(template.id, recurring_status=RecurringStatus.DISARMED)
         await AIAgentTaskLog.add_log(
             template.id,
             "step_failed",
             f"周期子任务 arm 失败：trigger_spec={trigger_spec!r}，已转 disarmed",
         )
         return False, f"周期子任务 arm 失败：trigger_spec={trigger_spec!r}"
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": template.id},
-        update_data={"recurring_status": RecurringStatus.ARMED},
-    )
-    await AIAgentTaskLog.add_log(
-        template.id,
-        "decision",
-        f"周期子任务 armed: trigger={trigger_spec}",
-    )
+    await _patch_task(template.id, recurring_status=RecurringStatus.ARMED)
+    await AIAgentTaskLog.add_log(template.id, "decision", f"周期子任务 armed: trigger={trigger_spec}")
     logger.info(t("log.ai.kanban_recurring_subtask_armed_2", p0=template.id, trigger_spec=trigger_spec))
     return True, "armed"
 
@@ -543,17 +554,9 @@ async def disarm_subtask_template(subtask_id: str) -> bool:
     task = await AIAgentTask.get_by_id(subtask_id)
     if task is None or not task.recurring_trigger:
         return False
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": subtask_id},
-        update_data={"recurring_status": RecurringStatus.DISARMED},
-    )
+    await _patch_task(subtask_id, recurring_status=RecurringStatus.DISARMED)
     await AIAgentTaskLog.add_log(subtask_id, "decision", "周期子任务已 disarm")
-    try:
-        from .recurring import unschedule_subtask_template
-
-        unschedule_subtask_template(subtask_id)
-    except Exception:
-        pass
+    _drop_subtask_recurring_job(subtask_id)
     return True
 
 
@@ -562,10 +565,7 @@ async def disarm_template(template_root_id: str) -> bool:
     task = await AIAgentTask.get_by_id(template_root_id)
     if task is None or not task.recurring_trigger:
         return False
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": template_root_id},
-        update_data={"recurring_status": RecurringStatus.DISARMED},
-    )
+    await _patch_task(template_root_id, recurring_status=RecurringStatus.DISARMED)
     await AIAgentTaskLog.add_log(template_root_id, "decision", "周期模板已 disarm")
     from .recurring import unschedule_template
 
@@ -749,15 +749,14 @@ async def mark_subtask_running(task: AIAgentTask) -> bool:
 
 async def mark_subtask_completed(task: AIAgentTask, output_artifact_id: str = "") -> None:
     now = datetime.now()
-    update_data = {"status": "completed", "updated_at": now, "last_heartbeat_at": now}
+    update_data: Dict[str, object] = {"status": "completed", "updated_at": now, "last_heartbeat_at": now}
     if output_artifact_id:
         update_data["output_artifact_id"] = output_artifact_id
-    await AIAgentTask.update_data_by_data(select_data={"id": task.id}, update_data=update_data)
+        task.output_artifact_id = output_artifact_id
+    await _patch_task(task.id, **update_data)
     task.status = "completed"
     task.updated_at = now
     task.last_heartbeat_at = now
-    if output_artifact_id:
-        task.output_artifact_id = output_artifact_id
     await AIAgentTaskLog.add_log(task.id, "step_done", f"子任务完成 | output_artifact={output_artifact_id or '-'}")
     _drop_not_before_job(task.id)
     if task.root_task_id:
@@ -767,14 +766,7 @@ async def mark_subtask_completed(task: AIAgentTask, output_artifact_id: str = ""
 async def mark_subtask_failed(task: AIAgentTask, reason: str) -> None:
     now = datetime.now()
     trimmed = reason[:4000]
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": task.id},
-        update_data={
-            "status": "failed",
-            "failure_reason": trimmed,
-            "updated_at": now,
-        },
-    )
+    await _patch_task(task.id, status="failed", failure_reason=trimmed, updated_at=now)
     task.status = "failed"
     task.failure_reason = trimmed
     task.updated_at = now
@@ -853,11 +845,8 @@ async def refresh_root_status(root_task_id: str) -> Optional[str]:
             # 注意：周期模板自身 status 永远是 pending，不计入"全 completed"判断。
             new_status = "running"
         elif all(s in ("completed", "skipped") for s in statuses):
-            if has_armed_recurring:
-                # 非周期子任务全完成 + 周期模板仍 armed → 任务持续运行中
-                new_status = "running"
-            else:
-                new_status = "completed"
+            # 非周期子任务全完成 + 周期模板仍 armed → 任务持续运行中
+            new_status = "running" if has_armed_recurring else "completed"
         elif any(s == "waiting_approval" for s in statuses):
             new_status = "waiting_approval"
         elif any(s == "paused" for s in statuses):
@@ -872,11 +861,7 @@ async def refresh_root_status(root_task_id: str) -> Optional[str]:
             new_status = root.status
 
         if new_status != root.status:
-            now = datetime.now()
-            await AIAgentTask.update_data_by_data(
-                select_data={"id": root.id},
-                update_data={"status": new_status, "updated_at": now},
-            )
+            await _patch_task(root.id, status=new_status, updated_at=datetime.now())
             await AIAgentTaskLog.add_log(root.id, "decision", f"根任务状态汇总：{root.status} -> {new_status}")
             if new_status in ("completed", "failed"):
                 await _distill_root_terminal(root, children, new_status)
@@ -930,11 +915,7 @@ async def pause_task(task_id: str) -> bool:
     task = await AIAgentTask.get_by_id(task_id)
     if not task or task.status not in ("pending", "running"):
         return False
-    now = datetime.now()
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": task_id},
-        update_data={"status": "paused", "updated_at": now},
-    )
+    await _patch_task(task_id, status="paused", updated_at=datetime.now())
     from .kanban_executor import cancel_running_node
 
     cancel_running_node(task_id)
@@ -948,11 +929,7 @@ async def resume_task(task_id: str) -> bool:
     task = await AIAgentTask.get_by_id(task_id)
     if not task or task.status != "paused":
         return False
-    now = datetime.now()
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": task_id},
-        update_data={"status": "running", "updated_at": now},
-    )
+    await _patch_task(task_id, status="running", updated_at=datetime.now())
     await AIAgentTaskLog.add_log(task_id, "decision", "任务已被主人恢复")
     logger.info(t("log.ai.kanban_task_id_resumed", task_id=task_id))
     return True
@@ -960,11 +937,7 @@ async def resume_task(task_id: str) -> bool:
 
 async def abort_task(task_id: str, reason: str) -> None:
     """终止单个任务（不级联）；未完成子任务的级联终结请走 ``fail_task_tree``。"""
-    now = datetime.now()
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": task_id},
-        update_data={"status": "cancelled", "updated_at": now},
-    )
+    await _patch_task(task_id, status="cancelled", updated_at=datetime.now())
     await AIAgentTaskLog.add_log(task_id, "decision", f"任务终止：{reason}")
     _drop_not_before_job(task_id)
     _drop_subtask_recurring_job(task_id)
@@ -1016,22 +989,15 @@ async def respawn_child_task(
     if new_agent_profile:
         update_data["agent_profile"] = new_agent_profile
 
-    await AIAgentTask.update_data_by_data(select_data={"id": task.id}, update_data=update_data)
+    await _patch_task(task.id, **update_data)
     from .kanban_executor import cancel_running_node
 
     cancel_running_node(task.id)
     if task.root_task_id and task.root_task_id != task.id:
         root = await AIAgentTask.get_by_id(task.root_task_id)
         if root is not None and root.status in ("paused", "failed"):
-            await AIAgentTask.update_data_by_data(
-                select_data={"id": root.id},
-                update_data={"status": "running", "failure_reason": None, "updated_at": now},
-            )
-    await AIAgentTaskLog.add_log(
-        task.id,
-        "decision",
-        f"任务被修改/重派: {new_description or '（原描述）'}",
-    )
+            await _patch_task(root.id, status="running", failure_reason=None, updated_at=now)
+    await AIAgentTaskLog.add_log(task.id, "decision", f"任务被修改/重派: {new_description or '（原描述）'}")
     # 重派之后旧的 not_before（如有）已经无效，摘掉避免到点又触发
     _drop_not_before_job(task.id)
     return True, "已更新并重新派发任务" if not was_failed else f"已重派子任务（第 {next_count} 次）"
@@ -1050,19 +1016,16 @@ async def request_subtask_approval(
 
     调用会话记当前 agent（capagent_…），群会话放进 payload，只给停机通知用。
     """
-    now = datetime.now()
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": task.id},
-        update_data={
-            "status": "waiting_approval",
-            "failure_reason": approval_prompt[:4000],
-            "updated_at": now,
-        },
+    await _patch_task(
+        task.id,
+        status="waiting_approval",
+        failure_reason=approval_prompt[:4000],
+        updated_at=datetime.now(),
     )
     await AIAgentTaskLog.add_log(task.id, "approval", f"请求审批：{approval_prompt[:400]}")
     from gsuid_core.ai_core import approval as approval_center
     from gsuid_core.ai_core.approval.center import ApprovalPayload
-    from gsuid_core.ai_core.approval.session_ctx import current_caller_session_id
+    from gsuid_core.ai_core.approval.models import current_caller_session_id
 
     caller = current_caller_session_id()
     payload: ApprovalPayload = {
@@ -1111,26 +1074,15 @@ async def approve_subtask(task: AIAgentTask, approved: bool, note: str = "") -> 
         return False, f"子任务状态 {task.status} 不在待审批"
     now = datetime.now()
     if approved:
-        await AIAgentTask.update_data_by_data(
-            select_data={"id": task.id},
-            update_data={"status": "pending", "updated_at": now},
-        )
-        await AIAgentTaskLog.add_log(task.id, "approval", f"主人批准：{note}")
-        if task.root_task_id:
-            await refresh_root_status(task.root_task_id)
-        return True, "已批准，子任务进入 pending 等待调度"
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": task.id},
-        update_data={
-            "status": "failed",
-            "failure_reason": f"主人拒绝：{note}"[:4000],
-            "updated_at": now,
-        },
-    )
-    await AIAgentTaskLog.add_log(task.id, "approval", f"主人拒绝：{note}")
+        await _patch_task(task.id, status="pending", updated_at=now)
+        log_msg, reply = f"主人批准：{note}", "已批准，子任务进入 pending 等待调度"
+    else:
+        await _patch_task(task.id, status="failed", failure_reason=f"主人拒绝：{note}"[:4000], updated_at=now)
+        log_msg, reply = f"主人拒绝：{note}", "已拒绝，子任务标记 failed"
+    await AIAgentTaskLog.add_log(task.id, "approval", log_msg)
     if task.root_task_id:
         await refresh_root_status(task.root_task_id)
-    return True, "已拒绝，子任务标记 failed"
+    return True, reply
 
 
 async def fail_task_tree(root_task_id: str, reason: str) -> bool:
@@ -1149,43 +1101,29 @@ async def fail_task_tree(root_task_id: str, reason: str) -> bool:
         from .recurring import unschedule_template
 
         unschedule_template(root.id)
-    await AIAgentTask.update_data_by_data(
-        select_data={"id": root.id},
-        update_data=root_update,
-    )
+    await _patch_task(root.id, **root_update)
     from .kanban_executor import cancel_running_root
 
     cancel_running_root(root.id, clear_delivery=True)
     cascaded = 0
     for c in children:
+        armed_tpl = is_recurring_subtask_template(c) and c.recurring_status == RecurringStatus.ARMED
         if c.status in ("completed", "skipped", "failed", "cancelled"):
-            # 即使子任务已"完结"，如果是 armed 周期模板，也要摘除 APScheduler
-            if is_recurring_subtask_template(c) and c.recurring_status == RecurringStatus.ARMED:
-                await AIAgentTask.update_data_by_data(
-                    select_data={"id": c.id},
-                    update_data={"recurring_status": RecurringStatus.DISARMED},
-                )
+            if armed_tpl:
+                await _patch_task(c.id, recurring_status=RecurringStatus.DISARMED)
                 _drop_subtask_recurring_job(c.id)
             continue
-        await AIAgentTask.update_data_by_data(
-            select_data={"id": c.id},
-            update_data={
-                "status": "failed",
-                "failure_reason": f"根任务被终结：{reason}"[:4000],
-                "updated_at": now,
-            },
-        )
+        child_update: Dict[str, object] = {
+            "status": "failed",
+            "failure_reason": f"根任务被终结：{reason}"[:4000],
+            "updated_at": now,
+        }
+        if armed_tpl:
+            child_update["recurring_status"] = RecurringStatus.DISARMED
+        await _patch_task(c.id, **child_update)
         cascaded += 1
         _drop_not_before_job(c.id)
         _drop_subtask_recurring_job(c.id)
-    # 兜底：把任何残留的 armed 周期子任务模板都 disarm
-    for c in children:
-        if is_recurring_subtask_template(c) and c.recurring_status == RecurringStatus.ARMED:
-            await AIAgentTask.update_data_by_data(
-                select_data={"id": c.id},
-                update_data={"recurring_status": RecurringStatus.DISARMED},
-            )
-            _drop_subtask_recurring_job(c.id)
     await AIAgentTaskLog.add_log(root.id, "decision", f"整棵任务树被终结：{reason} | 级联失败 {cascaded} 子任务")
     logger.info(t("log.ai.kanban_entire_tree_root_task", root_task_id=root_task_id, cascaded=cascaded))
     return True
@@ -1194,8 +1132,9 @@ async def fail_task_tree(root_task_id: str, reason: str) -> bool:
 # 同步删单个 artifact：async 侧只能经 asyncio.to_thread 调它，越界/异常一律静默跳过
 def _unlink_artifact_file(raw_path: str, artifact_root: Path) -> bool:
     try:
+        root = artifact_root.resolve()
         p = Path(raw_path).resolve()
-        if p.exists() and p.is_file() and str(p).startswith(str(artifact_root)):
+        if p.is_relative_to(root) and p.exists() and p.is_file():
             p.unlink()
             return True
     except OSError:
@@ -1242,23 +1181,13 @@ async def hard_delete_task_tree(
             )
             roots.extend(list(result.scalars().all()))
 
-    root_ids = []
-    seen_root_ids = set()
-    for r in roots:
-        if r.id not in seen_root_ids:
-            root_ids.append(r.id)
-            seen_root_ids.add(r.id)
+    root_ids = list(dict.fromkeys(r.id for r in roots))
 
     stats: Dict[str, Any] = {
         "requested_task_id": task_id,
         "root_task_id": root.id,
         "root_task_ids": root_ids,
-        "tasks_deleted": 0,
-        "logs_deleted": 0,
-        "artifacts_deleted": 0,
-        "files_deleted": 0,
-        "dirs_deleted": 0,
-        "unscheduled_jobs": 0,
+        **{k: 0 for k in _DELETE_STAT_KEYS},
     }
 
     try:
@@ -1315,8 +1244,7 @@ async def hard_delete_task_tree(
         log_count_result = await session.execute(
             select(AIAgentTaskLog.id).where(col(AIAgentTaskLog.task_id).in_(all_task_ids))
         )
-        log_ids = list(log_count_result.scalars().all())
-        stats["logs_deleted"] = len(log_ids)
+        stats["logs_deleted"] = len(list(log_count_result.scalars().all()))
         stats["tasks_deleted"] = len(all_task_ids)
 
         await session.execute(delete(AIAgentArtifact).where(col(AIAgentArtifact.root_task_id).in_(root_ids)))
@@ -1326,8 +1254,7 @@ async def hard_delete_task_tree(
 
     # FileOS 级联：按 root 删 SQL/payload，并清理 Qdrant 悬空点
     try:
-        from .tool_output_index import delete_tool_output_index
-        from .tool_output_store import AIToolOutputRecord
+        from .tool_output_store import AIToolOutputRecord, delete_tool_output_index
 
         _n_fileos, _paths_fileos, fileos_ids = await AIToolOutputRecord.delete_by_root_task_ids(root_ids)
         stats["fileos_deleted"] = _n_fileos
@@ -1345,9 +1272,16 @@ async def hard_delete_task_tree(
                 if await asyncio.to_thread(_unlink_artifact_file, raw_path, artifact_root):
                     stats["files_deleted"] += 1
             for rid in root_ids:
+                if not rid or "/" in rid or "\\" in rid:
+                    continue
                 try:
                     root_dir = (ARTIFACT_ROOT / rid).resolve()
-                    if root_dir.exists() and root_dir.is_dir() and str(root_dir).startswith(str(artifact_root)):
+                    if (
+                        root_dir != artifact_root
+                        and root_dir.is_relative_to(artifact_root)
+                        and root_dir.exists()
+                        and root_dir.is_dir()
+                    ):
                         shutil.rmtree(root_dir, ignore_errors=True)
                         stats["dirs_deleted"] += 1
                 except OSError:
@@ -1400,12 +1334,7 @@ async def bulk_delete_task_trees(
     deleted = 0
     failed = 0
     total_stats: Dict[str, Any] = {
-        "tasks_deleted": 0,
-        "logs_deleted": 0,
-        "artifacts_deleted": 0,
-        "files_deleted": 0,
-        "dirs_deleted": 0,
-        "unscheduled_jobs": 0,
+        **{k: 0 for k in _DELETE_STAT_KEYS},
         "root_ids": [],
         "failed_root_ids": [],
     }
@@ -1418,12 +1347,9 @@ async def bulk_delete_task_trees(
         )
         if ok:
             deleted += 1
-            total_stats["tasks_deleted"] += stats.get("tasks_deleted", 0)
-            total_stats["logs_deleted"] += stats.get("logs_deleted", 0)
-            total_stats["artifacts_deleted"] += stats.get("artifacts_deleted", 0)
-            total_stats["files_deleted"] += stats.get("files_deleted", 0)
-            total_stats["dirs_deleted"] += stats.get("dirs_deleted", 0)
-            total_stats["unscheduled_jobs"] += stats.get("unscheduled_jobs", 0)
+            for key in _DELETE_STAT_KEYS:
+                if key in stats:
+                    total_stats[key] += stats[key]
             total_stats["root_ids"].append(root.id)
         else:
             failed += 1

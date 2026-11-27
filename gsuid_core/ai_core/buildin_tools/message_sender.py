@@ -280,7 +280,7 @@ async def send_message_by_ai(
         )
 
         _ev_text = ev.raw_text if ev is not None and ev.raw_text else ""
-        from gsuid_core.ai_core.angle_bracket_guard import (
+        from gsuid_core.ai_core.control.angle_guard import (
             has_illegal_angle_tags,
             sanitize_illegal_angle_tags,
         )
@@ -597,6 +597,7 @@ async def send_message_by_ai(
         if media_parts:
             from gsuid_core.ai_core.outbound import (
                 topic_from_extra,
+                note_run_image_delivered,
                 set_outbound_image_label,
                 reset_outbound_image_label,
                 format_outbound_image_placeholder,
@@ -614,6 +615,8 @@ async def send_message_by_ai(
             try:
                 await bot.send(_out if len(_out) > 1 else _out[0], extra_metadata=_meta)
                 sent = True
+                for _iid in success_img_ids:
+                    note_run_image_delivered(_iid)
             finally:
                 reset_outbound_image_label(_tok)
         elif text:
@@ -629,13 +632,20 @@ async def send_message_by_ai(
 
         if sent:
             from gsuid_core.ai_core.history_format import note_thread_handle
-            from gsuid_core.ai_core.planning.kanban_executor import claim_inline_delivery
+            from gsuid_core.ai_core.planning.kanban_executor import (
+                mark_root_delivered,
+                claim_inline_delivery,
+                mark_inline_claimed_roots_delivered,
+            )
 
             for hid in (*success_img_ids, video_id, audio_id, *success_file_ids):
                 if hid:
                     note_thread_handle(tool_ctx, hid)
                     if hid in res_root_map:
                         claim_inline_delivery(res_root_map[hid])
+                        mark_root_delivered(res_root_map[hid])
+            if text:
+                mark_inline_claimed_roots_delivered(tool_ctx.extra)
             if success_img_ids:
                 extra["image_sent_this_run"] = True
             if _wake and ev is not None and ev.group_id and target_id and session_id:

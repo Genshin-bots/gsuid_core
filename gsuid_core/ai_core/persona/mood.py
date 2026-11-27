@@ -23,6 +23,7 @@ from dataclasses import field, dataclass
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 
 
 class MoodType(str, Enum):
@@ -212,6 +213,9 @@ async def update_mood(
     key = _make_mood_key(persona_name, group_id)
     current = _mood_states.get(key)
 
+    if is_persona_frozen(persona_name):
+        return current if current is not None else MoodState(mood=MoodType.NEUTRAL, intensity=0.0, trigger="")
+
     # 事件类型 -> 目标情绪映射
     event_to_mood: Dict[str, MoodType] = {
         "praise": MoodType.HAPPY,
@@ -288,3 +292,17 @@ async def update_mood(
 def get_all_mood_states() -> Dict[str, MoodState]:
     """获取所有情绪状态（用于调试/监控）"""
     return dict(_mood_states)
+
+
+def count_mood_states(persona_name: str) -> int:
+    prefix = _make_mood_key(persona_name, "")
+    return sum(1 for key in _mood_states if key.startswith(prefix))
+
+
+def clear_mood_states(persona_name: str) -> int:
+    """人格重置：丢掉该人格在所有群 / 私聊的情绪状态。"""
+    prefix = _make_mood_key(persona_name, "")
+    keys = [key for key in _mood_states if key.startswith(prefix)]
+    for key in keys:
+        del _mood_states[key]
+    return len(keys)

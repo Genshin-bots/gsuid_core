@@ -32,6 +32,7 @@ from gsuid_core.ai_core.rag.tools import (
     search_tools_with_entity_routing,
 )
 from gsuid_core.ai_core.tool_risk import TOOLS_EXECUTION_GATED_KEY, skill_tool_visible
+from gsuid_core.ai_core.tool_health import STATE_DRIVEN_FAMILY_DOMAINS
 from gsuid_core.ai_core.tool_safety import build_tool_safety_capability
 from gsuid_core.ai_core.control.lines import turn_seed_hint_line
 from gsuid_core.ai_core.agent_run.host import RunOnceHost
@@ -48,7 +49,6 @@ from gsuid_core.ai_core.agent_run.support import (
     _matched_delegation_only_profile,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
-from gsuid_core.ai_core.tool_state_signals import STATE_DRIVEN_FAMILY_DOMAINS
 from gsuid_core.ai_core.configs.attribution import resolve_attribution_settings
 from gsuid_core.ai_core.agent_run.remote_web_search import attach_remote_web_search
 
@@ -701,7 +701,7 @@ async def _collect_priority_seeds(
     priority_seeds: ToolList = []
     origin_sid = host.session_id or (st.ev.session_id if st.ev is not None else "")
     if origin_sid:
-        from gsuid_core.ai_core.approval.session_ctx import session_has_pending
+        from gsuid_core.ai_core.approval.models import session_has_pending
 
         if session_has_pending(origin_sid):
             ap_tb = find_tool_base("check_approval")
@@ -735,7 +735,7 @@ async def _collect_priority_seeds(
         and str(st.ev.user_id).strip()
         and (sched_manage_turn or call_self or (st.tg is not None and st.tg.quoted_tome))
     ):
-        from gsuid_core.ai_core.tool_state_signals import user_has_active_schedules
+        from gsuid_core.ai_core.tool_health import user_has_active_schedules
 
         if await user_has_active_schedules(str(st.ev.user_id)) or sched_manage_turn:
             for sc_name in (
@@ -1029,12 +1029,6 @@ async def _finalize_and_log_assembled_tools(
 
 
 class ToolsPhase:
-    def _stabilize_session_toolset(self: RunOnceHost, core: ToolList, ctx_tags: list[str]) -> ToolList:
-        return _stabilize_session_toolset_for(self, core, ctx_tags)
-
-    async def _restore_frozen_session_tools(self: RunOnceHost, caller_tools: ToolList | None = None) -> ToolList:
-        return await _restore_frozen_session_tools_for(self, caller_tools)
-
     async def _run_once_assemble_tools(self: RunOnceHost, st: RunOnceState) -> None:
         """工具五层装配 + 去重 + 渐进式暴露。"""
         from gsuid_core.ai_core.command_aside.policy import aside_blocks_tools

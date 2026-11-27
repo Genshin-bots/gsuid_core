@@ -20,8 +20,10 @@ from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth, require_admin, require_admin_header
 from gsuid_core.ai_core.configs.models import (
     SUPPORTED_PROVIDERS,
+    sync_saved_graph_slot,
     parse_provider_config_name,
     format_provider_config_name,
+    list_active_provider_config_refs,
 )
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.utils.plugins_config.models import GsIntConfig, GsStrConfig, GsListStrConfig
@@ -300,6 +302,7 @@ async def set_task_config(
         success = ai_config.set_config(config_key, full_name)
 
         if success:
+            sync_saved_graph_slot("high" if task_level == "high" else "low", full_name)
             return {
                 "status": 0,
                 "msg": "ok",
@@ -350,6 +353,7 @@ async def clear_task_config(
         success = ai_config.set_config(config_key, "")
 
         if success:
+            sync_saved_graph_slot("high" if task_level == "high" else "low", "")
             return {
                 "status": 0,
                 "msg": "ok",
@@ -668,16 +672,14 @@ async def delete_config(
 
     manager = provider_manager(provider)
 
-    # 检查是否是当前激活的配置（使用 provider++name 格式比较）
-    high_level = ai_config.get_config("high_level_provider_config_name").data
-    low_level = ai_config.get_config("low_level_provider_config_name").data
-
     full_name = format_provider_config_name(provider, config_name)
+    active_refs = list_active_provider_config_refs(full_name)
 
-    if high_level == full_name or low_level == full_name:
+    if active_refs:
+        refs_text = "、".join(active_refs[:5])
         return {
             "status": 1,
-            "msg": f"无法删除当前激活的配置文件 '{full_name}'，请先切换到其他配置",
+            "msg": f"无法删除当前激活的配置文件 '{full_name}'（被 {refs_text} 引用），请先切换到其他配置",
             "data": None,
         }
 

@@ -22,6 +22,8 @@ import asyncio
 import itertools
 import threading
 from typing import Any, Dict, List, Tuple, Optional
+from urllib.parse import urljoin
+from urllib.request import getproxies
 
 import httpx2
 import aiohttp
@@ -35,6 +37,11 @@ from gsuid_core.ai_core.configs.ai_config import (
     jina_config,
     deepseek_config,
     web_fetch_config,
+)
+from gsuid_core.ai_core.web_fetch.url_safety import (
+    PublicOnlyResolver,
+    validate_public_url_dns,
+    validate_public_url_syntax,
 )
 from gsuid_core.ai_core.web_search.exa_search import exa_fetch_markdown
 from gsuid_core.ai_core.web_search.keenable_search import keenable_fetch_markdown
@@ -446,12 +453,22 @@ def _html_to_markdown(html_content: str, url: str) -> str:
     return "\n".join(cleaned_lines).strip()
 
 
+def _uses_proxy(proxy: Optional[str], trust_env: bool) -> bool:
+    if proxy:
+        return True
+    if not trust_env:
+        return False
+    env_proxies = getproxies()
+    return any(scheme in env_proxies and bool(env_proxies[scheme]) for scheme in ("http", "https", "all"))
+
+
 async def _fetch_via_local(
     url: str,
     timeout: Optional[int] = None,
     max_length: Optional[int] = None,
 ) -> str:
     """本机 aiohttp 直连 + HTML→Markdown。"""
+    await validate_public_url_dns(url)
     timeout_sec, max_md, max_dl, headers, proxy, trust_env = _resolve_runtime_settings(timeout, max_length)
 
     proxy_hint = f"proxy={proxy[:60]}" if proxy else "proxy=off"
@@ -473,49 +490,74 @@ async def _fetch_via_local(
             sock_connect=min(10, timeout_sec),
             sock_read=timeout_sec,
         )
-        async with aiohttp.ClientSession(
-            headers=headers,
-            timeout=client_timeout,
-            trust_env=trust_env,
-        ) as session:
-            async with session.get(url, proxy=proxy) as response:
-                if response.status != 200:
-                    raise ValueError(t("请求失败，状态码: {p0}，URL: {url}", p0=response.status, url=url))
-
-                content_type = response.content_type or ""
-                if "text" not in content_type and "html" not in content_type:
-                    raise ValueError(
-                        t(
-                            "不支持的内容类型: {content_type}，仅支持 HTML/文本页面",
-                            content_type=content_type,
-                        )
-                    )
-
-                cl_hdr = response.headers.get("Content-Length")
-                if cl_hdr is not None and cl_hdr.isdigit() and int(cl_hdr) > max_dl:
-                    raise ValueError(
-                        t(
-                            "响应体过大（Content-Length={cl}），上限 {max_b} 字节",
-                            cl=cl_hdr,
-                            max_b=max_dl,
-                        )
-                    )
-
-                chunks: list[bytes] = []
-                size = 0
-                async for chunk in response.content.iter_chunked(64 * 1024):
-                    size += len(chunk)
-                    if size > max_dl:
-                        raise ValueError(
-                            t(
-                                "响应体过大（已读 {size} 字节），上限 {max_b} 字节",
-                                size=size,
-                                max_b=max_dl,
+        current_url = url
+        # 直连模式在建连解析器内校验 IP 消除 DNS 重绑定 TOCTOU；显式或环境代理可能位于本机域名
+        connector = aiohttp.TCPConnector(resolver=PublicOnlyResolver()) if not _uses_proxy(proxy, trust_env) else None
+        try:
+            async with aiohttp.ClientSession(
+                headers=headers,
+                timeout=client_timeout,
+                trust_env=trust_env,
+                connector=connector,
+                connector_owner=False,
+            ) as session:
+                for _hop in range(6):
+                    async with session.get(current_url, proxy=proxy, allow_redirects=False) as response:
+                        if response.status in (301, 302, 303, 307, 308):
+                            loc = response.headers.get("Location")
+                            if not loc:
+                                raise ValueError(
+                                    t("请求失败，状态码: {p0}，URL: {url}", p0=response.status, url=current_url)
+                                )
+                            next_url = urljoin(current_url, loc)
+                            await validate_public_url_dns(next_url)
+                            current_url = next_url
+                            continue
+                        if response.status != 200:
+                            raise ValueError(
+                                t("请求失败，状态码: {p0}，URL: {url}", p0=response.status, url=current_url)
                             )
-                        )
-                    chunks.append(chunk)
-                raw = b"".join(chunks)
-                html_content = raw.decode(response.charset or "utf-8", errors="replace")
+
+                        content_type = response.content_type or ""
+                        if "text" not in content_type and "html" not in content_type:
+                            raise ValueError(
+                                t(
+                                    "不支持的内容类型: {content_type}，仅支持 HTML/文本页面",
+                                    content_type=content_type,
+                                )
+                            )
+
+                        cl_hdr = response.headers.get("Content-Length")
+                        if cl_hdr is not None and cl_hdr.isdigit() and int(cl_hdr) > max_dl:
+                            raise ValueError(
+                                t(
+                                    "响应体过大（Content-Length={cl}），上限 {max_b} 字节",
+                                    cl=cl_hdr,
+                                    max_b=max_dl,
+                                )
+                            )
+
+                        chunks: list[bytes] = []
+                        size = 0
+                        async for chunk in response.content.iter_chunked(64 * 1024):
+                            size += len(chunk)
+                            if size > max_dl:
+                                raise ValueError(
+                                    t(
+                                        "响应体过大（已读 {size} 字节），上限 {max_b} 字节",
+                                        size=size,
+                                        max_b=max_dl,
+                                    )
+                                )
+                            chunks.append(chunk)
+                        raw = b"".join(chunks)
+                        html_content = raw.decode(response.charset or "utf-8", errors="replace")
+                        break
+                else:
+                    raise ValueError(t("重定向次数过多，URL: {url}", url=current_url))
+        finally:
+            if connector is not None:
+                await connector.close()
 
     except asyncio.TimeoutError as e:
         logger.error(t("log.ai.webfetch_network_request_url_fail", url=url, e=e))
@@ -590,8 +632,7 @@ async def fetch_webpage_as_markdown(
     Raises:
         ValueError: URL 无效、响应异常、网络/超时失败
     """
-    if not url.startswith(("http://", "https://")):
-        raise ValueError(t("无效的 URL: {url}，必须以 http:// 或 https:// 开头", url=url))
+    validate_public_url_syntax(url)
 
     _, max_md, _, _, _, _ = _resolve_runtime_settings(timeout, max_length)
 
@@ -636,4 +677,11 @@ async def fetch_webpage_as_markdown(
     raise ValueError(t("网页抓取全部源失败: {p0}", p0=detail))
 
 
-__all__ = ["fetch_webpage_as_markdown", "DEFAULT_TIMEOUT", "MAX_CONTENT_LENGTH"]
+__all__ = [
+    "PublicOnlyResolver",
+    "fetch_webpage_as_markdown",
+    "validate_public_url_syntax",
+    "validate_public_url_dns",
+    "DEFAULT_TIMEOUT",
+    "MAX_CONTENT_LENGTH",
+]

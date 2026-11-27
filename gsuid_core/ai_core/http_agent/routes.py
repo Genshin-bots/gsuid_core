@@ -16,32 +16,46 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.http_agent.auth import (
+    LimitExceeded,
+    IdempotencyConflict,
+    limiter,
     ban_identity,
     is_ip_banned,
+    idempotency_store,
     authenticate_bearer,
     record_auth_failure,
     record_auth_success,
 )
-from gsuid_core.ai_core.http_agent.types import HTTP_AGENT_WS_BOT_ID, SseEventName, HttpAgentKeyRecord
 from gsuid_core.ai_core.http_agent.config import load_http_agent_settings
-from gsuid_core.ai_core.http_agent.errors import not_found, error_response
-from gsuid_core.ai_core.http_agent.limiter import LimitExceeded, limiter
 from gsuid_core.ai_core.http_agent.runtime import (
     ActiveRun,
+    PersonaResolveError,
     get_run,
     cancel_run,
     discard_run,
     register_run,
+    make_capture_bot,
     cancel_session_runs,
+    run_http_agent_turn,
+    resolve_http_persona,
 )
-from gsuid_core.ai_core.http_agent.protocol import SSE_HEADERS, encode_sse, encode_comment
-from gsuid_core.ai_core.http_agent.session_id import (
+from gsuid_core.ai_core.http_agent.protocol import (
+    SSE_HEADERS,
     CLIENT_MSG_ID_RE,
+    HTTP_AGENT_WS_BOT_ID,
+    SseEventName,
+    HttpAgentKeyRecord,
+    not_found,
+    encode_sse,
+    encode_comment,
+    error_response,
     parse_group_id,
+    bot_self_id_for,
     session_id_for_key,
+    is_inline_agent_image,
+    build_http_agent_event,
     normalize_client_session,
 )
-from gsuid_core.ai_core.http_agent.idempotency import IdempotencyConflict, idempotency_store
 
 agent_router = APIRouter(prefix="/api/v1/agent", include_in_schema=False)
 TBody = TypeVar("TBody", bound=BaseModel)
@@ -154,8 +168,6 @@ def _history_event_for_key(
     client_session: str,
     group_id: str | None,
 ) -> Event:
-    from gsuid_core.ai_core.http_agent.session_id import bot_self_id_for
-
     is_group = group_id is not None
     return Event(
         bot_id=key["bot_id"],
@@ -232,8 +244,6 @@ async def agent_chat_stream(request: Request) -> Response:
     settings = load_http_agent_settings()
     if len(body.images) > settings.max_images:
         return error_response(413, "payload_too_large", "too many images")
-    from gsuid_core.ai_core.http_agent.event_build import is_inline_agent_image
-
     for img in body.images:
         if not is_inline_agent_image(img):
             return error_response(400, "bad_image", "only data:image and base64:// images are allowed")
@@ -241,9 +251,6 @@ async def agent_chat_stream(request: Request) -> Response:
         return error_response(400, "empty_message", "text or images required")
 
     sid = session_id_for_key(key, client_session, group_id)
-    from gsuid_core.ai_core.http_agent.persona import PersonaResolveError, resolve_http_persona
-    from gsuid_core.ai_core.http_agent.event_build import build_http_agent_event
-
     try:
         resolve_http_persona(session_id=sid, key=key, requested=body.persona)
     except PersonaResolveError as e:
@@ -315,7 +322,6 @@ async def _sse_run(
 ) -> AsyncIterator[str]:
     from gsuid_core.ai_core.handle_ai import PassiveChatResult
     from gsuid_core.ai_core.agent_errors import sanitize_error_for_user
-    from gsuid_core.ai_core.http_agent.bridge import make_capture_bot, run_http_agent_turn
     from gsuid_core.ai_core.http_agent.capture_bot import CaptureItem
 
     queue: asyncio.Queue[CaptureItem] = asyncio.Queue(maxsize=queue_max)

@@ -12,6 +12,13 @@ class CookieTokenInfo(TypedDict):
     cookies: NotRequired[Dict[str, str]]
 
 
+class BbsStokenInfo(TypedDict):
+    stoken: str
+    uid: str
+    mid: str
+    app_cookie: str
+
+
 class StokenInfo(TypedDict):
     token_type: NotRequired[int]
     name: NotRequired[str]

@@ -19,9 +19,9 @@ from gsuid_core.ai_core.memory.database.models import (
     AIMemEntity,
     AIMemThread,
     AIMemEpisode,
-    AIMemPreference,
     mem_episode_entity_mentions,
 )
+from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
 _IN_CHUNK = 400
 
@@ -42,7 +42,7 @@ async def _collect_scope_keys_by_prefix(
 ) -> list[str]:
     pattern = f"{scope_pattern}%"
     scope_keys: list[str] = []
-    for model in (AIMemEpisode, AIMemEntity, AIMemEdge, AIMemThread):
+    for model in (AIMemEpisode, AIMemEntity, AIMemEdge, AIMemThread, AIMemPreference):
         result = await session.execute(select(model.scope_key).where(col(model.scope_key).like(pattern)).distinct())
         for row in result.fetchall():
             sk = row[0]
@@ -57,7 +57,7 @@ async def _collect_scope_keys_by_suffix(
 ) -> list[str]:
     pattern = f"%{suffix}"
     scope_keys: list[str] = []
-    for model in (AIMemEpisode, AIMemEntity, AIMemEdge, AIMemThread):
+    for model in (AIMemEpisode, AIMemEntity, AIMemEdge, AIMemThread, AIMemPreference):
         result = await session.execute(select(model.scope_key).where(col(model.scope_key).like(pattern)).distinct())
         for row in result.fetchall():
             sk = row[0]
@@ -72,7 +72,7 @@ async def _delete_qdrant_by_scope_keys(scope_keys: list[str]) -> None:
     try:
         from gsuid_core.ai_core.rag.base import client
         from gsuid_core.ai_core.rag.qmodels import Filter, MatchAny, FieldCondition
-        from gsuid_core.ai_core.memory.vector.collections import MEMORY_COLLECTIONS
+        from gsuid_core.ai_core.memory.vector.ops import MEMORY_COLLECTIONS
 
         if client is None:
             return

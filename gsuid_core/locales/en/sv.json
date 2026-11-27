@@ -1,4 +1,5 @@
 {
+  "log.sv.ai_opts_ignored_without_to_ai": "Trigger [{keyword}] has no to_ai docstring; timeout/background apply only to AI tools and are ignored.",
   "log.sv.error_occurred_executing": "[SV] Error occurred while executing {p0}!",
   "log.sv.name_module_initializing": "[{name}] Module initializing...",
   "log.sv.type_trigger_k_load": "Loaded {type} trigger [{_k}]!",

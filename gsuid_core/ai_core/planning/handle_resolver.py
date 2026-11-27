@@ -7,15 +7,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 from dataclasses import dataclass
 
-from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
-from gsuid_core.ai_core.planning.tool_output_protocol import (
-    load_payload_text,
+from gsuid_core.ai_core.planning.tool_output_store import (
+    AIToolOutputRecord,
     is_raster_image_mime,
     format_paginated_body,
+    format_payload_paginated,
 )
+
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.planning.models import AIAgentArtifact
 
 
 @dataclass(frozen=True)
@@ -78,7 +81,7 @@ def _from_tool_output(rec: AIToolOutputRecord) -> ResolvedHandle:
     )
 
 
-async def _from_artifact(art: Any) -> ResolvedHandle:
+async def _from_artifact(art: AIAgentArtifact) -> ResolvedHandle:
     from gsuid_core.ai_core.planning.models import AIAgentTask
 
     mime = art.mime or "text/plain"
@@ -239,6 +242,13 @@ def _resolve_note_handle_sync(hid: str, pname: str, title: str) -> Optional[Reso
     return None
 
 
+async def _resolve_artifact_by_id(hid: str) -> Optional[ResolvedHandle]:
+    from gsuid_core.ai_core.planning.models import AIAgentArtifact
+
+    art = await AIAgentArtifact.get_by_id(hid)
+    return await _from_artifact(art) if art is not None else None
+
+
 async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
     hid = (handle_id or "").strip()
     if not hid:
@@ -282,6 +292,7 @@ async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
         from gsuid_core.ai_core.journal.storage import SELF_SHARD_ID
 
         eff_shard = shard_id or SELF_SHARD_ID
+        owner_uid = eff_shard[len("user:") :].strip() if eff_shard.startswith("user:") else ""
         text = await read_archived_journal_handle(pname, eff_shard, date_key)
         if text:
             return ResolvedHandle(
@@ -289,7 +300,7 @@ async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
                 source="journal",
                 mime="text/markdown",
                 summary=f"{pname} 的手账归档 ({date_key})",
-                owner_user_id="",
+                owner_user_id=owner_uid,
                 scope_key="" if eff_shard == SELF_SHARD_ID else eff_shard,
                 payload_inline=text,
                 payload_path="",
@@ -327,30 +338,15 @@ async def resolve_handle(handle_id: str) -> Optional[ResolvedHandle]:
                 payload_path="",
                 size_bytes=RM._size_of(data),
             )
-        from gsuid_core.ai_core.planning.models import AIAgentArtifact
-
-        art = await AIAgentArtifact.get_by_id(hid)
-        if art is not None:
-            return await _from_artifact(art)
-        return None
+        return await _resolve_artifact_by_id(hid)
     # Artifact res_
     if hid.startswith("res_"):
-        from gsuid_core.ai_core.planning.models import AIAgentArtifact
-
-        art = await AIAgentArtifact.get_by_id(hid)
-        if art is None:
-            return None
-        return await _from_artifact(art)
+        return await _resolve_artifact_by_id(hid)
     # 裸 id 先试 FileOS 再 artifact
     rec = await AIToolOutputRecord.get_by_id(hid)
     if rec is not None:
         return _from_tool_output(rec)
-    from gsuid_core.ai_core.planning.models import AIAgentArtifact
-
-    art = await AIAgentArtifact.get_by_id(hid)
-    if art is None:
-        return None
-    return await _from_artifact(art)
+    return await _resolve_artifact_by_id(hid)
 
 
 def format_resolved(
@@ -377,17 +373,10 @@ def format_resolved(
             read_hint="read_handle(handle_id, offset, limit)",
         )
     head = f"handle {resolved.id} | kind={resolved.source} | mime={resolved.mime}\nsummary: {resolved.summary}\n"
-    text, err = load_payload_text(
+    return format_payload_paginated(
+        head=head,
         payload_inline=resolved.payload_inline,
         payload_path=resolved.payload_path,
-    )
-    if err:
-        return head + f"⚠️ {err}"
-    if not text:
-        return head + "（无内容）"
-    return format_paginated_body(
-        head=head,
-        text=text,
         offset=offset,
         limit=limit,
         read_hint="read_handle(handle_id, offset, limit)",

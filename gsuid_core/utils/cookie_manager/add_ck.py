@@ -130,8 +130,14 @@ async def refresh_ck_by_uid_list(
     return im
 
 
-async def deal_ck(bot_id: str, mes: str, user_id: str, mode: str = "PIC"):
-    im = await _deal_ck(bot_id, mes, user_id)
+async def deal_ck(
+    bot_id: str,
+    mes: str,
+    user_id: str,
+    mode: str = "PIC",
+    refresh_stoken: bool = True,
+):
+    im = await _deal_ck(bot_id, mes, user_id, refresh_stoken=refresh_stoken)
     logger.debug(t("log.cookie.add_ck_im_create", im=im))
     img, status = await _deal_ck_to_pic(im)
     if mode == "PIC":
@@ -278,7 +284,12 @@ async def get_all_bind_uid(bot_id: str, user_id: str) -> Tuple[Union[str, None],
     return uid, sr_uid, zzz_uid, bbb_uid
 
 
-async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
+async def _deal_ck(
+    bot_id: str,
+    mes: str,
+    user_id: str,
+    refresh_stoken: bool = True,
+) -> str:
     simp_dict = SimpleCookie(mes)
     uid, sr_uid, zzz_uid, bbb_uid = await get_all_bind_uid(bot_id, user_id)
     is_os = is_overseas_account(uid, sr_uid, zzz_uid)
@@ -317,6 +328,12 @@ async def _deal_ck(bot_id: str, mes: str, user_id: str) -> str:
                         return "v2类型SK必须携带mid..."
                 else:
                     app_cookie = f"stuid={account_id};stoken={stoken}"
+                prefetched_ck = get_cookie_value(simp_dict, ck_list)
+                if not refresh_stoken and not is_os and prefetched_ck:
+                    cookie_token = prefetched_ck
+                    is_add_stoken = True
+                    status = False
+                    break
                 cookie_token_data = await mys_api.get_cookie_token_by_stoken(
                     stoken,
                     account_id,

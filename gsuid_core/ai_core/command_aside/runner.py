@@ -18,8 +18,9 @@ from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.gs_agent import GsCoreAIAgent
 from gsuid_core.ai_core.ai_router import get_ai_session
 from gsuid_core.ai_core.statistics import statistics_manager
-from gsuid_core.ai_core.persona.config import ASIDE_MODE, normalize_ai_modes, persona_config_manager
+from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.configs.ai_config import ai_config
+from gsuid_core.ai_core.persona.config_rules import ASIDE_MODE, normalize_ai_modes
 from gsuid_core.buildin_plugins.core_command.core_ai_control.state import is_scope_banned
 
 from .recall import lookup_advice

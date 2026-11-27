@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.memory.scope import ScopeType, make_scope_key, self_scope_key, self_scope_read_keys
-from gsuid_core.ai_core.memory.relative_schedule import (
+from gsuid_core.ai_core.memory.retrieval.event_time import (
     preference_written_on,
     one_off_schedule_expired,
     looks_like_one_off_relative_schedule,
@@ -65,8 +65,10 @@ def default_self_ontology() -> str:
 async def ensure_self_ontology(bot_id: str, persona_name: str) -> str:
     """框架写入本体知识；空则填默认模板。"""
     from gsuid_core.ai_core.state_store import state_mutate, state_get_value
+    from gsuid_core.ai_core.persona_reset.guard import is_scope_frozen, is_persona_frozen
 
-    raw = await state_get_value(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY)
+    scope = _self_scope(bot_id, persona_name)
+    raw = await state_get_value(scope, _SELF_MODEL_KEY)
     if isinstance(raw, dict) and _ONTOLOGY_FIELD in raw:
         val = raw[_ONTOLOGY_FIELD]
         text_val = ""
@@ -78,22 +80,26 @@ async def ensure_self_ontology(bot_id: str, persona_name: str) -> str:
             # 旧版冗长模板自动换成紧凑版
             if "群友讨论这些名字" in text_val or "群里的 bot 统计" in text_val:
                 text_val = default_self_ontology()
+                if is_persona_frozen(persona_name) or is_scope_frozen(scope):
+                    return text_val
 
                 def _mutate_refresh(current: Any) -> Dict[str, object]:
                     model = _self_model_state(current)
                     model[_ONTOLOGY_FIELD] = text_val
                     return model
 
-                await state_mutate(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY, _mutate_refresh)
+                await state_mutate(scope, _SELF_MODEL_KEY, _mutate_refresh)
             return text_val
     text = default_self_ontology()
+    if is_persona_frozen(persona_name) or is_scope_frozen(scope):
+        return text
 
     def _mutate(current: Any) -> Dict[str, object]:
         model = _self_model_state(current)
         model[_ONTOLOGY_FIELD] = text
         return model
 
-    await state_mutate(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY, _mutate)
+    await state_mutate(scope, _SELF_MODEL_KEY, _mutate)
     return text
 
 
@@ -191,6 +197,10 @@ async def add_self_note(
         if (resolved_scope and field in ("commitments", "self_notes"))
         else _self_scope(bot_id, persona_name)
     )
+    from gsuid_core.ai_core.persona_reset.guard import is_scope_frozen, is_persona_frozen
+
+    if is_persona_frozen(persona_name) or is_scope_frozen(target_state_scope):
+        return False
     await state_mutate(target_state_scope, _SELF_MODEL_KEY, _mutate)
     from gsuid_core.ai_core.cognition.distill import distill_self_note
 
@@ -249,7 +259,12 @@ async def overwrite_self_model_field(
         model[field] = cleaned
         return model
 
-    await state_mutate(_self_scope(bot_id, persona_name), _SELF_MODEL_KEY, _mutate)
+    from gsuid_core.ai_core.persona_reset.guard import is_scope_frozen, is_persona_frozen
+
+    scope = _self_scope(bot_id, persona_name)
+    if is_persona_frozen(persona_name) or is_scope_frozen(scope):
+        return False
+    await state_mutate(scope, _SELF_MODEL_KEY, _mutate)
     logger.info(
         i18n_t(
             "log.ai.selfcog_bot_id_self_field",
@@ -605,7 +620,7 @@ async def load_speaker_preference_tail(
     model = await get_self_model(bot_id, persona_name)
     scoped: list[tuple[str, str, bool, Optional[datetime], str]] = []
     if memory_config.enable_preference_memory:
-        from gsuid_core.ai_core.memory.database.models import AIMemPreference
+        from gsuid_core.ai_core.memory.database.preference import AIMemPreference
 
         scope = make_scope_key(ScopeType.USER_GLOBAL, speaker)
         cap = int(memory_config.preference_max_inject)

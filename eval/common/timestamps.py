@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 from datetime import datetime
 
-from gsuid_core.ai_core.memory.ingest_time import spread_datetimes
+from gsuid_core.ai_core.memory.retrieval.event_time import spread_datetimes
 
 
 def spread_payload_timestamps(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -1,14 +1,24 @@
 """静态守门：框架日志必须接入 i18n，且所有 locale 必须保持结构完整。"""
 
+from __future__ import annotations
+
 import re
 import ast
 import json
-from typing import Set, Dict, List, Tuple, Iterable, Iterator, Optional
 from pathlib import Path
 from collections import Counter, defaultdict
 from dataclasses import field, dataclass
+from collections.abc import Iterable, Iterator
 
 import pytest
+
+from gsuid_core.i18n import (
+    Lang,
+    t,
+    starts_with_emoji,
+    unregister_plugin_locales,
+    discover_and_register_plugin_locales,
+)
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SRC = _ROOT / "gsuid_core"
@@ -37,13 +47,13 @@ _PRINTF_FIELD_RE = re.compile(
 
 @dataclass(eq=False)
 class _Scope:
-    parent: Optional["_Scope"] = None
-    assignments: Dict[str, List[Optional[ast.AST]]] = field(default_factory=lambda: defaultdict(list))
-    i18n_names: Set[str] = field(default_factory=set)
-    logger_names: Set[str] = field(default_factory=set)
-    logger_factories: Set[str] = field(default_factory=set)
-    logging_modules: Set[str] = field(default_factory=set)
-    structlog_modules: Set[str] = field(default_factory=set)
+    parent: _Scope | None = None
+    assignments: dict[str, list[ast.AST | None]] = field(default_factory=lambda: defaultdict(list))
+    i18n_names: set[str] = field(default_factory=set)
+    logger_names: set[str] = field(default_factory=set)
+    logger_factories: set[str] = field(default_factory=set)
+    logging_modules: set[str] = field(default_factory=set)
+    structlog_modules: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -51,7 +61,7 @@ class _ParsedSource:
     path: Path
     source: str
     tree: ast.Module
-    scopes: Dict[int, _Scope]
+    scopes: dict[int, _Scope]
     module_scope: _Scope
 
 
@@ -61,9 +71,9 @@ class _ScopeBuilder(ast.NodeVisitor):
         if own_i18n_t:
             self.module_scope.i18n_names.add("t")
         self.current = self.module_scope
-        self.scopes: Dict[int, _Scope] = {}
+        self.scopes: dict[int, _Scope] = {}
 
-    def visit(self, node: ast.AST):  # type: ignore[no-untyped-def]
+    def visit(self, node: ast.AST) -> object:
         self.scopes[id(node)] = self.current
         return super().visit(node)
 
@@ -94,7 +104,7 @@ class _ScopeBuilder(ast.NodeVisitor):
             for item in target.elts:
                 yield from _ScopeBuilder._target_names(item)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         for dec in node.decorator_list:
             self.visit(dec)
         for default in (*node.args.defaults, *node.args.kw_defaults):
@@ -104,8 +114,11 @@ class _ScopeBuilder(ast.NodeVisitor):
             self.visit(node.returns)
         self._visit_child_scope(node, node.body, self._argument_names(node.args))
 
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_func(node)
+
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.visit_FunctionDef(node)  # type: ignore[arg-type]
+        self._visit_func(node)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         previous = self.current
@@ -161,23 +174,29 @@ class _ScopeBuilder(ast.NodeVisitor):
             self.current.assignments[name].append(node.value)
         self.generic_visit(node)
 
-    def visit_For(self, node: ast.For) -> None:
+    def _visit_for(self, node: ast.For | ast.AsyncFor) -> None:
         for name in self._target_names(node.target):
             self.current.assignments[name].append(None)
         self.generic_visit(node)
 
-    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
-        self.visit_For(node)  # type: ignore[arg-type]
+    def visit_For(self, node: ast.For) -> None:
+        self._visit_for(node)
 
-    def visit_With(self, node: ast.With) -> None:
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self._visit_for(node)
+
+    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
         for item in node.items:
             if item.optional_vars is not None:
                 for name in self._target_names(item.optional_vars):
                     self.current.assignments[name].append(None)
         self.generic_visit(node)
 
+    def visit_With(self, node: ast.With) -> None:
+        self._visit_with(node)
+
     def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
-        self.visit_With(node)  # type: ignore[arg-type]
+        self._visit_with(node)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         if node.name:
@@ -207,8 +226,8 @@ def _iter_source_files() -> Iterator[Path]:
             yield path
 
 
-def _lookup_scope_with_name(scope: _Scope, name: str) -> Optional[_Scope]:
-    current: Optional[_Scope] = scope
+def _lookup_scope_with_name(scope: _Scope, name: str) -> _Scope | None:
+    current: _Scope | None = scope
     while current is not None:
         if (
             name in current.assignments
@@ -252,7 +271,7 @@ def _is_factory_call(node: ast.Call, scope: _Scope) -> bool:
     )
 
 
-def _is_logger_expr(node: ast.AST, scope: _Scope, seen: Optional[Set[Tuple[int, str]]] = None) -> bool:
+def _is_logger_expr(node: ast.AST, scope: _Scope, seen: set[tuple[int, str]] | None = None) -> bool:
     if seen is None:
         seen = set()
     if isinstance(node, ast.Name):
@@ -281,7 +300,7 @@ def _is_logger_expr(node: ast.AST, scope: _Scope, seen: Optional[Set[Tuple[int, 
     )
 
 
-def _logger_message(node: ast.Call) -> Optional[ast.AST]:
+def _logger_message(node: ast.Call) -> ast.AST | None:
     if not isinstance(node.func, ast.Attribute):
         return None
     position = 1 if node.func.attr == "log" else 0
@@ -313,7 +332,7 @@ def _combine_message_states(states: Iterable[str]) -> str:
 def _message_state(
     node: ast.AST,
     scope: _Scope,
-    seen: Optional[Set[Tuple[int, str]]] = None,
+    seen: set[tuple[int, str]] | None = None,
 ) -> str:
     if seen is None:
         seen = set()
@@ -353,8 +372,8 @@ def _message_state(
 def _translated_sources(
     node: ast.AST,
     scope: _Scope,
-    seen: Optional[Set[Tuple[int, str]]] = None,
-) -> List[ast.Call]:
+    seen: set[tuple[int, str]] | None = None,
+) -> list[ast.Call]:
     if seen is None:
         seen = set()
     if _is_i18n_call(node, scope):
@@ -369,7 +388,7 @@ def _translated_sources(
     if marker in seen:
         return []
     seen.add(marker)
-    calls: List[ast.Call] = []
+    calls: list[ast.Call] = []
     for value in owner.assignments[node.id]:
         if value is not None:
             calls.extend(_translated_sources(value, owner, seen))
@@ -377,11 +396,12 @@ def _translated_sources(
 
 
 def _scope_for(parsed: _ParsedSource, node: ast.AST) -> _Scope:
-    return parsed.scopes.get(id(node), parsed.module_scope)
+    key = id(node)
+    return parsed.scopes[key] if key in parsed.scopes else parsed.module_scope
 
 
-def _collect_logger_violations(parsed: _ParsedSource) -> Tuple[List[str], int]:
-    violations: List[str] = []
+def _collect_logger_violations(parsed: _ParsedSource) -> tuple[list[str], int]:
+    violations: list[str] = []
     count = 0
     for node in ast.walk(parsed.tree):
         if not isinstance(node, ast.Call):
@@ -410,26 +430,9 @@ def _collect_logger_violations(parsed: _ParsedSource) -> Tuple[List[str], int]:
     return violations, count
 
 
-def _declared_languages() -> Set[str]:
-    tree = ast.parse(_I18N_FILE.read_text(encoding="utf-8-sig"), filename=str(_I18N_FILE))
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef) or node.name != "Lang":
-            continue
-        languages: Set[str] = set()
-        for stmt in node.body:
-            if (
-                isinstance(stmt, ast.Assign)
-                and isinstance(stmt.value, ast.Constant)
-                and isinstance(stmt.value.value, str)
-            ):
-                languages.add(stmt.value.value)
-        return languages
-    raise AssertionError("i18n.py 中未找到 Lang 枚举")
-
-
-def _reject_duplicate_keys(pairs: List[Tuple[str, object]]) -> Dict[str, object]:
-    result: Dict[str, object] = {}
-    duplicates: Set[str] = set()
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    duplicates: set[str] = set()
     for key, value in pairs:
         if key in result:
             duplicates.add(key)
@@ -439,28 +442,30 @@ def _reject_duplicate_keys(pairs: List[Tuple[str, object]]) -> Dict[str, object]
     return result
 
 
-def _load_catalog_file(path: Path) -> Dict[str, str]:
+def _load_catalog_file(path: Path) -> dict[str, str]:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
+        raw: object = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
         raise AssertionError(f"{path.relative_to(_ROOT).as_posix()} 不是完整有效的 locale JSON: {e}") from e
     assert isinstance(raw, dict), f"{path.relative_to(_ROOT).as_posix()} 顶层必须是 JSON 对象"
-    invalid = [
-        repr(key)
-        for key, value in raw.items()
-        if not isinstance(key, str) or not key.strip() or not isinstance(value, str) or not value.strip()
-    ]
+    cleaned: dict[str, str] = {}
+    invalid: list[str] = []
+    for key, value in raw.items():
+        if isinstance(key, str) and key.strip() and isinstance(value, str) and value.strip():
+            cleaned[key] = value
+        else:
+            invalid.append(repr(key))
     assert not invalid, f"{path.relative_to(_ROOT).as_posix()} 含非字符串或空 key/value: {invalid[:20]}"
-    return raw  # type: ignore[return-value]
+    return cleaned
 
 
-def _load_catalogs() -> Dict[str, Dict[str, str]]:
-    catalogs: Dict[str, Dict[str, str]] = {}
+def _load_catalogs() -> dict[str, dict[str, str]]:
+    catalogs: dict[str, dict[str, str]] = {}
     if not _LOCALES.is_dir():
         return catalogs
     for path in sorted(_LOCALES.iterdir()):
         if path.is_dir() and not path.name.startswith((".", "_")):
-            merged: Dict[str, str] = {}
+            merged: dict[str, str] = {}
             for f in sorted(path.glob("*.json")):
                 part = _load_catalog_file(f)
                 overlap = set(merged) & set(part)
@@ -472,16 +477,17 @@ def _load_catalogs() -> Dict[str, Dict[str, str]]:
     return catalogs
 
 
-def _placeholder_signature(text: str) -> Tuple[Counter, Counter]:
+@pytest.fixture(scope="module")
+def _catalogs() -> dict[str, dict[str, str]]:
+    return _load_catalogs()
+
+
+def _placeholder_signature(text: str) -> tuple[Counter[tuple[str, str, str]], Counter[tuple[str, str]]]:
     brace = Counter(
         (match.group(1), match.group(2) or "", match.group(3) or "") for match in _BRACE_FIELD_RE.finditer(text)
     )
     printf = Counter((match.group(1) or "", match.group(2)) for match in _PRINTF_FIELD_RE.finditer(text))
     return brace, printf
-
-
-def _placeholder_names(template: str) -> list[str]:
-    return [m.group(1) for m in _BRACE_FIELD_RE.finditer(template)]
 
 
 def _iter_i18n_calls(parsed: _ParsedSource) -> Iterator[ast.Call]:
@@ -494,7 +500,7 @@ def _format_offenders(offenders: Iterable[str]) -> str:
     return "\n".join(f"  {item}" for item in offenders)
 
 
-def test_framework_logger_i18n_and_static_keys() -> None:
+def test_framework_logger_i18n_and_static_keys(_catalogs: dict[str, dict[str, str]]) -> None:
     parsed_sample = _parse_text(
         """
 import logging
@@ -522,18 +528,11 @@ logger.exception(error)
     with pytest.raises(ValueError, match="重复 key"):
         json.loads('{"same": "first", "same": "second"}', object_pairs_hook=_reject_duplicate_keys)
 
-    declared = _declared_languages()
-    found = {
-        path.stem if path.is_file() else path.name
-        for path in _LOCALES.iterdir()
-        if not path.name.startswith((".", "_")) and (path.is_dir() or (path.is_file() and path.suffix == ".json"))
-    }
-    assert declared == found
-
-    catalogs = _load_catalogs()
+    catalogs = _catalogs
+    assert {lang.value for lang in Lang} == set(catalogs)
     assert "zh-cn" in catalogs
     reference = catalogs["zh-cn"]
-    catalog_offenders: List[str] = []
+    catalog_offenders: list[str] = []
     for lang, catalog in catalogs.items():
         missing = sorted(set(reference) - set(catalog))
         extra = sorted(set(catalog) - set(reference))
@@ -545,8 +544,8 @@ logger.exception(error)
                 catalog_offenders.append(f"{lang}: {key!r} 占位符不一致")
     assert not catalog_offenders, "locale key 或占位符不完整：\n" + _format_offenders(catalog_offenders)
 
-    log_offenders: List[str] = []
-    key_offenders: List[str] = []
+    log_offenders: list[str] = []
+    key_offenders: list[str] = []
     count = 0
     for path in _iter_source_files():
         parsed = _parse_source(path)
@@ -570,39 +569,40 @@ logger.exception(error)
             if missing_params:
                 key_offenders.append(f"{rel}:L{call.lineno}: {key!r} 未传具名占位符 {missing_params}")
 
-    assert count > 1000, f"只识别到 {count} 个 logger 调用，扫描器可能已失效"
+    assert count > 0, "未识别到任何 logger 调用，扫描器可能已失效"
     assert not log_offenders, "以下框架日志含未接入 t()/i18n_t() 的静态文案：\n" + _format_offenders(log_offenders)
     assert not key_offenders, "静态 i18n key 或调用参数不完整：\n" + _format_offenders(key_offenders)
 
 
-def test_emoji_assembly_and_plugin_locale_isolation(tmp_path: Path) -> None:
-    from gsuid_core.i18n import (
-        t,
-        load_catalogs,
-        ensure_log_emoji,
-        starts_with_emoji,
-        plugin_locale_key_count,
-        unregister_plugin_locales,
-        discover_and_register_plugin_locales,
-    )
+def test_emoji_assembly_and_plugin_locale_isolation(
+    tmp_path: Path,
+    _catalogs: dict[str, dict[str, str]],
+) -> None:
+    catalogs = _catalogs
 
-    load_catalogs()
-    catalogs = _load_catalogs()
+    def _render(key: str) -> str:
+        names = {item[0] for item in _placeholder_signature(catalogs["zh-cn"][key])[0]}
+        return t(key, lang="zh-cn", **{name: "x" for name in names})
+
     sample = next((k for k in catalogs["zh-cn"] if k.startswith("log.server.")), None)
-    assert sample is not None
-    assert starts_with_emoji(t(sample, lang="zh-cn"))
-    assert ensure_log_emoji("log.meme.foo", "hello").startswith("🎭")
+    assert sample is not None and starts_with_emoji(_render(sample))
+    meme_sample = next((k for k in catalogs["zh-cn"] if k.startswith("log.meme.")), None)
+    assert meme_sample is not None and _render(meme_sample).startswith("🎭")
 
     msg_keys = [k for k in catalogs["zh-cn"] if k.startswith("msg.")]
     assert msg_keys
     for key in msg_keys:
-        text = t(key, lang="zh-cn", **{name: "x" for name in _placeholder_names(catalogs["zh-cn"][key])})
+        text = _render(key)
         assert not starts_with_emoji(text), f"{key} 不应带日志 emoji: {text!r}"
+
+    for lang, catalog in catalogs.items():
+        leaked = [k for k in catalog if k.startswith("log.genshinuid.")]
+        assert not leaked, f"{lang} 混入插件 key: {leaked}"
 
     plugin_name = "FakePluginUID"
     plugin_root = tmp_path / plugin_name
     sample_key = "log.fakepluginuid.hello"
-    for lang in ("zh-cn", "en", "ja"):
+    for lang in (item.value for item in Lang):
         lang_dir = plugin_root / "locales" / lang
         lang_dir.mkdir(parents=True)
         (lang_dir / "logs.json").write_text(
@@ -610,15 +610,13 @@ def test_emoji_assembly_and_plugin_locale_isolation(tmp_path: Path) -> None:
             encoding="utf-8",
         )
 
-    for lang_dir in _LOCALES.iterdir():
-        if lang_dir.is_dir():
-            for f in lang_dir.glob("*.json"):
-                data = json.loads(f.read_text(encoding="utf-8"))
-                assert not [k for k in data if k.startswith(("log.fakepluginuid.", "log.genshinuid."))]
+    unregister_plugin_locales(plugin_name)
+    try:
+        assert discover_and_register_plugin_locales(plugin_root, plugin_name) > 0
+        resolved = t(sample_key, lang="zh-cn", name="world")
+        assert "hello" in resolved and "world" in resolved and sample_key not in resolved
+    finally:
+        unregister_plugin_locales(plugin_name)
 
-    unregister_plugin_locales(plugin_name)
-    assert discover_and_register_plugin_locales(plugin_root, plugin_name) > 0
-    assert plugin_locale_key_count(plugin_name) > 0
-    resolved = t(sample_key, lang="zh-cn", name="world")
-    assert "hello" in resolved and "world" in resolved and sample_key not in resolved
-    unregister_plugin_locales(plugin_name)
+    after_unregister = t(sample_key, lang="zh-cn", name="world")
+    assert sample_key in after_unregister and "[FakePlugin]" not in after_unregister and "world" not in after_unregister

@@ -6,23 +6,7 @@ import asyncio
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
-from gsuid_core.ai_core.autonomy.codec import dump_fact, dump_steps, dump_str_list
-from gsuid_core.ai_core.autonomy.gates import (
-    FAIL_BACKOFF_SECONDS,
-    FIRST_DELAY_MAX_SECONDS,
-    FIRST_DELAY_MIN_SECONDS,
-    gate_reason,
-    autonomy_is_due,
-    should_skip_model,
-)
-from gsuid_core.ai_core.persona.config import (
-    AUTONOMY_MODE,
-    is_persona_enabled,
-    normalize_ai_modes,
-    read_autonomy_runtime,
-    is_within_active_hours,
-    persona_config_manager,
-)
+from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.autonomy.models import (
     FactPack,
     DriveKind,
@@ -31,22 +15,45 @@ from gsuid_core.ai_core.autonomy.models import (
     DeliveryDecision,
     AutonomyStepTrace,
     ObservationDigest,
+    dump_fact,
+    dump_steps,
+    dump_str_list,
 )
-from gsuid_core.ai_core.autonomy.runner import run_autonomy_agent
+from gsuid_core.ai_core.autonomy.runner import (
+    FAIL_BACKOFF_SECONDS,
+    FIRST_DELAY_MAX_SECONDS,
+    FIRST_DELAY_MIN_SECONDS,
+    gate_reason,
+    autonomy_is_due,
+    should_skip_model,
+    run_autonomy_agent,
+)
 from gsuid_core.ai_core.autonomy.select import render_digest, pins_from_digest
 from gsuid_core.ai_core.database.models import AIAutonomyActivity
 from gsuid_core.ai_core.persona.persona import Persona
-from gsuid_core.ai_core.autonomy.dispatch import STAGE_TTL_SECONDS, stage_text, route_delivery
-from gsuid_core.ai_core.autonomy.observer import build_observation
-from gsuid_core.ai_core.autonomy.verifier import (
+from gsuid_core.ai_core.proactive.policy import check_target_rate_and_gap
+from gsuid_core.ai_core.autonomy.delivery import (
+    STAGE_TTL_SECONDS,
+    stage_text,
     fact_summary,
     parse_footer,
     extract_facts,
+    route_delivery,
     output_is_failed,
+    take_is_grounded,
     output_is_skipped,
 )
+from gsuid_core.ai_core.autonomy.observer import build_observation
 from gsuid_core.ai_core.configs.ai_config import ai_config
 from gsuid_core.ai_core.prompt_group.store import render_prompt
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
+from gsuid_core.ai_core.persona.config_rules import (
+    AUTONOMY_MODE,
+    is_persona_enabled,
+    normalize_ai_modes,
+    read_autonomy_runtime,
+    is_within_active_hours,
+)
 from gsuid_core.ai_core.proactive.dispatcher import get_dispatcher, make_target_key
 
 _JOB_ID = "ai_autonomy_tick"
@@ -148,6 +155,8 @@ class AutonomyScheduler:
         return first
 
     async def run_persona(self, persona_name: str, *, force: bool) -> str:
+        if is_persona_frozen(persona_name):
+            return "resetting"
         reason = await self._blocked(persona_name, force=force)
         if reason:
             logger.info(t("log.ai.autonomy_tick_skip", persona_name=persona_name, reason=reason))
@@ -185,9 +194,7 @@ class AutonomyScheduler:
         )
         parsed = parse_footer(report.text)
         facts = extract_facts(report.steps)
-        from gsuid_core.ai_core.persona.config import read_drive_traits
         from gsuid_core.ai_core.persona.presence import record_offscreen
-        from gsuid_core.ai_core.autonomy.verifier import take_is_grounded
         from gsuid_core.ai_core.autonomy.micro_arc import (
             prune_arcs,
             advance_arc,
@@ -198,6 +205,7 @@ class AutonomyScheduler:
         )
         from gsuid_core.ai_core.persona.homeostasis import touch_topic, load_homeostasis, save_homeostasis
         from gsuid_core.ai_core.interaction_scaffold import is_persistent_style_rule
+        from gsuid_core.ai_core.persona.config_rules import read_drive_traits
 
         decision = route_delivery(
             _plan(
@@ -402,11 +410,16 @@ def _plan(
     quota: set[str] = set()
     gap: set[str] = set()
     for key in _keys(care, groups):
-        if not dispatcher.should_suppress_by_rate(
-            key, max_per_hour=hour_cap, max_per_day=day_cap, persona_name=digest.persona_name
-        ):
+        gap_blocked, rate_blocked = check_target_rate_and_gap(
+            dispatcher,
+            key,
+            persona_name=digest.persona_name,
+            max_per_hour=hour_cap,
+            max_per_day=day_cap,
+        )
+        if not rate_blocked:
             quota.add(key)
-        if dispatcher.should_suppress_heartbeat(key):
+        if gap_blocked:
             gap.add(key)
     runtime = read_autonomy_runtime(persona_config_manager.get_config(digest.persona_name))
     within = is_within_active_hours(list(runtime.active_hours), runtime.timezone)
@@ -482,33 +495,25 @@ def _pin_for_tool_send(digest: ObservationDigest, user_id: str, group_id: str) -
     )
 
 
-async def _emit(pin: DeliveryPin, message: str, persona_name: str, source_group_id: str = "") -> bool:
-    from gsuid_core.models import Event
-    from gsuid_core.ai_core.proactive.emitter import emit_proactive_message
+_shutdown_registered = False
 
-    if not message.strip():
-        return False
-    bot_id = pin.bot_id or "Bot"
-    event = Event(
-        bot_id=bot_id,
-        real_bot_id=bot_id,
-        bot_self_id=pin.bot_self_id,
-        user_id=pin.user_id,
-        user_pm=6,
-        user_type="group" if pin.group_id else "direct",
-        group_id=pin.group_id,
-        WS_BOT_ID=pin.ws_bot_id or None,
-    )
-    return await emit_proactive_message(
-        event,
-        message.strip()[:400],
-        source="autonomy",
-        trigger_reason=f"{persona_name} 自主行动",
-        suppress_when_heartbeat_recent=True,
-        at_user_id=pin.user_id if (pin.group_id and pin.user_id) else None,
-        persona_name=persona_name,
-        source_group_id=source_group_id or pin.group_id or "",
-    )
+
+async def stop_autonomy() -> None:
+    await autonomy_scheduler.stop()
+
+
+async def init_autonomy() -> None:
+    """启动自主行动调度器、登记关闭钩子并同步已有磁盘笔记。"""
+    global _shutdown_registered
+    from gsuid_core.server import on_core_shutdown
+    from gsuid_core.ai_core.autonomy.tools import sync_persona_artifacts
+
+    if not _shutdown_registered:
+        on_core_shutdown(stop_autonomy)
+        _shutdown_registered = True
+    await autonomy_scheduler.start()
+    for persona_name in persona_config_manager.get_all_configs():
+        await sync_persona_artifacts(persona_name)
 
 
 async def _remember(
@@ -699,14 +704,17 @@ async def _record_autonomy_journal(
                     owner_user_id=target_uid,
                 )
 
-    # 私聊主动关怀绝不写入公共 self.md，防止通过首轮锚点泄露给所有群聊
+    # 私聊主动关怀强制落盘到 users/{uid}.md；无明确 uid 时拒绝写手账，严禁落入 self.md
     is_private_care = (
         (tool_sent and not last_sent_group_id and bool(last_sent_user_id))
         or (pin is not None and bool(pin.user_id) and not pin.group_id)
         or (decision.drive == "care_user" and not gid)
     )
+    clean_uid = target_uid.strip()
     if is_private_care:
-        return
+        if not clean_uid:
+            return
+        gid = ""
 
     candidates: list[str] = []
     if spoken_text and not is_rejected_journal_body(spoken_text):
@@ -731,6 +739,7 @@ async def _record_autonomy_journal(
     if not clean_summary:
         return
 
+    entry_requested_by = clean_uid if (is_private_care or (gid and clean_uid)) else ""
     now_dt = _dt.now()
     entry = JournalEntry(
         timestamp=now_dt.timestamp(),
@@ -740,6 +749,6 @@ async def _record_autonomy_journal(
         summary=clean_summary,
         handle_id=note_hid,
         group_id=gid,
-        requested_by=pin.user_id if (gid and pin is not None and pin.user_id) else "",
+        requested_by=entry_requested_by,
     )
     await record_journal_entry(entry, target_personas=[persona_name])

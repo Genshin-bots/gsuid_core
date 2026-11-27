@@ -7,9 +7,10 @@ AI 模块统计管理器
 """
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, TypedDict, NotRequired
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 
 from gsuid_core.aps import scheduler
 from gsuid_core.i18n import t as i18n_t
@@ -26,10 +27,293 @@ from gsuid_core.ai_core.statistics.models import (
 )
 
 from .price import calculate_model_cost
-from .dataclass_models import BotState, TokenUsage, LatencyStats, HourlyPerformanceEntry
+from .dataclass_models import BotState, TokenUsage, HourlyPerformanceEntry
 
 # 小时级性能统计的内存缓冲 key: (date, hour, provider, model_name)
 HourlyPerfKey = tuple[str, int, str, str]
+_TokenSliceRow = tuple[str, int, int, int, int]
+_TypeSliceRow = tuple[str, int, int, int, int, int]
+_ERROR_KEYS: tuple[str, ...] = (
+    "timeout",
+    "rate_limit",
+    "network_error",
+    "usage_limit",
+    "agent_error",
+    "api_529_error",
+)
+
+
+class _ModelUsageRow(TypedDict):
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    total_tokens: NotRequired[int]
+    cost: float
+
+
+class _TypeUsageRow(TypedDict):
+    type: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    request_count: int
+    total_tokens: NotRequired[int]
+
+
+@dataclass(frozen=True, slots=True)
+class _DayStatSlice:
+    """单日聚合切片，统一承载内存实时态（今日）与数据库历史行。"""
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    user_turn_count: int
+    agent_run_count: int
+    user_turn_agent_run_count: int
+    user_turn_input_tokens: int
+    user_turn_output_tokens: int
+    models: tuple[_TokenSliceRow, ...]
+    types: tuple[_TypeSliceRow, ...]
+    latency_avg: float
+    latency_p95: float
+    latency_samples: int
+    errors: dict[str, int]
+
+
+def _safe_avg(numerator: float, denominator: int) -> float:
+    return round(float(numerator) / float(denominator), 2) if denominator > 0 else 0.0
+
+
+def _errors_from_state(state: BotState) -> dict[str, int]:
+    return {key: state.errors[key] for key in _ERROR_KEYS}
+
+
+def _errors_from_daily_stats(stats: Optional[AIDailyStatistics]) -> dict[str, int]:
+    if stats is None:
+        return {key: 0 for key in _ERROR_KEYS}
+    return {
+        "timeout": stats.api_timeout_count or 0,
+        "rate_limit": stats.api_rate_limit_count or 0,
+        "network_error": stats.api_network_error_count or 0,
+        "usage_limit": stats.api_usage_limit_count or 0,
+        "agent_error": stats.api_agent_error_count or 0,
+        "api_529_error": stats.api_529_count or 0,
+    }
+
+
+def _heartbeat_dict(hb_true: int, hb_false: int) -> dict[str, int | float]:
+    total = hb_true + hb_false
+    return {
+        "should_speak_true": hb_true,
+        "should_speak_false": hb_false,
+        "conversion_rate": hb_true / total * 100 if total > 0 else 0,
+    }
+
+
+def _memory_stats_dict(src: BotState | AIDailyStatistics) -> dict[str, int]:
+    return {
+        "observations": src.memory_observations or 0,
+        "ingestions": src.memory_ingestions or 0,
+        "ingestion_errors": src.memory_ingestion_errors or 0,
+        "extraction_errors": src.memory_extraction_errors or 0,
+        "retrievals": src.memory_retrievals or 0,
+        "entities_created": src.memory_entities_created or 0,
+        "edges_created": src.memory_edges_created or 0,
+        "episodes_created": src.memory_episodes_created or 0,
+    }
+
+
+def _distribution_dict(
+    counts: Sequence[tuple[str, int]],
+    *,
+    total: Optional[int] = None,
+) -> dict[str, dict[str, int | float]]:
+    denom = (total if total is not None else sum(v for _, v in counts)) or 1
+    return {k: {"count": v, "percentage": v / denom * 100} for k, v in counts}
+
+
+def _model_usage_row(
+    model: str,
+    inp: int,
+    outp: int,
+    cr: int,
+    cw: int,
+    *,
+    include_total: bool = False,
+) -> _ModelUsageRow:
+    row: _ModelUsageRow = {
+        "model": model,
+        "input_tokens": inp,
+        "output_tokens": outp,
+        "cache_read_tokens": cr,
+        "cache_write_tokens": cw,
+        "cost": calculate_model_cost(model, inp, outp, cr, cw),
+    }
+    if include_total:
+        row["total_tokens"] = inp + outp
+    return row
+
+
+def _type_usage_row(
+    chat_type: str,
+    inp: int,
+    outp: int,
+    cr: int,
+    cw: int,
+    req_count: int = 0,
+    *,
+    include_total: bool = False,
+) -> _TypeUsageRow:
+    row: _TypeUsageRow = {
+        "type": chat_type,
+        "input_tokens": inp,
+        "output_tokens": outp,
+        "cache_read_tokens": cr,
+        "cache_write_tokens": cw,
+        "request_count": req_count,
+    }
+    if include_total:
+        row["total_tokens"] = inp + outp
+    return row
+
+
+def _efficiency_dict(src: BotState | AIDailyStatistics) -> dict[str, int | float]:
+    if isinstance(src, BotState):
+        ut_in = int(src.user_turn_tokens.input_tokens or 0)
+        ut_out = int(src.user_turn_tokens.output_tokens or 0)
+        ut_cr = int(src.user_turn_tokens.cache_read_tokens or 0)
+        ut_cw = int(src.user_turn_tokens.cache_write_tokens or 0)
+        total_in = int(src.total_tokens["input"] or 0)
+        total_out = int(src.total_tokens["output"] or 0)
+    else:
+        ut_in = int(src.user_turn_input_tokens or 0)
+        ut_out = int(src.user_turn_output_tokens or 0)
+        ut_cr = int(src.user_turn_cache_read_tokens or 0)
+        ut_cw = int(src.user_turn_cache_write_tokens or 0)
+        total_in = int(src.total_input_tokens or 0)
+        total_out = int(src.total_output_tokens or 0)
+    ut = int(src.user_turn_count or 0)
+    ar = int(src.agent_run_count or 0)
+    ut_ar = int(src.user_turn_agent_run_count or 0)
+    # 回合均耗：用户回合树内 input+output（缓存另计，避免与 input 双重叠加）
+    return {
+        "user_turn_count": ut,
+        "agent_run_count": ar,
+        "root_agent_run_count": int(src.root_agent_run_count or 0),
+        "nested_agent_run_count": int(src.nested_agent_run_count or 0),
+        "user_turn_agent_run_count": ut_ar,
+        "user_turn_input_tokens": ut_in,
+        "user_turn_output_tokens": ut_out,
+        "user_turn_cache_read_tokens": ut_cr,
+        "user_turn_cache_write_tokens": ut_cw,
+        "avg_tokens_per_user_turn": _safe_avg(ut_in + ut_out, ut),
+        "avg_input_tokens_per_user_turn": _safe_avg(ut_in, ut),
+        "avg_output_tokens_per_user_turn": _safe_avg(ut_out, ut),
+        "avg_tokens_per_agent_run": _safe_avg(total_in + total_out, ar),
+        "avg_input_tokens_per_agent_run": _safe_avg(total_in, ar),
+        "avg_output_tokens_per_agent_run": _safe_avg(total_out, ar),
+        "avg_agent_runs_per_user_turn": _safe_avg(ut_ar, ut),
+    }
+
+
+def _slice_from_live_state(b: BotState) -> _DayStatSlice:
+    return _DayStatSlice(
+        input_tokens=b.total_tokens["input"],
+        output_tokens=b.total_tokens["output"],
+        cache_read_tokens=b.total_tokens["cache_read"],
+        cache_write_tokens=b.total_tokens["cache_write"],
+        user_turn_count=int(b.user_turn_count or 0),
+        agent_run_count=int(b.agent_run_count or 0),
+        user_turn_agent_run_count=int(b.user_turn_agent_run_count or 0),
+        user_turn_input_tokens=int(b.user_turn_tokens.input_tokens or 0),
+        user_turn_output_tokens=int(b.user_turn_tokens.output_tokens or 0),
+        models=tuple(
+            (m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
+            for m, u in b.token_by_model.items()
+        ),
+        types=tuple(
+            (t, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens, u.request_count)
+            for t, u in b.token_by_type.items()
+        ),
+        latency_avg=b.latencies.avg,
+        latency_p95=b.latencies.p95,
+        latency_samples=len(b.latencies.latencies),
+        errors=_errors_from_state(b),
+    )
+
+
+def _slice_from_db_rows(
+    stats: Optional[AIDailyStatistics],
+    model_rows: Sequence[AITokenUsageByModel],
+    type_rows: Sequence[AITokenUsageByType],
+) -> _DayStatSlice:
+    return _DayStatSlice(
+        input_tokens=(stats.total_input_tokens or 0) if stats else 0,
+        output_tokens=(stats.total_output_tokens or 0) if stats else 0,
+        cache_read_tokens=(stats.total_cache_read_tokens or 0) if stats else 0,
+        cache_write_tokens=(stats.total_cache_write_tokens or 0) if stats else 0,
+        user_turn_count=int(stats.user_turn_count or 0) if stats else 0,
+        agent_run_count=int(stats.agent_run_count or 0) if stats else 0,
+        user_turn_agent_run_count=int(stats.user_turn_agent_run_count or 0) if stats else 0,
+        user_turn_input_tokens=int(stats.user_turn_input_tokens or 0) if stats else 0,
+        user_turn_output_tokens=int(stats.user_turn_output_tokens or 0) if stats else 0,
+        models=tuple(
+            (
+                row.model_name,
+                row.input_tokens or 0,
+                row.output_tokens or 0,
+                row.cache_read_tokens or 0,
+                row.cache_write_tokens or 0,
+            )
+            for row in model_rows
+        ),
+        types=tuple(
+            (
+                row.chat_type,
+                row.input_tokens or 0,
+                row.output_tokens or 0,
+                row.cache_read_tokens or 0,
+                row.cache_write_tokens or 0,
+                row.request_count or 0,
+            )
+            for row in type_rows
+        ),
+        latency_avg=(stats.avg_latency or 0.0) if stats else 0.0,
+        latency_p95=(stats.p95_latency or 0.0) if stats else 0.0,
+        latency_samples=int(stats.latency_sample_count or 0) if stats else 0,
+        errors=_errors_from_daily_stats(stats),
+    )
+
+
+def _day_slice_row(date_str: str, sl: _DayStatSlice, *, include_cache: bool) -> dict[str, object]:
+    d_cost = round(sum(calculate_model_cost(m, inp, outp, cr, cw) for m, inp, outp, cr, cw in sl.models), 6)
+    row: dict[str, object] = {
+        "date": date_str,
+        "input_tokens": sl.input_tokens,
+        "output_tokens": sl.output_tokens,
+    }
+    if include_cache:
+        row["cache_read_tokens"] = sl.cache_read_tokens
+        row["cache_write_tokens"] = sl.cache_write_tokens
+    row.update(
+        {
+            "total_tokens": sl.input_tokens + sl.output_tokens,
+            "total_cost": d_cost,
+            "user_turn_count": sl.user_turn_count,
+            "agent_run_count": sl.agent_run_count,
+            "user_turn_agent_run_count": sl.user_turn_agent_run_count,
+            "avg_tokens_per_user_turn": _safe_avg(
+                sl.user_turn_input_tokens + sl.user_turn_output_tokens, sl.user_turn_count
+            ),
+            "avg_tokens_per_agent_run": _safe_avg(sl.input_tokens + sl.output_tokens, sl.agent_run_count),
+            "avg_agent_runs_per_user_turn": _safe_avg(sl.user_turn_agent_run_count, sl.user_turn_count),
+        }
+    )
+    return row
 
 
 class StatisticsManager:
@@ -156,13 +440,15 @@ class StatisticsManager:
         output_tokens: int,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
-    ):
-        """记录 Token 使用量"""
+        request_count: int = 1,
+    ) -> None:
+        """记录 Token 使用量与真实模型请求数"""
+        req_n = max(0, request_count)
         self._bot_state.token_by_model[model_name.lower()].add(
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, req_n
         )
         self._bot_state.token_by_type[chat_type.lower()].add(
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, req_n
         )
         self._bot_state.total_tokens.update(
             input=input_tokens,
@@ -204,74 +490,15 @@ class StatisticsManager:
 
     @staticmethod
     def _safe_avg(numerator: float, denominator: int) -> float:
-        if denominator <= 0:
-            return 0.0
-        return round(float(numerator) / float(denominator), 2)
+        return _safe_avg(numerator, denominator)
 
     def _efficiency_from_state(self, s: BotState) -> Dict[str, Any]:
         """从内存 BotState 组装 efficiency 块。"""
-        ut = int(s.user_turn_count or 0)
-        ar = int(s.agent_run_count or 0)
-        ut_ar = int(s.user_turn_agent_run_count or 0)
-        ut_in = int(s.user_turn_tokens.input_tokens or 0)
-        ut_out = int(s.user_turn_tokens.output_tokens or 0)
-        ut_cr = int(s.user_turn_tokens.cache_read_tokens or 0)
-        ut_cw = int(s.user_turn_tokens.cache_write_tokens or 0)
-        # 回合均耗：用户回合树内 input+output（缓存另计，避免与 input 双重叠加）
-        ut_io = ut_in + ut_out
-        total_in = int(s.total_tokens.get("input", 0) or 0)
-        total_out = int(s.total_tokens.get("output", 0) or 0)
-        total_io = total_in + total_out
-        return {
-            "user_turn_count": ut,
-            "agent_run_count": ar,
-            "root_agent_run_count": int(s.root_agent_run_count or 0),
-            "nested_agent_run_count": int(s.nested_agent_run_count or 0),
-            "user_turn_agent_run_count": ut_ar,
-            "user_turn_input_tokens": ut_in,
-            "user_turn_output_tokens": ut_out,
-            "user_turn_cache_read_tokens": ut_cr,
-            "user_turn_cache_write_tokens": ut_cw,
-            "avg_tokens_per_user_turn": self._safe_avg(ut_io, ut),
-            "avg_input_tokens_per_user_turn": self._safe_avg(ut_in, ut),
-            "avg_output_tokens_per_user_turn": self._safe_avg(ut_out, ut),
-            "avg_tokens_per_agent_run": self._safe_avg(total_io, ar),
-            "avg_input_tokens_per_agent_run": self._safe_avg(total_in, ar),
-            "avg_output_tokens_per_agent_run": self._safe_avg(total_out, ar),
-            "avg_agent_runs_per_user_turn": self._safe_avg(ut_ar, ut),
-        }
+        return _efficiency_dict(s)
 
     def _efficiency_from_daily_stats(self, stats: AIDailyStatistics) -> Dict[str, Any]:
         """从日聚合行组装 efficiency 块。"""
-        ut = int(stats.user_turn_count or 0)
-        ar = int(stats.agent_run_count or 0)
-        ut_ar = int(stats.user_turn_agent_run_count or 0)
-        ut_in = int(stats.user_turn_input_tokens or 0)
-        ut_out = int(stats.user_turn_output_tokens or 0)
-        ut_cr = int(stats.user_turn_cache_read_tokens or 0)
-        ut_cw = int(stats.user_turn_cache_write_tokens or 0)
-        ut_io = ut_in + ut_out
-        total_in = int(stats.total_input_tokens or 0)
-        total_out = int(stats.total_output_tokens or 0)
-        total_io = total_in + total_out
-        return {
-            "user_turn_count": ut,
-            "agent_run_count": ar,
-            "root_agent_run_count": int(stats.root_agent_run_count or 0),
-            "nested_agent_run_count": int(stats.nested_agent_run_count or 0),
-            "user_turn_agent_run_count": ut_ar,
-            "user_turn_input_tokens": ut_in,
-            "user_turn_output_tokens": ut_out,
-            "user_turn_cache_read_tokens": ut_cr,
-            "user_turn_cache_write_tokens": ut_cw,
-            "avg_tokens_per_user_turn": self._safe_avg(ut_io, ut),
-            "avg_input_tokens_per_user_turn": self._safe_avg(ut_in, ut),
-            "avg_output_tokens_per_user_turn": self._safe_avg(ut_out, ut),
-            "avg_tokens_per_agent_run": self._safe_avg(total_io, ar),
-            "avg_input_tokens_per_agent_run": self._safe_avg(total_in, ar),
-            "avg_output_tokens_per_agent_run": self._safe_avg(total_out, ar),
-            "avg_agent_runs_per_user_turn": self._safe_avg(ut_ar, ut),
-        }
+        return _efficiency_dict(stats)
 
     def record_latency(self, latency: float):
         """记录响应延迟"""
@@ -360,25 +587,9 @@ class StatisticsManager:
     def get_summary(self) -> Dict[str, Any]:
         """获取统计摘要"""
         b = self._bot_state
-
-        agg_tokens = b.total_tokens
-        agg_intents = b.intents
-        agg_errors = b.errors
-        agg_triggers = b.triggers
-
-        # 聚合嵌套字典数据
-        agg_heartbeats = Counter()
-        agg_activities: Dict[str, Counter] = defaultdict(Counter)
-        all_latencies = b.latencies.latencies
-
+        agg_heartbeats: Counter[str] = Counter()
         for h in b.heartbeats.values():
             agg_heartbeats.update(h)
-        for u_key, u_val in b.activities.items():
-            agg_activities[u_key].update(u_val)
-
-        total_intents = sum(agg_intents.values()) or 1
-        total_triggers = sum(agg_triggers.values()) or 1
-        hb_true, hb_false = agg_heartbeats["should_speak_true"], agg_heartbeats["should_speak_false"]
 
         active_users = sorted(
             [
@@ -388,85 +599,57 @@ class StatisticsManager:
                     "ai_interaction": v["ai_interaction"],
                     "message_count": v["message"],
                 }
-                for k, v in agg_activities.items()
+                for k, v in b.activities.items()
             ],
             key=lambda x: x["ai_interaction"],
             reverse=True,
         )[:20]
 
         by_model = [
-            {
-                "model": m,
-                "input_tokens": u.input_tokens,
-                "output_tokens": u.output_tokens,
-                "cache_read_tokens": u.cache_read_tokens,
-                "cache_write_tokens": u.cache_write_tokens,
-                "cost": calculate_model_cost(
-                    m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens
-                ),
-            }
+            _model_usage_row(m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
             for m, u in b.token_by_model.items()
         ]
-        total_cost = round(sum(item["cost"] for item in by_model), 6)
+        by_type = [
+            _type_usage_row(
+                t,
+                u.input_tokens,
+                u.output_tokens,
+                u.cache_read_tokens,
+                u.cache_write_tokens,
+                u.request_count,
+            )
+            for t, u in b.token_by_type.items()
+        ]
+        rag_hit = int(self._rag["hit"])
+        rag_miss = int(self._rag["miss"])
 
         return {
             "date": self._today,
             "token_usage": {
-                "total_input_tokens": agg_tokens["input"],
-                "total_output_tokens": agg_tokens["output"],
-                "total_cache_read_tokens": agg_tokens["cache_read"],
-                "total_cache_write_tokens": agg_tokens["cache_write"],
-                "total_cost": total_cost,
+                "total_input_tokens": b.total_tokens["input"],
+                "total_output_tokens": b.total_tokens["output"],
+                "total_cache_read_tokens": b.total_tokens["cache_read"],
+                "total_cache_write_tokens": b.total_tokens["cache_write"],
+                "total_cost": round(sum(item["cost"] for item in by_model), 6),
                 "by_model": by_model,
-                "by_type": [
-                    {
-                        "type": t,
-                        "input_tokens": u.input_tokens,
-                        "output_tokens": u.output_tokens,
-                        "cache_read_tokens": u.cache_read_tokens,
-                        "cache_write_tokens": u.cache_write_tokens,
-                    }
-                    for t, u in b.token_by_type.items()
-                ],
+                "by_type": by_type,
             },
-            "latency": {"avg": LatencyStats(all_latencies).avg, "p95": LatencyStats(all_latencies).p95},
-            "intent_distribution": {
-                k: {"count": agg_intents[k], "percentage": agg_intents[k] / total_intents * 100}
-                for k in ["chat", "tool", "qa"]
-            },
-            "errors": {
-                "timeout": agg_errors.get("timeout", 0),
-                "rate_limit": agg_errors.get("rate_limit", 0),
-                "network_error": agg_errors.get("network_error", 0),
-                "usage_limit": agg_errors.get("usage_limit", 0),
-                "agent_error": agg_errors.get("agent_error", 0),
-                "api_529_error": agg_errors.get("api_529_error", 0),
-                "total": sum(agg_errors.values()),
-            },
-            "heartbeat": {
-                "should_speak_true": hb_true,
-                "should_speak_false": hb_false,
-                "conversion_rate": hb_true / (hb_true + hb_false) * 100 if (hb_true + hb_false) > 0 else 0,
-            },
-            "trigger_distribution": {
-                k: {"count": v, "percentage": v / total_triggers * 100}
-                for k, v in sorted(agg_triggers.items(), key=lambda kv: kv[1], reverse=True)
-            },
+            "latency": {"avg": b.latencies.avg, "p95": b.latencies.p95},
+            "intent_distribution": _distribution_dict(
+                [(k, b.intents[k]) for k in ("chat", "tool", "qa")],
+                total=sum(b.intents.values()),
+            ),
+            "errors": {**_errors_from_state(b), "total": sum(b.errors.values())},
+            "heartbeat": _heartbeat_dict(agg_heartbeats["should_speak_true"], agg_heartbeats["should_speak_false"]),
+            "trigger_distribution": _distribution_dict(
+                sorted(b.triggers.items(), key=lambda kv: kv[1], reverse=True),
+            ),
             "rag": {
-                "hit_count": self._rag["hit"],
-                "miss_count": self._rag["miss"],
-                "hit_rate": self._rag["hit"] / (self._rag["hit"] + self._rag["miss"] or 1) * 100,
+                "hit_count": rag_hit,
+                "miss_count": rag_miss,
+                "hit_rate": rag_hit / (rag_hit + rag_miss or 1) * 100,
             },
-            "memory": {
-                "observations": b.memory_observations,
-                "ingestions": b.memory_ingestions,
-                "ingestion_errors": b.memory_ingestion_errors,
-                "extraction_errors": b.memory_extraction_errors,
-                "retrievals": b.memory_retrievals,
-                "entities_created": b.memory_entities_created,
-                "edges_created": b.memory_edges_created,
-                "episodes_created": b.memory_episodes_created,
-            },
+            "memory": _memory_stats_dict(b),
             "efficiency": self._efficiency_from_state(b),
             "active_users": active_users,
         }
@@ -551,6 +734,7 @@ class StatisticsManager:
                         stats.output_tokens or 0,
                         stats.cache_read_tokens or 0,
                         stats.cache_write_tokens or 0,
+                        stats.request_count or 0,
                     )
 
             # 3. 加载 AIHeartbeatMetrics
@@ -612,34 +796,26 @@ class StatisticsManager:
             self._reset_daily_counters()
             self._today = datetime.now().strftime("%Y-%m-%d")
 
+    def _rag_doc_counter(self) -> Counter[str]:
+        documents = self._rag["documents"] if "documents" in self._rag else {}
+        return Counter(documents.values())
+
     async def _persist_rag_stats(self):
         """持久化 RAG 统计数据到数据库"""
         try:
             today = self._today
-            hit = self._rag.get("hit", 0)
-            miss = self._rag.get("miss", 0)
+            hit = self._rag["hit"] if "hit" in self._rag else 0
+            miss = self._rag["miss"] if "miss" in self._rag else 0
             await AIRAGMissStatistics.upsert_rag_stats(today, hit, miss)
 
-            # 持久化文档命中统计
-            documents = self._rag.get("documents", {})
-            doc_counter: Dict[str, int] = Counter()
-            for doc_name in documents.values():
-                doc_counter[doc_name] += 1
-            for doc_name, count in doc_counter.items():
+            for doc_name, count in self._rag_doc_counter().items():
                 await AIRAGDocumentStatistics.upsert_rag_hit_count(doc_name, count)
         except Exception as e:
             logger.exception(i18n_t("log.ai.statisticsmanager_persist_rag_statistics", e=e))
 
     def get_rag_document_stats(self) -> List[Dict[str, Any]]:
         """获取 RAG 文档命中统计"""
-        documents = self._rag.get("documents", {})
-        doc_counter: Dict[str, int] = Counter()
-        for doc_name in documents.values():
-            doc_counter[doc_name] += 1
-        return [
-            {"document_name": name, "hit_count": count}
-            for name, count in sorted(doc_counter.items(), key=lambda x: x[1], reverse=True)
-        ]
+        return [{"document_name": name, "hit_count": count} for name, count in self._rag_doc_counter().most_common()]
 
     async def _persist_stats(self):
         """持久化全局统计数据"""
@@ -719,13 +895,20 @@ class StatisticsManager:
                     output_tokens=usage.output_tokens,
                     cache_read_tokens=usage.cache_read_tokens,
                     cache_write_tokens=usage.cache_write_tokens,
+                    request_count=usage.request_count,
                 )
                 for chat_type, usage in s.token_by_type.items()
             ]
             if token_type_data:
                 await AITokenUsageByType.batch_insert_data_with_update(
                     datas=token_type_data,
-                    update_key=["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+                    update_key=[
+                        "input_tokens",
+                        "output_tokens",
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "request_count",
+                    ],
                     index_elements=["date", "chat_type"],
                 )
 
@@ -839,9 +1022,7 @@ class StatisticsManager:
     async def get_daily_token_counts(self, days: int = 60) -> List[Dict[str, Any]]:
         """近 N 天每日 input/output token 汇总，供日历选择器展示。
 
-        返回按日期升序的
-        ``[{date, input_tokens, output_tokens, total_tokens, user_turn_count, agent_run_count, ...}, ...]``，
-        无数据的日期补 0；今日优先读内存实时值。
+        返回按日期升序的每日汇总序列，无数据的日期补 0；今日优先读内存实时值。
         """
         days = max(1, min(int(days or 60), 366))
         today = datetime.now().date()
@@ -849,89 +1030,39 @@ class StatisticsManager:
         start_s = start.strftime("%Y-%m-%d")
         end_s = today.strftime("%Y-%m-%d")
 
-        by_date: Dict[str, Dict[str, Any]] = {}
-        cost_by_date: Dict[str, float] = defaultdict(float)
+        stats_by_date: Dict[str, AIDailyStatistics] = {}
+        model_by_date: Dict[str, List[AITokenUsageByModel]] = defaultdict(list)
         try:
             daily_rows, model_rows = await asyncio.gather(
                 AIDailyStatistics.get_stats_between(start_s, end_s),
                 AITokenUsageByModel.get_data_between(start_s, end_s),
             )
             for row in daily_rows:
-                key = str(row.date)[:10]
-                by_date[key] = {
-                    "input_tokens": int(row.total_input_tokens or 0),
-                    "output_tokens": int(row.total_output_tokens or 0),
-                    "user_turn_count": int(row.user_turn_count or 0),
-                    "agent_run_count": int(row.agent_run_count or 0),
-                    "user_turn_agent_run_count": int(row.user_turn_agent_run_count or 0),
-                    "user_turn_input_tokens": int(row.user_turn_input_tokens or 0),
-                    "user_turn_output_tokens": int(row.user_turn_output_tokens or 0),
-                }
+                stats_by_date[str(row.date)[:10]] = row
             for m_row in model_rows:
-                m_key = str(m_row.date)[:10]
-                cost_by_date[m_key] += calculate_model_cost(
-                    m_row.model_name,
-                    m_row.input_tokens or 0,
-                    m_row.output_tokens or 0,
-                    m_row.cache_read_tokens or 0,
-                    m_row.cache_write_tokens or 0,
-                )
+                model_by_date[str(m_row.date)[:10]].append(m_row)
         except Exception:
             # DB 不可用时仍返回连续 0 序列
             pass
 
-        # 今日覆盖为内存实时
-        today_s = self._today
-        if today_s:
-            b = self._bot_state
-            by_date[today_s] = {
-                "input_tokens": int(b.total_tokens.get("input", 0) or 0),
-                "output_tokens": int(b.total_tokens.get("output", 0) or 0),
-                "user_turn_count": int(b.user_turn_count or 0),
-                "agent_run_count": int(b.agent_run_count or 0),
-                "user_turn_agent_run_count": int(b.user_turn_agent_run_count or 0),
-                "user_turn_input_tokens": int(b.user_turn_tokens.input_tokens or 0),
-                "user_turn_output_tokens": int(b.user_turn_tokens.output_tokens or 0),
-            }
-            cost_by_date[today_s] = sum(
-                calculate_model_cost(m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
-                for m, u in b.token_by_model.items()
-            )
-
         result: List[Dict[str, Any]] = []
         for offset in range(days - 1, -1, -1):
-            d = today - timedelta(days=offset)
-            key = d.strftime("%Y-%m-%d")
-            bucket = by_date.get(key) or {}
-            inp = int(bucket.get("input_tokens", 0) or 0)
-            out = int(bucket.get("output_tokens", 0) or 0)
-            ut = int(bucket.get("user_turn_count", 0) or 0)
-            ar = int(bucket.get("agent_run_count", 0) or 0)
-            ut_ar = int(bucket.get("user_turn_agent_run_count", 0) or 0)
-            ut_in = int(bucket.get("user_turn_input_tokens", 0) or 0)
-            ut_out = int(bucket.get("user_turn_output_tokens", 0) or 0)
-            day_cost = round(cost_by_date.get(key, 0.0), 6)
-            result.append(
-                {
-                    "date": key,
-                    "input_tokens": inp,
-                    "output_tokens": out,
-                    "total_tokens": inp + out,
-                    "total_cost": day_cost,
-                    "user_turn_count": ut,
-                    "agent_run_count": ar,
-                    "user_turn_agent_run_count": ut_ar,
-                    "avg_tokens_per_user_turn": self._safe_avg(ut_in + ut_out, ut),
-                    "avg_tokens_per_agent_run": self._safe_avg(inp + out, ar),
-                    "avg_agent_runs_per_user_turn": self._safe_avg(ut_ar, ut),
-                }
+            key = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+            sl = (
+                _slice_from_live_state(self._bot_state)
+                if self._today and key == self._today
+                else _slice_from_db_rows(
+                    stats_by_date[key] if key in stats_by_date else None,
+                    model_by_date[key],
+                    (),
+                )
             )
+            result.append(_day_slice_row(key, sl, include_cache=False))
         return result
 
     async def get_summary_by_date(self, date: str) -> Optional[Dict[str, Any]]:
         """从数据库获取指定日期的统计摘要"""
         try:
-            # 获取 RAG 统计数据
             rag_data = await AIRAGMissStatistics.get_daily_data(date)
             hit_count = rag_data.hit_count if rag_data else 0
             miss_count = rag_data.miss_count if rag_data else 0
@@ -942,41 +1073,32 @@ class StatisticsManager:
             if not stats:
                 return None
 
-            # 获取按模型分组的 Token 消耗数据
             token_by_model_data = await AITokenUsageByModel.get_daily_data(date)
-            by_model = [
-                {
-                    "model": t.model_name,
-                    "input_tokens": t.input_tokens,
-                    "output_tokens": t.output_tokens,
-                    "cache_read_tokens": t.cache_read_tokens or 0,
-                    "cache_write_tokens": t.cache_write_tokens or 0,
-                    "cost": calculate_model_cost(
-                        t.model_name,
-                        t.input_tokens,
-                        t.output_tokens,
-                        t.cache_read_tokens or 0,
-                        t.cache_write_tokens or 0,
-                    ),
-                }
+            by_model: List[_ModelUsageRow] = [
+                _model_usage_row(
+                    t.model_name,
+                    t.input_tokens,
+                    t.output_tokens,
+                    t.cache_read_tokens or 0,
+                    t.cache_write_tokens or 0,
+                )
                 for t in token_by_model_data
             ]
 
-            # 获取按类型分组的 Token 消耗数据
             # 避免前端 AIStatisticsPage.tsx 的 TokenByType 接口拿到 `chat_type` 时回落成 "Unknown"。
             token_by_type_data = await AITokenUsageByType.get_daily_data(date)
-            by_type = [
-                {
-                    "type": t.chat_type,
-                    "input_tokens": t.input_tokens,
-                    "output_tokens": t.output_tokens,
-                    "cache_read_tokens": t.cache_read_tokens or 0,
-                    "cache_write_tokens": t.cache_write_tokens or 0,
-                }
+            by_type: List[_TypeUsageRow] = [
+                _type_usage_row(
+                    t.chat_type,
+                    t.input_tokens,
+                    t.output_tokens,
+                    t.cache_read_tokens or 0,
+                    t.cache_write_tokens or 0,
+                    t.request_count or 0,
+                )
                 for t in token_by_type_data
             ]
 
-            # 获取活跃用户数据
             activity_data = await AIGroupUserActivityStats.get_daily_data(date)
             active_users = [
                 {
@@ -988,15 +1110,11 @@ class StatisticsManager:
                 for a in activity_data
             ]
 
-            # 获取 Heartbeat 数据
             heartbeat_data = await AIHeartbeatMetrics.get_daily_data(date)
-            hb_true = sum(h.should_speak_count or 0 for h in heartbeat_data)
-            hb_false = sum(h.should_not_speak_count or 0 for h in heartbeat_data)
-            heartbeat = {
-                "should_speak_true": hb_true,
-                "should_speak_false": hb_false,
-                "conversion_rate": hb_true / (hb_true + hb_false) * 100 if (hb_true + hb_false) > 0 else 0,
-            }
+            heartbeat = _heartbeat_dict(
+                sum(h.should_speak_count or 0 for h in heartbeat_data),
+                sum(h.should_not_speak_count or 0 for h in heartbeat_data),
+            )
 
             return self._daily_stats_to_dict(
                 stats,
@@ -1018,57 +1136,33 @@ class StatisticsManager:
         end_date: str,
         max_days: int = 366,
     ) -> Dict[str, Any]:
-        """获取指定时间段（闭区间）的 Token 消耗统计。
+        """获取指定时间段（闭区间）的 Token 消耗、效率、延迟与错误统计。
 
-        返回:
-        - total: 整个时间段的四类 Token 总量及总和
-        - daily: 按天的 Token 趋势(用于折线/柱状图)
-        - by_model: 跨天聚合的按模型 Token 分布
-        - by_type: 跨天聚合的按类型 Token 分布
-        - latency: 区间平均延迟(按样本数加权)与区间内 P95 峰值
-        - errors: 区间内六类错误计数及合计
+        返回字段：``start_date`` / ``end_date`` / ``days`` / ``total`` / ``efficiency`` /
+        ``daily`` / ``by_model`` / ``by_type`` / ``latency`` / ``errors``。
+        今日走内存实时态、历史走 DB、无数据日补 0；``start_date > end_date`` 自动交换，
+        超过 ``max_days`` 保留靠近 ``end_date`` 的天数；日期格式非法抛 ``ValueError``。
 
-        今日数据优先取内存实时值, 历史数据从数据库读取; 区间内无数据的日期
-        以 0 补齐, 保证 daily 序列连续。start_date > end_date 时自动交换。
-
-        Why 一次性扫区间: 旧实现是「逐日 get_daily_stats + get_daily_data」,
-        区间 N 天就要发 2N 次往返 —— 看板每切一次时间档位都得等这 2N 次跑完,
-        90 天档直接卡住。现在三张表各发一次 BETWEEN(走 date 索引), 回程行在
-        Python 侧按日期分组, 往返数恒为 3, 与区间长度无关。
-
-        Why 延迟和错误也走这里而不是只留在 summary: summary 只按「选中日」返回,
-        看板切到 7/30 天档时 Token 变了、错误率却还停在某一天, 两块读数口径打架。
-        延迟的 avg 用 latency_sample_count 加权(每日样本量实测 439 vs 3339, 直接取
-        算术平均会被小样本日拉偏); p95 无法跨日合并, 给的是区间内各日最大值,
-        前端据此标注成「峰值」而不是区间 P95。
-
-        Args:
-            start_date: 开始日期, 格式 "YYYY-MM-DD"
-            end_date: 结束日期, 格式 "YYYY-MM-DD"
-            max_days: 允许的最大跨度天数, 超出则截断到 max_days, 防止区间过大拖垮 DB
-
-        Returns:
-            聚合结果字典; 日期格式非法时抛出 ValueError, 由调用方处理。
+        Why 一次性扫区间：三张表各发一次 BETWEEN（走 date 索引），往返数恒为 3，
+        避免逐日查导致 90 天档 2N 次往返卡死。延迟 ``avg`` 按 ``latency_sample_count``
+        加权（迁移前全 0 样本退回日均值算术平均），``p95`` 取区间内各日峰值。
         """
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
         if start > end:
             start, end = end, start
-        # 截断超长区间: 保留靠近 end 的 max_days 天
         if (end - start).days + 1 > max_days:
             start = end - timedelta(days=max_days - 1)
 
         start_str = start.strftime("%Y-%m-%d")
         end_str = end.strftime("%Y-%m-%d")
 
-        # 三次查询并发发出, 互不依赖
         daily_stats_rows, model_rows, type_rows = await asyncio.gather(
             AIDailyStatistics.get_stats_between(start_str, end_str),
             AITokenUsageByModel.get_data_between(start_str, end_str),
             AITokenUsageByType.get_data_between(start_str, end_str),
         )
 
-        # 回程行按 date 建索引, 下面的循环 O(1) 取当天, 不再碰 DB
         stats_by_date = {row.date: row for row in daily_stats_rows}
         model_by_date: Dict[str, List[AITokenUsageByModel]] = defaultdict(list)
         for row in model_rows:
@@ -1078,200 +1172,91 @@ class StatisticsManager:
             type_by_date[row.date].append(row)
 
         daily: List[Dict[str, Any]] = []
-        # 按模型 / 按类型跨天聚合: name -> TokenUsage
         model_acc: Dict[str, TokenUsage] = defaultdict(TokenUsage)
         type_acc: Dict[str, TokenUsage] = defaultdict(TokenUsage)
         total = TokenUsage()
-        # 效率区间累加
         sum_user_turns = 0
         sum_agent_runs = 0
         sum_ut_agent_runs = 0
         sum_ut_in = 0
         sum_ut_out = 0
-        # 延迟/错误区间累加。avg 按样本数加权（lat_weight_sum / lat_weight_n），
-        # p95 取区间内各日最大值 —— 逐日 P95 无法再合并成一个真 P95，
-        # 所以前端把它标成「区间内峰值」而不是区间 P95。
         lat_weight_sum = 0.0
         lat_weight_n = 0
         lat_peak = 0.0
-        # 迁移前的历史行 latency_sample_count 是 0, 整段区间可能一个加权样本都没有。
-        # 那时退回「各日均值的算术平均」——不如加权准, 但远好过读成 0.00s。
         lat_day_avg_sum = 0.0
         lat_day_count = 0
-        err_acc: Dict[str, int] = {
-            "timeout": 0,
-            "rate_limit": 0,
-            "network_error": 0,
-            "usage_limit": 0,
-            "agent_error": 0,
-            "api_529_error": 0,
-        }
+        err_acc: Dict[str, int] = {key: 0 for key in _ERROR_KEYS}
 
         cur = start
         while cur <= end:
             date_str = cur.strftime("%Y-%m-%d")
             cur += timedelta(days=1)
 
-            if date_str == self._today:
-                # 今日: 内存实时数据(与 get_summary 同源)
-                b = self._bot_state
-                d_in = b.total_tokens["input"]
-                d_out = b.total_tokens["output"]
-                d_cr = b.total_tokens["cache_read"]
-                d_cw = b.total_tokens["cache_write"]
-                d_ut = int(b.user_turn_count or 0)
-                d_ar = int(b.agent_run_count or 0)
-                d_ut_ar = int(b.user_turn_agent_run_count or 0)
-                d_ut_in = int(b.user_turn_tokens.input_tokens or 0)
-                d_ut_out = int(b.user_turn_tokens.output_tokens or 0)
-                day_models = [
-                    (m, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
-                    for m, u in b.token_by_model.items()
-                ]
-                day_types = [
-                    (t, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens)
-                    for t, u in b.token_by_type.items()
-                ]
-                # 延迟样本列表本身就是内存里的实时来源，len() 即今日样本数
-                d_lat_avg = b.latencies.avg
-                d_lat_p95 = b.latencies.p95
-                d_lat_n = len(b.latencies.latencies)
-                day_errors = {
-                    "timeout": b.errors["timeout"],
-                    "rate_limit": b.errors["rate_limit"],
-                    "network_error": b.errors["network_error"],
-                    "usage_limit": b.errors["usage_limit"],
-                    "agent_error": b.errors["agent_error"],
-                    "api_529_error": b.errors["api_529_error"],
-                }
-            else:
-                # 历史: 数据库。总量取 AIDailyStatistics, 分布取两张 Token 明细表
-                stats = stats_by_date.get(date_str)
-                d_in = (stats.total_input_tokens or 0) if stats else 0
-                d_out = (stats.total_output_tokens or 0) if stats else 0
-                d_cr = (stats.total_cache_read_tokens or 0) if stats else 0
-                d_cw = (stats.total_cache_write_tokens or 0) if stats else 0
-                d_ut = int(stats.user_turn_count or 0) if stats else 0
-                d_ar = int(stats.agent_run_count or 0) if stats else 0
-                d_ut_ar = int(stats.user_turn_agent_run_count or 0) if stats else 0
-                d_ut_in = int(stats.user_turn_input_tokens or 0) if stats else 0
-                d_ut_out = int(stats.user_turn_output_tokens or 0) if stats else 0
-                day_models = [
-                    (
-                        row.model_name,
-                        row.input_tokens or 0,
-                        row.output_tokens or 0,
-                        row.cache_read_tokens or 0,
-                        row.cache_write_tokens or 0,
-                    )
-                    for row in model_by_date.get(date_str, [])
-                ]
-                day_types = [
-                    (
-                        row.chat_type,
-                        row.input_tokens or 0,
-                        row.output_tokens or 0,
-                        row.cache_read_tokens or 0,
-                        row.cache_write_tokens or 0,
-                    )
-                    for row in type_by_date.get(date_str, [])
-                ]
-                # 老库这一列是 0（迁移前落的历史行）：拿它当权重等于不参与，
-                # 只影响升级后第一段区间的加权精度，不影响任何一天的读数
-                d_lat_avg = (stats.avg_latency or 0.0) if stats else 0.0
-                d_lat_p95 = (stats.p95_latency or 0.0) if stats else 0.0
-                d_lat_n = int(stats.latency_sample_count or 0) if stats else 0
-                day_errors = (
-                    {
-                        "timeout": stats.api_timeout_count or 0,
-                        "rate_limit": stats.api_rate_limit_count or 0,
-                        "network_error": stats.api_network_error_count or 0,
-                        "usage_limit": stats.api_usage_limit_count or 0,
-                        "agent_error": stats.api_agent_error_count or 0,
-                        "api_529_error": stats.api_529_count or 0,
-                    }
-                    if stats
-                    else dict.fromkeys(err_acc, 0)
+            sl = (
+                _slice_from_live_state(self._bot_state)
+                if date_str == self._today
+                else _slice_from_db_rows(
+                    stats_by_date[date_str] if date_str in stats_by_date else None,
+                    model_by_date[date_str],
+                    type_by_date[date_str],
                 )
-
-            d_cost = round(
-                sum(calculate_model_cost(m, inp, outp, cr, cw) for m, inp, outp, cr, cw in day_models),
-                6,
             )
-            daily.append(
-                {
-                    "date": date_str,
-                    "input_tokens": d_in,
-                    "output_tokens": d_out,
-                    "cache_read_tokens": d_cr,
-                    "cache_write_tokens": d_cw,
-                    "total_tokens": d_in + d_out,
-                    "total_cost": d_cost,
-                    "user_turn_count": d_ut,
-                    "agent_run_count": d_ar,
-                    "user_turn_agent_run_count": d_ut_ar,
-                    "avg_tokens_per_user_turn": self._safe_avg(d_ut_in + d_ut_out, d_ut),
-                    "avg_tokens_per_agent_run": self._safe_avg(d_in + d_out, d_ar),
-                    "avg_agent_runs_per_user_turn": self._safe_avg(d_ut_ar, d_ut),
-                }
-            )
-            total.add(d_in, d_out, d_cr, d_cw)
-            sum_user_turns += d_ut
-            sum_agent_runs += d_ar
-            sum_ut_agent_runs += d_ut_ar
-            sum_ut_in += d_ut_in
-            sum_ut_out += d_ut_out
-            if d_lat_n > 0:
-                lat_weight_sum += d_lat_avg * d_lat_n
-                lat_weight_n += d_lat_n
-            if d_lat_avg > 0:
-                lat_day_avg_sum += d_lat_avg
+            daily.append(_day_slice_row(date_str, sl, include_cache=True))
+            total.add(sl.input_tokens, sl.output_tokens, sl.cache_read_tokens, sl.cache_write_tokens)
+            sum_user_turns += sl.user_turn_count
+            sum_agent_runs += sl.agent_run_count
+            sum_ut_agent_runs += sl.user_turn_agent_run_count
+            sum_ut_in += sl.user_turn_input_tokens
+            sum_ut_out += sl.user_turn_output_tokens
+            if sl.latency_samples > 0:
+                lat_weight_sum += sl.latency_avg * sl.latency_samples
+                lat_weight_n += sl.latency_samples
+            if sl.latency_avg > 0:
+                lat_day_avg_sum += sl.latency_avg
                 lat_day_count += 1
-            lat_peak = max(lat_peak, d_lat_p95)
-            for _k, _v in day_errors.items():
-                err_acc[_k] += _v
-            for model_name, m_in, m_out, m_cr, m_cw in day_models:
+            lat_peak = max(lat_peak, sl.latency_p95)
+            for err_k, err_v in sl.errors.items():
+                err_acc[err_k] += err_v
+            for model_name, m_in, m_out, m_cr, m_cw in sl.models:
                 model_acc[model_name].add(m_in, m_out, m_cr, m_cw)
-            for type_name, t_in, t_out, t_cr, t_cw in day_types:
-                type_acc[type_name].add(t_in, t_out, t_cr, t_cw)
+            for type_name, t_in, t_out, t_cr, t_cw, t_req in sl.types:
+                type_acc[type_name].add(t_in, t_out, t_cr, t_cw, t_req)
 
-        by_model = sorted(
-            [
-                {
-                    "model": model_name,
-                    "input_tokens": u.input_tokens,
-                    "output_tokens": u.output_tokens,
-                    "cache_read_tokens": u.cache_read_tokens,
-                    "cache_write_tokens": u.cache_write_tokens,
-                    "total_tokens": u.input_tokens + u.output_tokens,
-                    "cost": calculate_model_cost(
-                        model_name, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens
-                    ),
-                }
-                for model_name, u in model_acc.items()
-            ],
-            key=lambda x: x["total_tokens"],
-            reverse=True,
-        )
-        by_type = sorted(
-            [
-                {
-                    "type": type_name,
-                    "input_tokens": u.input_tokens,
-                    "output_tokens": u.output_tokens,
-                    "cache_read_tokens": u.cache_read_tokens,
-                    "cache_write_tokens": u.cache_write_tokens,
-                    "total_tokens": u.input_tokens + u.output_tokens,
-                }
-                for type_name, u in type_acc.items()
-            ],
-            key=lambda x: x["total_tokens"],
-            reverse=True,
-        )
+        by_model = [
+            _model_usage_row(
+                model_name,
+                u.input_tokens,
+                u.output_tokens,
+                u.cache_read_tokens,
+                u.cache_write_tokens,
+                include_total=True,
+            )
+            for model_name, u in sorted(
+                model_acc.items(),
+                key=lambda kv: kv[1].input_tokens + kv[1].output_tokens,
+                reverse=True,
+            )
+        ]
+        by_type = [
+            _type_usage_row(
+                type_name,
+                u.input_tokens,
+                u.output_tokens,
+                u.cache_read_tokens,
+                u.cache_write_tokens,
+                u.request_count,
+                include_total=True,
+            )
+            for type_name, u in sorted(
+                type_acc.items(),
+                key=lambda kv: kv[1].input_tokens + kv[1].output_tokens,
+                reverse=True,
+            )
+        ]
 
         return {
-            "start_date": start.strftime("%Y-%m-%d"),
-            "end_date": end.strftime("%Y-%m-%d"),
+            "start_date": start_str,
+            "end_date": end_str,
             "days": len(daily),
             "total": {
                 "input_tokens": total.input_tokens,
@@ -1285,23 +1270,21 @@ class StatisticsManager:
                 "user_turn_count": sum_user_turns,
                 "agent_run_count": sum_agent_runs,
                 "user_turn_agent_run_count": sum_ut_agent_runs,
-                "avg_tokens_per_user_turn": self._safe_avg(sum_ut_in + sum_ut_out, sum_user_turns),
-                "avg_tokens_per_agent_run": self._safe_avg(total.input_tokens + total.output_tokens, sum_agent_runs),
-                "avg_agent_runs_per_user_turn": self._safe_avg(sum_ut_agent_runs, sum_user_turns),
+                "avg_tokens_per_user_turn": _safe_avg(sum_ut_in + sum_ut_out, sum_user_turns),
+                "avg_tokens_per_agent_run": _safe_avg(total.input_tokens + total.output_tokens, sum_agent_runs),
+                "avg_agent_runs_per_user_turn": _safe_avg(sum_ut_agent_runs, sum_user_turns),
             },
             "daily": daily,
             "by_model": by_model,
             "by_type": by_type,
-            # 延迟 / 错误跟 Token 同一段时间，避免看板出现「Token 看的是这 30 天、
-            # 错误率却是某一天」这种口径打架。avg 按样本数加权，p95 是区间内峰值。
             "latency": {
                 "avg": (
-                    self._safe_avg(lat_weight_sum, lat_weight_n)
+                    _safe_avg(lat_weight_sum, lat_weight_n)
                     if lat_weight_n > 0
-                    else self._safe_avg(lat_day_avg_sum, lat_day_count)
+                    else _safe_avg(lat_day_avg_sum, lat_day_count)
                 ),
                 "p95": lat_peak,
-                # 0 = 区间内全是迁移前的历史行, avg 是按日均估算的
+                # 0 = 区间内全是迁移前的历史行，avg 是按日均估算的
                 "samples": lat_weight_n,
             },
             "errors": {**err_acc, "total": sum(err_acc.values())},
@@ -1322,16 +1305,13 @@ class StatisticsManager:
         rag_hit: int = 0,
         rag_miss: int = 0,
         rag_hit_rate: float = 0.0,
-        by_model: Optional[List[Dict[str, Any]]] = None,
-        by_type: Optional[List[Dict[str, Any]]] = None,
+        by_model: Optional[Sequence[_ModelUsageRow]] = None,
+        by_type: Optional[Sequence[_TypeUsageRow]] = None,
         active_users: Optional[List[Dict[str, Any]]] = None,
         heartbeat: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """将 AIDailyStatistics 转换为字典格式"""
-        t_intent = (stats.intent_chat_count or 0) + (stats.intent_tool_count or 0) + (stats.intent_qa_count or 0) or 1
-        total_triggers = (stats.trigger_mention_count or 0) + (stats.trigger_keyword_count or 0) + (
-            stats.trigger_heartbeat_count or 0
-        ) + (stats.trigger_scheduled_count or 0) or 1
+        errors = _errors_from_daily_stats(stats)
         return {
             "date": stats.date,
             "token_usage": {
@@ -1339,70 +1319,31 @@ class StatisticsManager:
                 "total_output_tokens": stats.total_output_tokens or 0,
                 "total_cache_read_tokens": stats.total_cache_read_tokens or 0,
                 "total_cache_write_tokens": stats.total_cache_write_tokens or 0,
-                "total_cost": round(sum(item.get("cost", 0.0) for item in (by_model or [])), 6),
-                "by_model": by_model or [],
-                "by_type": by_type or [],
+                "total_cost": round(sum(item["cost"] for item in (by_model or ())), 6),
+                "by_model": list(by_model or ()),
+                "by_type": list(by_type or ()),
             },
             "latency": {"avg": stats.avg_latency or 0.0, "p95": stats.p95_latency or 0.0},
-            "intent_distribution": {
-                "chat": {
-                    "count": stats.intent_chat_count or 0,
-                    "percentage": (stats.intent_chat_count or 0) / t_intent * 100,
-                },
-                "tool": {
-                    "count": stats.intent_tool_count or 0,
-                    "percentage": (stats.intent_tool_count or 0) / t_intent * 100,
-                },
-                "qa": {
-                    "count": stats.intent_qa_count or 0,
-                    "percentage": (stats.intent_qa_count or 0) / t_intent * 100,
-                },
-            },
-            "errors": {
-                "timeout": stats.api_timeout_count or 0,
-                "rate_limit": stats.api_rate_limit_count or 0,
-                "network_error": stats.api_network_error_count or 0,
-                "usage_limit": stats.api_usage_limit_count or 0,
-                "agent_error": stats.api_agent_error_count or 0,
-                "api_529_error": stats.api_529_count or 0,
-                "total": (stats.api_timeout_count or 0)
-                + (stats.api_rate_limit_count or 0)
-                + (stats.api_network_error_count or 0)
-                + (stats.api_usage_limit_count or 0)
-                + (stats.api_agent_error_count or 0)
-                + (stats.api_529_count or 0),
-            },
-            "trigger_distribution": {
-                "mention": {
-                    "count": stats.trigger_mention_count or 0,
-                    "percentage": (stats.trigger_mention_count or 0) / total_triggers * 100,
-                },
-                "keyword": {
-                    "count": stats.trigger_keyword_count or 0,
-                    "percentage": (stats.trigger_keyword_count or 0) / total_triggers * 100,
-                },
-                "heartbeat": {
-                    "count": stats.trigger_heartbeat_count or 0,
-                    "percentage": (stats.trigger_heartbeat_count or 0) / total_triggers * 100,
-                },
-                "scheduled": {
-                    "count": stats.trigger_scheduled_count or 0,
-                    "percentage": (stats.trigger_scheduled_count or 0) / total_triggers * 100,
-                },
-            },
+            "intent_distribution": _distribution_dict(
+                [
+                    ("chat", stats.intent_chat_count or 0),
+                    ("tool", stats.intent_tool_count or 0),
+                    ("qa", stats.intent_qa_count or 0),
+                ]
+            ),
+            "errors": {**errors, "total": sum(errors.values())},
+            "trigger_distribution": _distribution_dict(
+                [
+                    ("mention", stats.trigger_mention_count or 0),
+                    ("keyword", stats.trigger_keyword_count or 0),
+                    ("heartbeat", stats.trigger_heartbeat_count or 0),
+                    ("scheduled", stats.trigger_scheduled_count or 0),
+                ]
+            ),
             "rag": {"hit_count": rag_hit, "miss_count": rag_miss, "hit_rate": rag_hit_rate},
-            "memory": {
-                "observations": stats.memory_observations or 0,
-                "ingestions": stats.memory_ingestions or 0,
-                "ingestion_errors": stats.memory_ingestion_errors or 0,
-                "extraction_errors": stats.memory_extraction_errors or 0,
-                "retrievals": stats.memory_retrievals or 0,
-                "entities_created": stats.memory_entities_created or 0,
-                "edges_created": stats.memory_edges_created or 0,
-                "episodes_created": stats.memory_episodes_created or 0,
-            },
+            "memory": _memory_stats_dict(stats),
             "efficiency": self._efficiency_from_daily_stats(stats),
-            "heartbeat": heartbeat or {"should_speak_true": 0, "should_speak_false": 0, "conversion_rate": 0},
+            "heartbeat": heartbeat or _heartbeat_dict(0, 0),
             "active_users": active_users or [],
         }
 

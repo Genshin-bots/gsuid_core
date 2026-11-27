@@ -10,7 +10,7 @@ import time
 from typing import TYPE_CHECKING, Match, Callable, Iterator, Optional, Sequence, NamedTuple
 from datetime import datetime
 from contextvars import Token, ContextVar
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
@@ -19,9 +19,18 @@ from gsuid_core.models import Event
 if TYPE_CHECKING:
     from gsuid_core.message_history.manager import EventLink, MessageRecord
 
+
+@dataclass
+class _RunImageDeliveryState:
+    """单轮 run 的图片已发送状态（可变盒，确保子 Task 调用发图后父协程可见且跨 run 隔离）。"""
+
+    delivered: bool = False
+    image_ids: set[str] = field(default_factory=set)
+
+
 _outbound_image_label: ContextVar[str] = ContextVar("outbound_image_label", default="")
-# 泄漏句柄补发不经过 send_message_by_ai，用这个标记并回本轮「已经出图」。
-_run_image_delivered: ContextVar[bool] = ContextVar("run_image_delivered", default=False)
+# 泄漏句柄补发不经过 send_message_by_ai，用每轮可变盒记录「已出图」与已发图片 ID 去重。
+_run_image_state: ContextVar[_RunImageDeliveryState | None] = ContextVar("run_image_state", default=None)
 _OUTBOUND_TOPIC_N: int = 12
 
 
@@ -68,19 +77,33 @@ def reset_outbound_image_label(token: Token) -> None:
     _outbound_image_label.reset(token)
 
 
-def note_run_image_delivered() -> None:
-    _run_image_delivered.set(True)
+def note_run_image_delivered(image_id: str = "") -> None:
+    state = _run_image_state.get()
+    if state is None:
+        state = _RunImageDeliveryState()
+        _run_image_state.set(state)
+    state.delivered = True
+    hid = (image_id or "").strip()
+    if hid:
+        state.image_ids.add(hid)
+
+
+def has_run_delivered_image(image_id: str) -> bool:
+    hid = (image_id or "").strip()
+    state = _run_image_state.get()
+    return bool(hid) and state is not None and hid in state.image_ids
 
 
 def take_run_image_delivered() -> bool:
-    if not _run_image_delivered.get():
+    state = _run_image_state.get()
+    if state is None or not state.delivered:
         return False
-    _run_image_delivered.set(False)
+    state.delivered = False
     return True
 
 
 def reset_run_image_delivered() -> None:
-    _run_image_delivered.set(False)
+    _run_image_state.set(_RunImageDeliveryState())
 
 
 # 话题标题里去掉裸 @平台ID。聊天强提醒不走这条。
@@ -411,7 +434,9 @@ async def resolve_quote(ev: Event) -> Optional[QuoteResolve]:
                         target="当前说话人",
                     )
                 else:
-                    speaker = rec.user_name or f"用户{rec.user_id}"
+                    from gsuid_core.ai_core.utils import sanitize_display_name
+
+                    speaker = sanitize_display_name(rec.user_name, str(rec.user_id)) or f"用户{rec.user_id}"
                     return QuoteResolve(
                         line=quote_other_line(speaker, time_str),
                         topic="群友发言",

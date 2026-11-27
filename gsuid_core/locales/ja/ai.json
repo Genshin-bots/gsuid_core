@@ -3,6 +3,7 @@
   "log.ai.agentnode_node_id_empty_ignore": "[AgentNode] node_id が空のため、スキップした",
   "log.ai.agentnode_persona_projection_refreshed": "[AgentNode] persona 投影を更新した: {persona_name}",
   "log.ai.agentnode_registered_node_source": "[AgentNode] ノードを登録: {p0} ({p1}, source={p2})",
+  "log.ai.agentnode_shared_tool_not_mounted": "[AgentNode] ノード {p0} の shared_tool_names に未マウントのツールがあります（スペルミスの可能性）: {p1}",
   "log.ai.agentnode_semantic_cache_updated": "[AgentNode] セマンティックルーティングキャッシュ更新: {p0}/{p1} ノード再埋め込み",
   "log.ai.agentnode_semantic_sync_fail": "[AgentNode] セマンティックルーティングキャッシュ同期失敗（キーワードルーティングへ降格）: {e}",
   "log.ai.ai_core_background_initialization_start": "[AI Core] AI Core のバックグラウンド初期化を開始します...",
@@ -496,7 +497,7 @@
   "log.ai.proactiveemitter_source_target_key_send": "[ProactiveEmitter] 送信済み source={source} target={target_key} reason={trigger_reason}",
   "log.ai.providerrouter_config_full_name_fail": "[ProviderRouter] 設定 {full_name} を利用不可としてマーク、クールダウン {cooldown:.0f}s",
   "log.ai.providerrouter_task_level_chosen": "[ProviderRouter] {task_level} 级请求路由至备用配置 {chosen} (主配置 {primary} 并发满/冷却中)",
-  "log.ai.providerrouter_wait_slot_timeout_fail": "[ProviderRouter] スロット待機がタイムアウトしたため、強制的に主設定 {primary} を使用",
+  "log.ai.providerrouter_wait_slot_timeout_fail": "[ProviderRouter] スロット待機がタイムアウトしたため、強制的に設定 {primary} を使用",
   "log.ai.provision_downloading_url": "[Provision] {p0} v{p1} をダウンロード中 ← {url}",
   "log.ai.provision_installation_bin_path": "[Provision] {p0} v{p1} のインストールが完了 → {bin_path}",
   "log.ai.rag_shell_skip": "[AI Core] AI が無効のため、ナレッジベースの実インポートは行いません",
@@ -690,5 +691,14 @@
   "log.ai.migrations_isolation_marker_read_failed": "[Migrations] クロスグループ分離の水位マーカー読み取り失敗: {e}（未移行として扱い、旧データは不開放）",
   "log.ai.websearch_tavily_search_query": "[WebSearch][Tavily] 検索: {query}、{p0} 件の結果を返した",
   "log.ai.kanban_node_hard_timeout": "[Kanban] サブタスクノードがハードタイムアウトで終了 task={task} ({mins}分)",
-  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] 期限切れの対話グループタスクを無言アーカイブ task={task} elapsed={mins}分"
+  "log.ai.kanban_stale_delivery_suppressed": "[Kanban] 期限切れの対話グループタスクを無言アーカイブ task={task} elapsed={mins}分",
+  "log.ai.artifact_index_drain_fail": "[Artifact] シャットダウン前の在途成果物インデックスタスク収束失敗: {e}",
+  "log.ai.persona_reset_start": "[PersonaReset] ペルソナ {persona} の記憶クリアを開始（項目: {items}）",
+  "log.ai.persona_reset_done": "[PersonaReset] ペルソナ {persona} の記憶クリアが完了（件数: {counts}）",
+  "log.ai.persona_reset_fail": "[PersonaReset] ペルソナ {persona} の記憶クリアに失敗: {e}",
+  "log.ai.persona_reset_tps_fail": "[PersonaReset] 埋め込みスループット計測に失敗、ETA 推定をスキップ: {e}",
+  "log.ai.persona_restore_start": "[PersonaRestore] ペルソナ {persona} のバックアップ {file} を復元開始（項目: {items}）",
+  "log.ai.persona_restore_done": "[PersonaRestore] ペルソナ {persona} のバックアップ復元が完了（件数: {counts}）",
+  "log.ai.persona_restore_fail": "[PersonaRestore] ペルソナ {persona} のバックアップ復元に失敗: {e}",
+  "log.ai.persona_restore_vectors_fail": "[PersonaRestore] ペルソナ {persona} のベクトル再構築が中断（カーソル保存済み、再開可能）: {e}"
 }

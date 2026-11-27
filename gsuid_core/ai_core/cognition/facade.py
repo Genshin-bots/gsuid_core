@@ -12,11 +12,13 @@
    自动层只许目录卡 + 句柄，深读仍走 ``read_handle``。
 """
 
+from __future__ import annotations
+
 import re
 import asyncio
-from typing import Set, Dict, List, Tuple, FrozenSet
+from typing import TYPE_CHECKING, Set, Dict, List, Tuple, Mapping, TypeVar, Callable, Sequence, Coroutine, FrozenSet
 from datetime import datetime
-from dataclasses import replace
+from dataclasses import field, replace, dataclass
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
@@ -32,7 +34,7 @@ from gsuid_core.ai_core.cognition.types import (
     CogScope,
     CognitiveHit,
 )
-from gsuid_core.ai_core.memory.retrieval.types import Episode
+from gsuid_core.ai_core.memory.retrieval.types import Edge, Entity, Episode
 from gsuid_core.ai_core.memory.retrieval.lexical import expand_lexical_recall
 from gsuid_core.ai_core.memory.retrieval.lexical_query import (
     strip_clock_lines,
@@ -41,14 +43,41 @@ from gsuid_core.ai_core.memory.retrieval.lexical_query import (
     text_has_query_needles,
 )
 
+if TYPE_CHECKING:
+    from gsuid_core.ai_core.memory.retrieval.prompt_render import MemoryContext, PreferencePrompt
+
 # 一路后端返回的 (排名列表, id→命中) 二元组
 _BackendResult = Tuple[List[str], Dict[str, CognitiveHit]]
 _EMPTY_RESULT: _BackendResult = ([], {})
+_ItemT = TypeVar("_ItemT")
+
+
+@dataclass(slots=True)
+class _HitBag:
+    """保序去重的后端命中收集器。"""
+
+    ids: List[str] = field(default_factory=list)
+    hits: Dict[str, CognitiveHit] = field(default_factory=dict)
+
+    def add(self, hit: CognitiveHit) -> None:
+        if hit.id not in self.hits:
+            self.hits[hit.id] = hit
+            self.ids.append(hit.id)
+
+    def result(self, limit: int | None = None) -> _BackendResult:
+        return (self.ids[:limit] if limit is not None else self.ids), self.hits
+
+
+def _mapping_str(data: Mapping[str, object], key: str, default: str = "") -> str:
+    if key not in data:
+        return default
+    raw = data[key]
+    return raw if isinstance(raw, str) else default
 
 
 def _fileos_hit_title(summary: str, tool_name: str, profile: str = "") -> str:
     """回想卡片标题：``query:`` 优先，其次工具名。"""
-    from gsuid_core.ai_core.planning.tool_output_protocol import extract_persist_title
+    from gsuid_core.ai_core.planning.tool_output_store import extract_persist_title
 
     body = (summary or "").lstrip()
     if body.lower().startswith("query:"):
@@ -82,15 +111,18 @@ def _min_score_ratio() -> float:
     return float(ai_config.get_config("cognition_min_score_ratio").data)
 
 
+def _speaker_boundary_pattern(uid: str) -> str:
+    escaped = re.escape(uid)
+    return rf"(?<!\d){escaped}(?!\d)" if uid.isdigit() else rf"(?<![A-Za-z0-9_]){escaped}(?![A-Za-z0-9_])"
+
+
 def query_mentions_speaker(query: str, user_id: str) -> bool:
     """query 是否点名该 user_id（整串边界，避免短号/子串误伤）。"""
     uid = (user_id or "").strip()
     body = query or ""
     if not uid or not body:
         return False
-    if uid.isdigit():
-        return re.search(rf"(?<!\d){re.escape(uid)}(?!\d)", body) is not None
-    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(uid)}(?![A-Za-z0-9_])", body) is not None
+    return re.search(_speaker_boundary_pattern(uid), body) is not None
 
 
 def strip_speaker_from_query(query: str, user_id: str) -> str:
@@ -99,11 +131,7 @@ def strip_speaker_from_query(query: str, user_id: str) -> str:
     body = query or ""
     if not uid or not body:
         return body
-    if uid.isdigit():
-        stripped = re.sub(rf"(?<!\d){re.escape(uid)}(?!\d)", " ", body)
-    else:
-        stripped = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(uid)}(?![A-Za-z0-9_])", " ", body)
-    cleaned = re.sub(r"\s+", " ", stripped).strip()
+    cleaned = re.sub(r"\s+", " ", re.sub(_speaker_boundary_pattern(uid), " ", body)).strip()
     return cleaned or body
 
 
@@ -119,10 +147,6 @@ def resolve_recall_kinds(
     if query_mentions_speaker(query, user_id):
         return SPEAKER_RECALL_KINDS
     return DEFAULT_RECALL_KINDS
-
-
-def _text_mentions_speaker(text: str, user_id: str) -> bool:
-    return query_mentions_speaker(text, user_id)
 
 
 async def search_cognition(
@@ -146,52 +170,47 @@ async def search_cognition(
 
     tasks: List[asyncio.Task[_BackendResult]] = []
     labels: List[str] = []
+
+    def _spawn(label: str, coro: Coroutine[object, object, _BackendResult]) -> None:
+        tasks.append(asyncio.create_task(coro))
+        labels.append(label)
+
     if kinds & MEMORY_KINDS:
-        tasks.append(
-            asyncio.create_task(
-                _search_memory(
-                    query,
-                    kinds=kinds,
-                    scope=scope,
-                    limit=limit,
-                    memory_intent=memory_intent,
-                )
-            )
-        )
-        labels.append("memory")
+        _spawn("memory", _search_memory(query, kinds=kinds, scope=scope, limit=limit, memory_intent=memory_intent))
     if kinds & KNOWLEDGE_KINDS:
-        tasks.append(asyncio.create_task(_search_knowledge_backend(query, scope=scope, limit=limit)))
-        labels.append("knowledge")
+        _spawn("knowledge", _search_knowledge_backend(query, scope=scope, limit=limit))
     if CogKind.TOOL_OUTPUT in kinds:
-        tasks.append(asyncio.create_task(_search_fileos(query, scope=scope, limit=limit)))
-        labels.append("fileos")
+        _spawn("fileos", _search_fileos(query, scope=scope, limit=limit))
     if CogKind.ARTIFACT in kinds and _artifact_enabled():
-        tasks.append(asyncio.create_task(_search_artifacts(query, scope=scope, limit=limit)))
-        labels.append("artifact")
-    # 近窗不是长期记忆 Episode。只在默认联邦面（记忆+知识+落盘）打开。
-    if DEFAULT_RECALL_KINDS <= kinds:
-        tasks.append(asyncio.create_task(_search_history(query, scope=scope, limit=limit)))
-        labels.append("history")
-    if CogKind.RECORD in kinds:
-        tasks.append(asyncio.create_task(_search_records(query, scope=scope, limit=limit)))
-        labels.append("record")
-    if kinds & MEDIA_KINDS:
+        _spawn("artifact", _search_artifacts(query, scope=scope, limit=limit))
+
+    need_extra = (
+        DEFAULT_RECALL_KINDS <= kinds
+        or CogKind.RECORD in kinds
+        or bool(kinds & MEDIA_KINDS)
+        or CogKind.MEME_KNOWLEDGE in kinds
+        or CogKind.OUTBOUND in kinds
+    )
+    if need_extra:
+        from gsuid_core.ai_core.cognition import extra_backends
+
+        # 近窗不是长期记忆 Episode。只在默认联邦面（记忆+知识+落盘）打开。
+        if DEFAULT_RECALL_KINDS <= kinds:
+            _spawn("history", extra_backends.search_history(query, scope=scope, limit=limit))
+        if CogKind.RECORD in kinds:
+            _spawn("record", extra_backends.search_records(query, scope=scope, limit=limit))
         if CogKind.IMAGE in kinds:
-            tasks.append(asyncio.create_task(_search_images(query, scope=scope, limit=limit)))
-            labels.append("image")
+            _spawn("image", extra_backends.search_images_backend(query, scope=scope, limit=limit))
         if CogKind.MEME in kinds:
-            tasks.append(asyncio.create_task(_search_memes(query, scope=scope, limit=limit)))
-            labels.append("meme")
-    if CogKind.MEME_KNOWLEDGE in kinds:
-        tasks.append(asyncio.create_task(_search_meme_knowledge(query, scope=scope, limit=limit)))
-        labels.append("meme_knowledge")
-    if CogKind.OUTBOUND in kinds:
-        tasks.append(asyncio.create_task(_search_outbound(query, scope=scope, limit=limit)))
-        labels.append("outbound")
+            _spawn("meme", extra_backends.search_memes_backend(query, scope=scope, limit=limit))
+        if CogKind.MEME_KNOWLEDGE in kinds:
+            _spawn("meme_knowledge", extra_backends.search_meme_knowledge_backend(query, scope=scope, limit=limit))
+        if CogKind.OUTBOUND in kinds:
+            _spawn("outbound", extra_backends.search_outbound(query, scope=scope, limit=limit))
+
     # 节点是索引层。说话人/纯记忆面不跑：公共实体节点会把 episode 挤出 RRF。
     if CogKind.KNOWLEDGE in kinds or CogKind.SELF_NOTE in kinds:
-        tasks.append(asyncio.create_task(_search_nodes(query, kinds=kinds, scope=scope, limit=limit)))
-        labels.append("nodes")
+        _spawn("nodes", _search_nodes(query, kinds=kinds, scope=scope, limit=limit))
 
     if not tasks:
         return []
@@ -281,7 +300,7 @@ def _fuse_ids(
     query: str,
 ) -> List[str]:
     """记忆在前。专名对得上的知识留名额，避免片段占满后知识整路消失。"""
-    from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
+    from gsuid_core.ai_core.planning.tool_output_store import rrf_fuse
 
     memory_lists = [lst for lst, lab in zip(ranked_lists, labels) if lab == "memory"]
     other_lists = [lst for lst, lab in zip(ranked_lists, labels) if lab != "memory"]
@@ -422,6 +441,209 @@ async def _expand_time_neighbors(
     return merged[:40]
 
 
+def _prioritize_by_speaker(
+    items: Sequence[_ItemT],
+    matches: Callable[[_ItemT], bool],
+) -> list[_ItemT]:
+    """把命中说话人的条目稳定前移，其余条目保持原有相对顺序。"""
+    primary: list[_ItemT] = []
+    rest: list[_ItemT] = []
+    for item in items:
+        if matches(item):
+            primary.append(item)
+        else:
+            rest.append(item)
+    return primary + rest
+
+
+def _render_scoped_text(scope: CogScope, scope_key: str, text: str) -> str:
+    if not scope.is_private:
+        return text
+    from gsuid_core.ai_core.memory.privacy import prefix_group_tag
+
+    return prefix_group_tag(scope_key, text)
+
+
+async def _expand_episode_recall(
+    ctx: MemoryContext,
+    *,
+    search_q: str,
+    scope: CogScope,
+    memory_intent: str,
+) -> tuple[set[str], set[str]]:
+    """对已召回片段做时间邻条扩展、词法补召、统一隐私再裁决与查询打包。"""
+    seed_ep_ids = {str(ep["id"]) for ep in ctx.episodes if "id" in ep}
+    neighbor_ep_ids: set[str] = set()
+    if ctx.episodes:
+        # 私聊跨群命中不随意拉出同群他人邻条；仅群聊或本人私聊做时间邻条扩展
+        expandable = (
+            [ep for ep in ctx.episodes if not (ep["scope_key"] if "scope_key" in ep else "").startswith("group:")]
+            if scope.is_private
+            else ctx.episodes
+        )
+        if expandable:
+            expanded = await _expand_time_neighbors(expandable, seed=8, before=8, after=8, order_by_time=False)
+            seen_ids = {str(ep["id"]) for ep in expanded if "id" in ep}
+            merged_eps = list(expanded)
+            for ep in ctx.episodes:
+                eid = str(ep["id"]) if "id" in ep else ""
+                if eid and eid not in seen_ids:
+                    seen_ids.add(eid)
+                    merged_eps.append(ep)
+            ctx.episodes = merged_eps
+        neighbor_ep_ids = {str(ep["id"]) for ep in ctx.episodes if "id" in ep} - seed_ep_ids
+
+    ctx.episodes = await expand_lexical_recall(
+        ctx.episodes,
+        query=search_q,
+        user_id=scope.user_id,
+        group_id=scope.group_id,
+        clock=scope.clock_at,
+        memory_intent=memory_intent,
+        bot_id=scope.bot_id,
+    )
+    # 邻条与词法扩展之后再过统一隐私裁决，防 ±8 邻条拉回水位线前的混群 self:*
+    from gsuid_core.ai_core.memory.privacy import enforce_memory_privacy
+    from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
+        apply_query_episode_pack,
+        collapse_document_episodes,
+    )
+    from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
+
+    await enforce_memory_privacy(
+        ctx,
+        group_id=scope.group_id,
+        user_id=scope.user_id,
+        watermark_ts=await ensure_isolation_watermark_ts(),
+    )
+    ctx.episodes = apply_query_episode_pack(
+        ctx.episodes,
+        search_q,
+        temporal_mode=ctx.temporal_mode,
+        time_range=ctx.time_range,
+        asker_id=scope.user_id if scope.group_id else "",
+        memory_intent=memory_intent,
+    )
+    if memory_intent == "broad_summary":
+        ctx.episodes = collapse_document_episodes(ctx.episodes)
+    return seed_ep_ids, neighbor_ep_ids
+
+
+def _append_preference_hits(bag: _HitBag, preferences: Sequence[PreferencePrompt], search_q: str) -> None:
+    for i, pref in enumerate(preferences):
+        rule = str(pref["preference_rule"]) if "preference_rule" in pref else ""
+        target = str(pref["target_context"]) if "target_context" in pref else ""
+        if rule and not query_overlaps_text(search_q, rule):
+            continue
+        bag.add(
+            CognitiveHit(
+                kind=CogKind.PREFERENCE,
+                id=f"pref_{pref['id']}" if "id" in pref else f"pref_{i}",
+                title=f"{target}：{rule}" if target else rule,
+                summary=rule,
+                score=1.0,
+                source="memory",
+            )
+        )
+
+
+def _append_episode_hits(
+    bag: _HitBag,
+    episodes: Sequence[Episode],
+    scope: CogScope,
+    search_q: str,
+    memory_intent: str,
+    seed_ep_ids: set[str],
+    neighbor_ep_ids: set[str],
+) -> None:
+    for i, ep in enumerate(episodes):
+        content = str(ep["content"]) if "content" in ep else ""
+        if not content:
+            continue
+        raw_id = str(ep["id"]) if "id" in ep else ""
+        # 邻条只为计数/时间线补上下文；降分后进弱相关，避免和语义命中一起摊开。
+        ep_score = (
+            _EPISODE_NEIGHBOR_SCORE
+            if raw_id and raw_id in neighbor_ep_ids and raw_id not in seed_ep_ids
+            else _EPISODE_SEED_SCORE
+        )
+        if memory_intent not in ("timeline_order", "broad_summary") and not text_has_query_needles(search_q, content):
+            ep_score = round(ep_score * 0.5, 4)
+        ep_sk = ep["scope_key"] if "scope_key" in ep else ""
+        bag.add(
+            CognitiveHit(
+                kind=CogKind.EPISODE,
+                id=f"ep_{ep['id']}" if "id" in ep else f"ep_{i}",
+                title="",
+                summary=_render_scoped_text(scope, ep_sk, content),
+                score=ep_score,
+                as_of=str(ep["valid_at"])[:16] if "valid_at" in ep else "",
+                source="memory",
+            )
+        )
+
+
+def _append_edge_hits(bag: _HitBag, edges: Sequence[Edge], scope: CogScope, speaker_ids: set[str]) -> None:
+    from gsuid_core.ai_core.memory.ingestion.algebra import _DANGLING_FACT_RE
+    from gsuid_core.ai_core.memory.retrieval.dual_route import _fact_mentions_speaker
+
+    # 点名说话人时只把「身上」的事实提前，不丢其它 S1 命中。
+    valid_edges = [
+        e for e in edges if (fact := str(e["fact"]) if "fact" in e else "") and not _DANGLING_FACT_RE.search(fact)
+    ]
+    ordered = (
+        _prioritize_by_speaker(valid_edges, lambda e: _fact_mentions_speaker(e, speaker_ids))
+        if speaker_ids
+        else valid_edges
+    )
+    for i, edge in enumerate(ordered):
+        fact = str(edge["fact"]) if "fact" in edge else ""
+        ts = edge["valid_at_ts"] if "valid_at_ts" in edge else None
+        as_of = (
+            datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+            if isinstance(ts, (int, float)) and 0 < ts <= 4_102_444_800
+            else ""
+        )
+        edge_sk = edge["scope_key"] if "scope_key" in edge else ""
+        bag.add(
+            CognitiveHit(
+                kind=CogKind.FACT,
+                id=f"edge_{edge['id']}" if "id" in edge else f"edge_{i}",
+                title=_render_scoped_text(scope, edge_sk, fact),
+                summary="",
+                score=float(edge["score"]) if "score" in edge else 0.6,
+                as_of=as_of,
+                source="memory",
+            )
+        )
+
+
+def _append_entity_hits(bag: _HitBag, entities: Sequence[Entity], scope: CogScope, speaker_ids: set[str]) -> None:
+    valid_entities = [ent for ent in entities if "name" in ent and str(ent["name"])]
+    ordered = (
+        _prioritize_by_speaker(
+            valid_entities,
+            lambda e: (
+                query_mentions_speaker(str(e["name"]), scope.user_id)
+                or query_mentions_speaker(str(e["summary"]) if "summary" in e else "", scope.user_id)
+            ),
+        )
+        if speaker_ids
+        else valid_entities
+    )
+    for i, ent in enumerate(ordered):
+        bag.add(
+            CognitiveHit(
+                kind=CogKind.ENTITY,
+                id=f"ent_{ent['id']}" if "id" in ent else f"ent_{i}",
+                title=str(ent["name"]),
+                summary=str(ent["summary"]) if "summary" in ent else "",
+                score=float(ent["score"]) if "score" in ent else 0.5,
+                source="memory",
+            )
+        )
+
+
 async def _search_memory(
     query: str,
     *,
@@ -431,19 +653,16 @@ async def _search_memory(
     memory_intent: str = "point_latest",
 ) -> _BackendResult:
     from gsuid_core.ai_core.memory.config import memory_config
-    from gsuid_core.ai_core.memory.retrieval.types import Edge, Entity
-    from gsuid_core.ai_core.memory.ingestion.algebra import _DANGLING_FACT_RE
-    from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve, _fact_mentions_speaker
+    from gsuid_core.ai_core.memory.retrieval.dual_route import dual_route_retrieve
 
     stripped_speaker = strip_speaker_from_query(query, scope.user_id)
     search_q = strip_clock_lines(stripped_speaker) or stripped_speaker
-    top_k = max(int(memory_config.retrieval_top_k), limit)
     ctx = await dual_route_retrieve(
         query=search_q,
         user_id=scope.user_id,
         # 私聊必须 None（scope 已经把这个决定表达出来了，这里不再回退）
         group_id=scope.group_id,
-        top_k=top_k,
+        top_k=max(int(memory_config.retrieval_top_k), limit),
         enable_system2=scope.enable_system2,
         enable_user_global=scope.enable_user_global,
         inject_preferences=CogKind.PREFERENCE in kinds,
@@ -457,186 +676,22 @@ async def _search_memory(
     seed_ep_ids: set[str] = set()
     neighbor_ep_ids: set[str] = set()
     if CogKind.EPISODE in kinds:
-        seed_ep_ids = {str(ep["id"]) for ep in ctx.episodes if "id" in ep}
-        if ctx.episodes:
-            # 私聊跨群命中不随意拉出同群他人邻条；仅群聊或本人私聊做时间邻条扩展
-            expandable = (
-                [ep for ep in ctx.episodes if not (ep["scope_key"] if "scope_key" in ep else "").startswith("group:")]
-                if scope.is_private
-                else ctx.episodes
-            )
-            if expandable:
-                expanded = await _expand_time_neighbors(
-                    expandable,
-                    seed=8,
-                    before=8,
-                    after=8,
-                    order_by_time=False,
-                )
-                seen_ids = {str(ep["id"]) for ep in expanded if "id" in ep}
-                merged_eps = list(expanded)
-                for ep in ctx.episodes:
-                    eid = str(ep["id"]) if "id" in ep else ""
-                    if eid and eid not in seen_ids:
-                        seen_ids.add(eid)
-                        merged_eps.append(ep)
-                ctx.episodes = merged_eps
-            neighbor_ep_ids = {str(ep["id"]) for ep in ctx.episodes if "id" in ep} - seed_ep_ids
-        ctx.episodes = await expand_lexical_recall(
-            ctx.episodes,
-            query=search_q,
-            user_id=scope.user_id,
-            group_id=scope.group_id,
-            clock=scope.clock_at,
-            memory_intent=memory_intent,
-            bot_id=scope.bot_id,
-        )
-        # 邻条与词法扩展之后再过统一隐私裁决，防 ±8 邻条拉回水位线前的混群 self:*
-        from gsuid_core.ai_core.memory.privacy import enforce_memory_privacy
-        from gsuid_core.ai_core.migrations.cross_group_isolation_v1 import ensure_isolation_watermark_ts
-
-        await enforce_memory_privacy(
-            ctx,
-            group_id=scope.group_id,
-            user_id=scope.user_id,
-            watermark_ts=await ensure_isolation_watermark_ts(),
-        )
-        from gsuid_core.ai_core.memory.retrieval.lexical_pack import (
-            apply_query_episode_pack,
-            collapse_document_episodes,
+        seed_ep_ids, neighbor_ep_ids = await _expand_episode_recall(
+            ctx, search_q=search_q, scope=scope, memory_intent=memory_intent
         )
 
-        ctx.episodes = apply_query_episode_pack(
-            ctx.episodes,
-            search_q,
-            temporal_mode=ctx.temporal_mode,
-            time_range=ctx.time_range,
-            asker_id=scope.user_id if scope.group_id else "",
-            memory_intent=memory_intent,
-        )
-        if memory_intent == "broad_summary":
-            ctx.episodes = collapse_document_episodes(ctx.episodes)
-    ids: List[str] = []
-    hits: Dict[str, CognitiveHit] = {}
+    bag = _HitBag()
     speaker_ids = {scope.user_id} if scope.user_id else set()
-
-    def _add(hit: CognitiveHit) -> None:
-        if hit.id in hits:
-            return
-        hits[hit.id] = hit
-        ids.append(hit.id)
-
     # 偏好置顶；片段是经历原文，紧随其后，避免事实边把证据会话挤出 RRF 前排。
     if CogKind.PREFERENCE in kinds:
-        for i, pref in enumerate(ctx.preferences):
-            rule = str(pref["preference_rule"]) if "preference_rule" in pref else ""
-            target = str(pref["target_context"]) if "target_context" in pref else ""
-            if rule and not query_overlaps_text(search_q, rule):
-                continue
-            pid = f"pref_{pref['id']}" if "id" in pref else f"pref_{i}"
-            _add(
-                CognitiveHit(
-                    kind=CogKind.PREFERENCE,
-                    id=pid,
-                    title=f"{target}：{rule}" if target else rule,
-                    summary=rule,
-                    score=1.0,
-                    source="memory",
-                )
-            )
+        _append_preference_hits(bag, ctx.preferences, search_q)
     if CogKind.EPISODE in kinds:
-        from gsuid_core.ai_core.memory.privacy import prefix_group_tag
-
-        for i, ep in enumerate(ctx.episodes):
-            content = str(ep["content"]) if "content" in ep else ""
-            if not content:
-                continue
-            raw_id = str(ep["id"]) if "id" in ep else ""
-            # 邻条只为计数/时间线补上下文；降分后进弱相关，避免和语义命中一起摊开。
-            ep_score = (
-                _EPISODE_NEIGHBOR_SCORE
-                if raw_id and raw_id in neighbor_ep_ids and raw_id not in seed_ep_ids
-                else _EPISODE_SEED_SCORE
-            )
-            if memory_intent not in ("timeline_order", "broad_summary") and not text_has_query_needles(
-                search_q, content
-            ):
-                ep_score = round(ep_score * 0.5, 4)
-            ep_sk = ep["scope_key"] if "scope_key" in ep else ""
-            rendered_ep = prefix_group_tag(ep_sk, content) if scope.is_private else content
-            _add(
-                CognitiveHit(
-                    kind=CogKind.EPISODE,
-                    id=f"ep_{ep['id']}" if "id" in ep else f"ep_{i}",
-                    title="",
-                    summary=rendered_ep,
-                    score=ep_score,
-                    as_of=str(ep["valid_at"])[:16] if "valid_at" in ep else "",
-                    source="memory",
-                )
-            )
+        _append_episode_hits(bag, ctx.episodes, scope, search_q, memory_intent, seed_ep_ids, neighbor_ep_ids)
     if CogKind.FACT in kinds:
-        from gsuid_core.ai_core.memory.privacy import prefix_group_tag
-
-        # 点名说话人时只把「身上」的事实提前，不丢其它 S1 命中。
-        # 地点类事实常是「住在杭州」，字面没有 user_id，整表过滤会变成零命中。
-        primary: list[Edge] = []
-        rest: list[Edge] = []
-        for edge in ctx.edges:
-            fact = str(edge["fact"]) if "fact" in edge else ""
-            if not fact or _DANGLING_FACT_RE.search(fact):
-                continue
-            if speaker_ids and _fact_mentions_speaker(edge, speaker_ids):
-                primary.append(edge)
-            else:
-                rest.append(edge)
-        for i, edge in enumerate(primary + rest):
-            fact = str(edge["fact"]) if "fact" in edge else ""
-            ts = edge["valid_at_ts"] if "valid_at_ts" in edge else None
-            as_of = ""
-            if isinstance(ts, (int, float)) and 0 < ts <= 4_102_444_800:
-                as_of = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-            edge_sk = edge["scope_key"] if "scope_key" in edge else ""
-            rendered_fact = prefix_group_tag(edge_sk, fact) if scope.is_private else fact
-            _add(
-                CognitiveHit(
-                    kind=CogKind.FACT,
-                    id=f"edge_{edge['id']}" if "id" in edge else f"edge_{i}",
-                    title=rendered_fact,
-                    summary="",
-                    score=float(edge["score"]) if "score" in edge else 0.6,
-                    as_of=as_of,
-                    source="memory",
-                )
-            )
+        _append_edge_hits(bag, ctx.edges, scope, speaker_ids)
     if CogKind.ENTITY in kinds:
-        primary_e: list[Entity] = []
-        rest_e: list[Entity] = []
-        for ent in ctx.entities:
-            name = str(ent["name"]) if "name" in ent else ""
-            if not name:
-                continue
-            summary = str(ent["summary"]) if "summary" in ent else ""
-            if speaker_ids and (
-                _text_mentions_speaker(name, scope.user_id) or _text_mentions_speaker(summary, scope.user_id)
-            ):
-                primary_e.append(ent)
-            else:
-                rest_e.append(ent)
-        for i, ent in enumerate(primary_e + rest_e):
-            name = str(ent["name"]) if "name" in ent else ""
-            summary = str(ent["summary"]) if "summary" in ent else ""
-            _add(
-                CognitiveHit(
-                    kind=CogKind.ENTITY,
-                    id=f"ent_{ent['id']}" if "id" in ent else f"ent_{i}",
-                    title=name,
-                    summary=summary,
-                    score=float(ent["score"]) if "score" in ent else 0.5,
-                    source="memory",
-                )
-            )
-    return ids[: limit * 2], hits
+        _append_entity_hits(bag, ctx.entities, scope, speaker_ids)
+    return bag.result(limit * 2)
 
 
 # ── 后端 2：正式知识库（排除开发文档整类）──
@@ -682,83 +737,79 @@ async def _search_knowledge_backend(query: str, *, scope: CogScope, limit: int) 
     # 过滤下推：skill_doc 整类在服务端排除，不是先搜全球再内存筛
     exclude = None if scope.include_skill_doc else [SKILLS_DOC_SOURCE]
     search_q = await _knowledge_query_for_scope(query, scope)
-    fetch = limit * 2 if limit > 0 else limit
-    points = await query_knowledge(query=search_q, limit=fetch, exclude_sources=exclude)
-    ids: List[str] = []
-    hits: Dict[str, CognitiveHit] = {}
+    points = await query_knowledge(query=search_q, limit=limit * 2 if limit > 0 else limit, exclude_sources=exclude)
+    bag = _HitBag()
     plugin_seen: Set[str] = set()
     for point in points:
-        if len(ids) >= limit:
+        if len(bag.ids) >= limit:
             break
         payload = point.payload
         if not payload:
             continue
         kid = str(payload["id"]) if "id" in payload else str(point.id)
-        origin = payload["source"] if "source" in payload else ""
-        origin_s = origin if isinstance(origin, str) else ""
-        doc_raw = payload["doc_id"] if "doc_id" in payload else ""
-        doc_id = doc_raw if isinstance(doc_raw, str) else ""
+        origin_s = _mapping_str(payload, "source")
+        doc_id = _mapping_str(payload, "doc_id")
         plugin_parent = _plugin_knowledge_parent(origin_s, kid, doc_id)
         if plugin_parent:
             if plugin_parent in plugin_seen:
                 continue
             plugin_seen.add(plugin_parent)
         node_id = f"kb_{plugin_parent}" if plugin_parent else f"kb_{kid}"
-        if node_id in hits:
+        if node_id in bag.hits:
             continue
         chunk_raw = payload["chunk_index"] if "chunk_index" in payload else 0
         chunk_index = chunk_raw if isinstance(chunk_raw, int) and not isinstance(chunk_raw, bool) else 0
-        content_raw = payload["content"] if "content" in payload else ""
-        content = content_raw if isinstance(content_raw, str) else ""
-        title_raw = payload["title"] if "title" in payload else ""
-        title = title_raw if isinstance(title_raw, str) else ""
-        plugin_raw = payload["plugin"] if "plugin" in payload else ""
-        plugin = plugin_raw if isinstance(plugin_raw, str) else "knowledge"
         handle, chunk_index = knowledge_hit_handle(origin_s, kid, doc_id, chunk_index)
-        hits[node_id] = CognitiveHit(
-            kind=CogKind.KNOWLEDGE,
-            id=node_id,
-            title=title,
-            summary=content[:_KNOWLEDGE_HEAD_CHARS],
-            score=float(point.score),
-            handle=handle,
-            source=plugin,
-            chunk_index=chunk_index,
+        plugin_raw = payload["plugin"] if "plugin" in payload else ""
+        bag.add(
+            CognitiveHit(
+                kind=CogKind.KNOWLEDGE,
+                id=node_id,
+                title=_mapping_str(payload, "title"),
+                summary=_mapping_str(payload, "content")[:_KNOWLEDGE_HEAD_CHARS],
+                score=float(point.score),
+                handle=handle,
+                source=plugin_raw if isinstance(plugin_raw, str) else "knowledge",
+                chunk_index=chunk_index,
+            )
         )
-        ids.append(node_id)
-    return ids, hits
+    return bag.result()
 
 
 # ── 后端 3：FileOS 工具落盘（owner 行级 ACL）──
 
 
-async def _search_fileos(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
-    from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
-    from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
-
-    if not scope.user_id:
-        # fail-closed：无 owner 不许全局扫表
-        return _EMPTY_RESULT
-
+async def _collect_hybrid_hits(
+    coro: Coroutine[object, object, Sequence[Dict[str, object]]],
+) -> Tuple[List[str], Dict[str, Dict[str, object]]]:
+    """统一解包 FileOS / Artifact 混合检索的 id 序列与元信息，失败 fail-open。"""
     hybrid_ids: List[str] = []
     hybrid_meta: Dict[str, Dict[str, object]] = {}
     try:
-        from gsuid_core.ai_core.planning.tool_output_index import search_tool_outputs
-
-        raw = await search_tool_outputs(
-            query=query,
-            limit=limit * 2,
-            scope_key=scope.group_id,
-            owner_user_id=scope.user_id,
-        )
-        for h in raw:
+        for h in await coro:
             rid = str(h["id"]) if "id" in h else ""
             if rid:
                 hybrid_ids.append(rid)
                 hybrid_meta[rid] = h
     except Exception as e:
         logger.debug(t("log.ai.tool_output_hybrid_search_skip", e=e))
+    return hybrid_ids, hybrid_meta
 
+
+async def _search_fileos(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
+    from gsuid_core.ai_core.planning.tool_output_store import (
+        AIToolOutputRecord,
+        rrf_fuse,
+        search_tool_outputs,
+    )
+
+    if not scope.user_id:
+        # fail-closed：无 owner 不许全局扫表
+        return _EMPTY_RESULT
+
+    hybrid_ids, hybrid_meta = await _collect_hybrid_hits(
+        search_tool_outputs(query=query, limit=limit * 2, scope_key=scope.group_id, owner_user_id=scope.user_id)
+    )
     sql_rows = await AIToolOutputRecord.search(
         owner_user_id=scope.user_id,
         scope_key=scope.group_id,
@@ -768,20 +819,21 @@ async def _search_fileos(query: str, *, scope: CogScope, limit: int) -> _Backend
     sql_map = {r.id: r for r in sql_rows}
     fused = rrf_fuse([hybrid_ids, [r.id for r in sql_rows]], limit=limit)
 
-    ids: List[str] = []
-    hits: Dict[str, CognitiveHit] = {}
+    bag = _HitBag()
     for rid in fused:
         if rid in sql_map:
             rec = sql_map[rid]
-            hit = CognitiveHit(
-                kind=CogKind.TOOL_OUTPUT,
-                id=rid,
-                title=_fileos_hit_title(rec.summary, rec.tool_name or "", rec.profile or ""),
-                summary=rec.summary[:200],
-                score=0.5,
-                as_of=rec.date_str,
-                handle=rid,
-                source="fileos",
+            bag.add(
+                CognitiveHit(
+                    kind=CogKind.TOOL_OUTPUT,
+                    id=rid,
+                    title=_fileos_hit_title(rec.summary, rec.tool_name or "", rec.profile or ""),
+                    summary=rec.summary[:200],
+                    score=0.5,
+                    as_of=rec.date_str,
+                    handle=rid,
+                    source="fileos",
+                )
             )
         elif rid in hybrid_meta:
             meta = hybrid_meta[rid]
@@ -790,28 +842,26 @@ async def _search_fileos(query: str, *, scope: CogScope, limit: int) -> _Backend
             indexed_title = str(meta["title"]) if "title" in meta else ""
             if indexed_title.startswith("<"):
                 indexed_title = ""
-            hit = CognitiveHit(
-                kind=CogKind.TOOL_OUTPUT,
-                id=rid,
-                title=indexed_title or _fileos_hit_title(sm, tn),
-                summary=sm[:200],
-                score=0.5,
-                handle=rid,
-                source="fileos",
+            bag.add(
+                CognitiveHit(
+                    kind=CogKind.TOOL_OUTPUT,
+                    id=rid,
+                    title=indexed_title or _fileos_hit_title(sm, tn),
+                    summary=sm[:200],
+                    score=0.5,
+                    handle=rid,
+                    source="fileos",
+                )
             )
-        else:
-            continue
-        hits[rid] = hit
-        ids.append(rid)
-    return ids, hits
+    return bag.result()
 
 
-# ── 后端 4：任务产物摘要（SQL 近期，不做向量）──
+# ── 后端 4：任务产物摘要（SQL 近期 + 混合检索）──
 
 
 async def _search_artifacts(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
     from gsuid_core.ai_core.planning.models import AIAgentArtifact
-    from gsuid_core.ai_core.planning.tool_output_protocol import rrf_fuse
+    from gsuid_core.ai_core.planning.tool_output_store import rrf_fuse, search_artifacts_hybrid
 
     if not scope.user_id:
         return _EMPTY_RESULT
@@ -823,94 +873,42 @@ async def _search_artifacts(query: str, *, scope: CogScope, limit: int) -> _Back
     )
     sql_ids = [row.id for row in rows]
     sql_map = {row.id: row for row in rows}
-    hybrid_ids: List[str] = []
-    hybrid_meta: Dict[str, Dict[str, object]] = {}
-    try:
-        from gsuid_core.ai_core.planning.artifact_index import search_artifacts_hybrid
-
-        raw = await search_artifacts_hybrid(
-            query,
-            owner_user_id=scope.user_id,
-            scope_key=scope.group_id,
-            limit=limit * 2,
-        )
-        for h in raw:
-            rid = str(h["id"]) if "id" in h else ""
-            if rid:
-                hybrid_ids.append(rid)
-                hybrid_meta[rid] = h
-    except Exception as e:
-        logger.debug(t("log.ai.tool_output_hybrid_search_skip", e=e))
-
+    hybrid_ids, hybrid_meta = await _collect_hybrid_hits(
+        search_artifacts_hybrid(query, owner_user_id=scope.user_id, scope_key=scope.group_id, limit=limit * 2)
+    )
     fused = rrf_fuse([hybrid_ids, sql_ids], limit=limit) if hybrid_ids else sql_ids[:limit]
-    ids: List[str] = []
-    hits: Dict[str, CognitiveHit] = {}
+    bag = _HitBag()
     for rid in fused:
         if rid in sql_map:
             row = sql_map[rid]
-            hits[rid] = CognitiveHit(
-                kind=CogKind.ARTIFACT,
-                id=row.id,
-                title=row.from_profile or row.artifact_kind,
-                summary=row.summary[:200],
-                score=0.55 if rid in hybrid_meta else 0.45,
-                as_of=row.created_at.strftime("%Y-%m-%d"),
-                handle=row.id,
-                source="artifact",
+            bag.add(
+                CognitiveHit(
+                    kind=CogKind.ARTIFACT,
+                    id=row.id,
+                    title=row.from_profile or row.artifact_kind,
+                    summary=row.summary[:200],
+                    score=0.55 if rid in hybrid_meta else 0.45,
+                    as_of=row.created_at.strftime("%Y-%m-%d"),
+                    handle=row.id,
+                    source="artifact",
+                )
             )
         elif rid in hybrid_meta:
             meta = hybrid_meta[rid]
             sm = str(meta["summary"]) if "summary" in meta else ""
-            hits[rid] = CognitiveHit(
-                kind=CogKind.ARTIFACT,
-                id=rid,
-                title=str(meta["profile"]) if "profile" in meta else "产物",
-                summary=sm[:200],
-                score=0.5,
-                as_of=str(meta["date_str"]) if "date_str" in meta else "",
-                handle=rid,
-                source="artifact",
+            bag.add(
+                CognitiveHit(
+                    kind=CogKind.ARTIFACT,
+                    id=rid,
+                    title=str(meta["profile"]) if "profile" in meta else "产物",
+                    summary=sm[:200],
+                    score=0.5,
+                    as_of=str(meta["date_str"]) if "date_str" in meta else "",
+                    handle=rid,
+                    source="artifact",
+                )
             )
-        else:
-            continue
-        ids.append(rid)
-    return ids, hits
-
-
-async def _search_history(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
-    from gsuid_core.ai_core.cognition.extra_backends import search_history
-
-    return await search_history(query, scope=scope, limit=limit)
-
-
-async def _search_records(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
-    from gsuid_core.ai_core.cognition.extra_backends import search_records
-
-    return await search_records(query, scope=scope, limit=limit)
-
-
-async def _search_images(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
-    from gsuid_core.ai_core.cognition.extra_backends import search_images_backend
-
-    return await search_images_backend(query, scope=scope, limit=limit)
-
-
-async def _search_memes(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
-    from gsuid_core.ai_core.cognition.extra_backends import search_memes_backend
-
-    return await search_memes_backend(query, scope=scope, limit=limit)
-
-
-async def _search_meme_knowledge(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
-    from gsuid_core.ai_core.cognition.extra_backends import search_meme_knowledge_backend
-
-    return await search_meme_knowledge_backend(query, scope=scope, limit=limit)
-
-
-async def _search_outbound(query: str, *, scope: CogScope, limit: int) -> _BackendResult:
-    from gsuid_core.ai_core.cognition.extra_backends import search_outbound
-
-    return await search_outbound(query, scope=scope, limit=limit)
+    return bag.result()
 
 
 # ── 后端 5：认知节点（跨 kind 蒸馏结论的索引层）──
@@ -951,23 +949,22 @@ async def _search_nodes(
         self_min_created_at=int(await ensure_isolation_watermark_ts()),
         private_strict_owner_for_groups=scope.is_private,
     )
-    ids: List[str] = []
-    hits: Dict[str, CognitiveHit] = {}
+    bag = _HitBag()
     for row in rows:
-        node_id = f"node_{row.id}"
-        hits[node_id] = CognitiveHit(
-            kind=CogKind(row.kind),
-            id=node_id,
-            title=row.title,
-            summary=row.summary,
-            # 节点分低于原库直接命中：它是蒸馏摘要，不如正文精确
-            score=0.4 * max(row.decay, 0.1),
-            as_of=row.as_of,
-            handle=row.handle,
-            source=row.source or "node",
+        bag.add(
+            CognitiveHit(
+                kind=CogKind(row.kind),
+                id=f"node_{row.id}",
+                title=row.title,
+                summary=row.summary,
+                # 节点分低于原库直接命中：它是蒸馏摘要，不如正文精确
+                score=0.4 * max(row.decay, 0.1),
+                as_of=row.as_of,
+                handle=row.handle,
+                source=row.source or "node",
+            )
         )
-        ids.append(node_id)
-    return ids, hits
+    return bag.result()
 
 
 _TOOL_OUTPUT_INJECT_MAX_CHARS = 150

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.ai_core.persona_reset.guard import is_scope_frozen
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.memory.retrieval.types import Episode
@@ -279,10 +280,14 @@ async def observe(
         if tier is None:
             return
         value_tier = tier
-        if group_id:
-            from gsuid_core.ai_core.mcp.pii import mask_pii
 
-            content = mask_pii(content)
+    if is_scope_frozen(scope_key):
+        return
+
+    if not is_self_speech and group_id:
+        from gsuid_core.ai_core.mcp.pii import mask_pii
+
+        content = mask_pii(content)
 
     record = ObservationRecord(
         raw_content=content,

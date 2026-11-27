@@ -32,7 +32,7 @@ def get_legacy_owner_persona() -> str:
 
 def pick_default_persona(configs: Mapping[str, StringConfig]) -> Optional[str]:
     """选存量数据归属人格：双 all → 群 all → 私 all → 绑定目标最多的 specific。"""
-    from gsuid_core.ai_core.persona.config import read_target_list, read_channel_scopes
+    from gsuid_core.ai_core.persona.config_rules import read_target_list, read_channel_scopes
 
     enabled = {name: read_channel_scopes(cfg) for name, cfg in configs.items()}
     active = {name: sc for name, sc in enabled.items() if sc.is_enabled}

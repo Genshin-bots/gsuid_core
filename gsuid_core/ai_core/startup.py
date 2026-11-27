@@ -16,7 +16,6 @@
 
 import time
 import asyncio
-from enum import StrEnum
 from typing import Optional
 
 # 必须在此导入关系温度表迁移模块，确保在 @on_core_start_before 阻塞阶段执行。
@@ -118,7 +117,7 @@ async def _init_statistics():
 
 
 async def _init_autonomy() -> None:
-    from gsuid_core.ai_core.autonomy.startup import init_autonomy
+    from gsuid_core.ai_core.autonomy.scheduler import init_autonomy
 
     await init_autonomy()
 
@@ -195,23 +194,13 @@ async def _init_agent_kits():
 
 
 async def _init_command_exec():
-    from gsuid_core.ai_core.command_exec.startup import init_command_exec
+    from gsuid_core.ai_core.command_exec import init_command_exec
 
     await init_command_exec()
 
 
-class AICoreInitPhase(StrEnum):
-    IDLE = "idle"
-    INITIALIZING = "initializing"
-    READY = "ready"
-    DEGRADED = "degraded"
-    DISABLED = "disabled"
-    FAILED = "failed"
-
-
 _AI_CORE_READY = False
 _AI_CORE_INITIALIZING = False
-_AI_CORE_PHASE: AICoreInitPhase = AICoreInitPhase.IDLE
 _AI_CORE_READY_EVENT: Optional[asyncio.Event] = None
 
 
@@ -220,23 +209,6 @@ def _get_ready_event() -> asyncio.Event:
     if _AI_CORE_READY_EVENT is None:
         _AI_CORE_READY_EVENT = asyncio.Event()
     return _AI_CORE_READY_EVENT
-
-
-def get_ai_core_init_phase() -> AICoreInitPhase:
-    """返回 AI 核心当前生命周期阶段。"""
-    if _AI_CORE_INITIALIZING:
-        return AICoreInitPhase.INITIALIZING
-    if not _AI_CORE_READY:
-        if _AI_CORE_PHASE == AICoreInitPhase.FAILED:
-            return AICoreInitPhase.FAILED
-        return AICoreInitPhase.IDLE
-    if _AI_CORE_PHASE in (
-        AICoreInitPhase.READY,
-        AICoreInitPhase.DEGRADED,
-        AICoreInitPhase.DISABLED,
-    ):
-        return _AI_CORE_PHASE
-    return AICoreInitPhase.READY
 
 
 def is_ai_core_ready() -> bool:
@@ -301,7 +273,7 @@ _INIT_STEPS = [
 @on_core_start
 async def init_ai_core():
     """AI 核心统一初始化（后台执行，不阻塞 WS 启动）。"""
-    global _AI_CORE_READY, _AI_CORE_INITIALIZING, _AI_CORE_PHASE
+    global _AI_CORE_READY, _AI_CORE_INITIALIZING
 
     # 防并发初始化：状态判断与 _AI_CORE_INITIALIZING 之间无 await，保证原子置位。
     # 避免双流水线并发写 Qdrant 产生文件锁冲突。
@@ -315,14 +287,12 @@ async def init_ai_core():
     if not enable_ai:
         _AI_CORE_READY = True
         _AI_CORE_INITIALIZING = False
-        _AI_CORE_PHASE = AICoreInitPhase.DISABLED
         _get_ready_event().set()
         logger.info(t("log.ai.core_init_skip_import_ai_master"))
         return
 
     _AI_CORE_READY = False
     _AI_CORE_INITIALIZING = True
-    _AI_CORE_PHASE = AICoreInitPhase.INITIALIZING
     _get_ready_event().clear()
     start = time.time()
     logger.info(t("log.ai.ai_core_background_initialization_start"))
@@ -335,7 +305,6 @@ async def init_ai_core():
     except Exception as e:
         logger.exception(t("log.ai.core_init_fail_import_ai_heavy", e=e))
         _AI_CORE_INITIALIZING = False
-        _AI_CORE_PHASE = AICoreInitPhase.FAILED
         _get_ready_event().set()
         return
 
@@ -378,7 +347,6 @@ async def init_ai_core():
     finally:
         _AI_CORE_READY = True
         _AI_CORE_INITIALIZING = False
-        _AI_CORE_PHASE = AICoreInitPhase.DEGRADED if init_failed else AICoreInitPhase.READY
         _get_ready_event().set()
         # 挂载不进 _INIT_STEPS：READY 之后后台跑，失败不得把就绪改回 false。
         try:
@@ -423,6 +391,18 @@ async def close_monty_pool_on_shutdown() -> None:
     await close_monty_pool()
 
 
+@on_core_shutdown(priority=-10)
+async def cancel_background_tools_on_shutdown() -> None:
+    """框架关闭时先于会话落盘取消在途后台长耗时工具，避免关机挂起或孤儿协程。"""
+    import sys
+
+    if "gsuid_core.ai_core.background_tools" not in sys.modules:
+        return
+    from gsuid_core.ai_core.background_tools import shutdown_background_tools
+
+    await shutdown_background_tools()
+
+
 @on_core_shutdown
 async def flush_ai_sessions_on_shutdown() -> None:
     """框架关闭时，强制把所有活跃 AI 会话的日志落盘。
@@ -451,3 +431,14 @@ async def stop_journal_scheduler_on_shutdown() -> None:
         await stop_journal_scheduler()
     except Exception as e:  # noqa: BLE001
         logger.debug(t("log.ai.journal_compact_fail", persona_name="system", e=e))
+
+
+@on_core_shutdown
+async def drain_artifact_index_tasks_on_shutdown() -> None:
+    """关闭前收敛在途产物索引任务；须在 priority=100 的 Qdrant close 之前跑完。"""
+    try:
+        from gsuid_core.ai_core.planning.workspace import drain_pending_index_tasks
+
+        await drain_pending_index_tasks()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(t("log.ai.artifact_index_drain_fail", e=e))

@@ -1,25 +1,18 @@
 """
 Persona 配置管理模块
 
-提供每个 Persona 的独立配置管理，包括：
-- AI 行动模式 (ai_mode)
-- 双通道启用范围 (group_scope / private_scope: off / specific / all)
-- 目标群聊与私聊用户 (target_groups / target_users)
-- 旧 scope 字段保留作单向派生兼容投影，运行时一律以双通道字段为准。
+提供每个 Persona 的独立配置模板、落盘持久化与互斥校验（``PersonaConfigManager``）。
+纯无状态规则、值对象与解析校验位于 ``gsuid_core.ai_core.persona.config_rules``。
 
 通道全局互斥：全系统最多一人占 ``group_scope=all``，最多一人占 ``private_scope=all``，
 两通道互不冲突。
 """
 
-import re
 import json
 import time
 from typing import Dict, List, Optional
 from pathlib import Path
-from datetime import datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from dataclasses import dataclass
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from msgspec import to_builtins
 from boltons.fileutils import atomic_save
@@ -37,243 +30,22 @@ from gsuid_core.utils.plugins_config.models import (
 from gsuid_core.utils.plugins_config.gs_config import StringConfig, ConfigSetManager
 
 from ..resource import PERSONA_PATH
-
-CHANNEL_SCOPE_VALUES: tuple[str, ...] = ("off", "specific", "all")
-PERSONA_SCOPE_VALUES = (
-    "disabled",
-    "global",
-    "specific",
-    "global_group",
-    "global_private",
+from .config_rules import (
+    AI_MODE_OPTIONS,
+    CHANNEL_SCOPE_VALUES,
+    PERSONA_SCOPE_VALUES,
+    AutonomySettings,
+    ChannelDeploymentSnapshot,
+    read_target_list,
+    read_drive_traits,
+    normalize_ai_modes,
+    derive_legacy_scope,
+    read_channel_scopes,
+    read_autonomy_runtime,
+    persona_covers_session,
+    autonomy_settings_error,
+    legacy_scope_to_channels,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelScopes:
-    """群聊与私聊两个正交通道的启用范围。"""
-
-    group_scope: str = "off"
-    private_scope: str = "off"
-
-    @property
-    def is_enabled(self) -> bool:
-        return self.group_scope != "off" or self.private_scope != "off"
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelDeploymentSnapshot:
-    """部署态范围快照：用于整包/git 覆盖导入时保留本地启用范围与目标列表。"""
-
-    group_scope: str
-    private_scope: str
-    target_groups: tuple[str, ...]
-    target_users: tuple[str, ...]
-
-
-EMPTY_CHANNEL_DEPLOYMENT = ChannelDeploymentSnapshot(
-    group_scope="off",
-    private_scope="off",
-    target_groups=(),
-    target_users=(),
-)
-
-
-# 命令回复发出后，按概率用人设再补一句。默认不在 ai_mode 里，所以关闭。
-ASIDE_MODE = "命令补充"
-# 改名前写进人格配置的名字。读到时仍算开启。
-ASIDE_MODE_ALIASES = frozenset({"余韵点评", "命令接话"})
-AUTONOMY_MODE = "自主行动"
-AUTONOMY_MODE_ALIASES = frozenset({"自由活动"})
-RETIRED_AI_MODES = frozenset({"困境救场(暂不可用)", "困境救场"})
-AI_MODE_OPTIONS = [
-    "提及应答",
-    "定时巡检",
-    ASIDE_MODE,
-    AUTONOMY_MODE,
-]
-_ACTIVE_WINDOW = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
-
-
-def normalize_ai_modes(modes: list[str]) -> list[str]:
-    """把改名前的模式名收成现在的名字，并去掉已经下线的项。"""
-    out: list[str] = []
-    for mode in modes:
-        if mode in RETIRED_AI_MODES:
-            continue
-        if mode in ASIDE_MODE_ALIASES:
-            item = ASIDE_MODE
-        elif mode in AUTONOMY_MODE_ALIASES:
-            item = AUTONOMY_MODE
-        else:
-            item = mode
-        if item not in out:
-            out.append(item)
-    return out
-
-
-@dataclass(frozen=True, slots=True)
-class DriveTraits:
-    """人格驱动四参数（读自 config，坏值回退默认）。"""
-
-    social_initiative: int = 50
-    energy_endurance: int = 50
-    curiosity_focus: str = "balanced"
-    arc_persistence: int = 2
-
-
-CURIOSITY_FOCUS_VALUES = frozenset({"balanced", "people", "analytical", "whimsical"})
-
-
-def _clamped_int(raw: object, default: int, low: int, high: int) -> int:
-    return min(high, max(low, int(raw))) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else default
-
-
-def read_drive_traits(config: StringConfig) -> DriveTraits:
-    """从人格配置读四参数；老 config.json 缺键或类型不对时全用默认。"""
-    initiative = _clamped_int(config.get_config("social_initiative").data, 50, 0, 100)
-    endurance = _clamped_int(config.get_config("energy_endurance").data, 50, 0, 100)
-    focus_raw = config.get_config("curiosity_focus").data
-    focus = focus_raw if isinstance(focus_raw, str) and focus_raw in CURIOSITY_FOCUS_VALUES else "balanced"
-    persistence = _clamped_int(config.get_config("arc_persistence").data, 2, 1, 3)
-    return DriveTraits(
-        social_initiative=initiative,
-        energy_endurance=endurance,
-        curiosity_focus=focus,
-        arc_persistence=persistence,
-    )
-
-
-def parse_active_window(text: str) -> tuple[int, int] | None:
-    """返回开始、结束的当天分钟数。格式不对则返回 None。"""
-    matched = _ACTIVE_WINDOW.fullmatch(text.strip())
-    if matched is None:
-        return None
-    start = int(matched.group(1)) * 60 + int(matched.group(2))
-    end = int(matched.group(3)) * 60 + int(matched.group(4))
-    return start, end
-
-
-def is_within_active_hours(
-    active_hours: list[str],
-    tz_name: str,
-    now: datetime | None = None,
-) -> bool:
-    """作息闭区间。跨午夜用「晚于开始或早于结束」。全非法或时区无效则视为不在作息内。"""
-    zone_name = tz_name.strip()
-    if not active_hours or not zone_name:
-        return False
-    try:
-        zone = ZoneInfo(zone_name)
-    except ZoneInfoNotFoundError:
-        return False
-    clock = datetime.now(zone) if now is None else now
-    if clock.tzinfo is None:
-        clock = clock.replace(tzinfo=zone)
-    else:
-        clock = clock.astimezone(zone)
-    minute = clock.hour * 60 + clock.minute
-    for raw in active_hours:
-        parsed = parse_active_window(raw) if isinstance(raw, str) else None
-        if parsed is None:
-            continue
-        start, end = parsed
-        if start <= end:
-            if start <= minute <= end:
-                return True
-        elif minute >= start or minute <= end:
-            return True
-    return False
-
-
-def legacy_scope_to_channels(scope: str) -> ChannelScopes:
-    """将旧单字段 scope 映射为双通道策略（方案 A：specific 仅迁群聊，私聊置 off）。"""
-    if scope == "global":
-        return ChannelScopes(group_scope="all", private_scope="all")
-    if scope == "global_group":
-        return ChannelScopes(group_scope="all", private_scope="off")
-    if scope == "global_private":
-        return ChannelScopes(group_scope="off", private_scope="all")
-    if scope == "specific":
-        return ChannelScopes(group_scope="specific", private_scope="off")
-    return ChannelScopes(group_scope="off", private_scope="off")
-
-
-def derive_legacy_scope(group_scope: str, private_scope: str) -> str:
-    """从双通道策略派生兼容旧字段 scope（保留给旧客户端与版本回滚）。"""
-    if group_scope == "off" and private_scope == "off":
-        return "disabled"
-    if group_scope == "all" and private_scope == "all":
-        return "global"
-    if group_scope == "all" and private_scope == "off":
-        return "global_group"
-    if group_scope == "off" and private_scope == "all":
-        return "global_private"
-    return "specific"
-
-
-def _normalize_channel_scope(raw: object) -> str:
-    if isinstance(raw, str) and raw in CHANNEL_SCOPE_VALUES:
-        return raw
-    return "off"
-
-
-def read_channel_scopes(config: StringConfig) -> ChannelScopes:
-    """读取人格的双通道启用范围；无新键时回退旧 scope 推导。"""
-    has_group = "group_scope" in config.config
-    has_private = "private_scope" in config.config
-    if has_group or has_private:
-        raw_group = config.config["group_scope"].data if has_group else "off"
-        raw_private = config.config["private_scope"].data if has_private else "off"
-        return ChannelScopes(
-            group_scope=_normalize_channel_scope(raw_group),
-            private_scope=_normalize_channel_scope(raw_private),
-        )
-    raw_legacy = config.config["scope"].data if "scope" in config.config else "disabled"
-    legacy = raw_legacy if isinstance(raw_legacy, str) else "disabled"
-    return legacy_scope_to_channels(legacy)
-
-
-def read_target_list(config: StringConfig, key: str) -> list[str]:
-    """安全读取目标群聊/私聊列表并去重去空白。"""
-    if key not in config.config:
-        return []
-    raw = config.config[key].data
-    if not isinstance(raw, list):
-        return []
-    cleaned: list[str] = []
-    for item in raw:
-        if isinstance(item, str):
-            text = item.strip()
-            if text and text not in cleaned:
-                cleaned.append(text)
-    return cleaned
-
-
-def is_persona_enabled(config: StringConfig) -> bool:
-    """任一通道非 off 即视为人格已启用。"""
-    return read_channel_scopes(config).is_enabled
-
-
-def persona_covers_session(
-    config: StringConfig,
-    *,
-    group_id: Optional[str] = None,
-    user_id: Optional[str] = None,
-) -> bool:
-    """统一会话覆盖判定：路由、巡检与自主行动共用此真值源。"""
-    scopes = read_channel_scopes(config)
-    if group_id:
-        if scopes.group_scope == "all":
-            return True
-        if scopes.group_scope == "specific":
-            return group_id in read_target_list(config, "target_groups")
-        return False
-    if scopes.private_scope == "all":
-        return True
-    if scopes.private_scope == "specific":
-        return bool(user_id) and user_id in read_target_list(config, "target_users")
-    return False
-
 
 # 默认配置项
 DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
@@ -472,6 +244,10 @@ DEFAULT_PERSONA_CONFIG: Dict[str, GSC] = {
     ),
 }
 
+_ASIDE_PROB_FIELDS = frozenset({"aside_image_probability", "aside_text_probability", "aside_mixed_probability"})
+_INSPECT_INTERVAL_VALUES = (5, 10, 15, 30, 60)
+_ConfigScalar = str | int | float | bool | list[str]
+
 
 def _effective_prompt_group(persona_name: str) -> str:
     """配置里的组已删除时，接口返回实际发送用的默认组。"""
@@ -480,149 +256,56 @@ def _effective_prompt_group(persona_name: str) -> str:
     return group_name_for_persona(persona_name)
 
 
-@dataclass(frozen=True, slots=True)
-class AutonomyRuntime:
-    """读出来的自主行动配置。缺字段时用默认，坏掉的作息留空以便外面判为不在时段内。"""
-
-    active_hours: tuple[str, ...]
-    timezone: str
-    interval_minutes: int
-    care_min_zone: str
+def _dedupe_str_list(items: Sequence[str]) -> list[str]:
+    return list(dict.fromkeys(str(item).strip() for item in items if str(item).strip()))
 
 
-@dataclass(frozen=True, slots=True)
-class AutonomySettings:
-    """只填要改的项。None 表示不动。"""
-
-    active_hours: list[str] | None = None
-    timezone: str | None = None
-    interval_minutes: int | None = None
-    care_min_zone: str | None = None
-
-
-def read_autonomy_runtime(config: StringConfig) -> AutonomyRuntime:
-    hours_raw = config.get_config("active_hours").data
-    hours: list[str] = []
-    if isinstance(hours_raw, list):
-        for item in hours_raw:
-            if isinstance(item, str) and parse_active_window(item) is not None:
-                hours.append(item.strip())
-    zone = _stored_str(config, "timezone", "Asia/Shanghai")
-    care = _stored_str(config, "autonomy_care_min_zone", "familiar")
-    if care not in {"familiar", "close"}:
-        care = "close"
-    return AutonomyRuntime(
-        active_hours=tuple(hours),
-        timezone=zone,
-        interval_minutes=_stored_int(config, "autonomy_interval_minutes", 45, 15, 720),
-        care_min_zone=care,
-    )
-
-
-def autonomy_settings_from_mapping(payload: Mapping[str, object]) -> tuple[AutonomySettings | None, str]:
-    """从控制台请求里取出要改的自主行动字段。没有这些键时返回 None。"""
-    if not any(key in payload for key in _AUTONOMY_PAYLOAD_KEYS):
-        return None, ""
-    hours, hours_error = _read_str_list(payload, "active_hours")
-    timezone, timezone_error = _read_str(payload, "timezone")
-    care, care_error = _read_str(payload, "autonomy_care_min_zone")
-    interval, interval_error = _read_int(payload, "autonomy_interval_minutes")
-    for error in (hours_error, timezone_error, care_error, interval_error):
-        if error:
-            return None, error
-    settings = AutonomySettings(
-        active_hours=hours,
-        timezone=timezone,
-        interval_minutes=interval,
-        care_min_zone=care,
-    )
-    return settings, autonomy_settings_error(settings)
-
-
-def autonomy_settings_error(settings: AutonomySettings) -> str:
-    if settings.active_hours is not None:
-        if not settings.active_hours:
-            return "作息至少要有一段"
-        for item in settings.active_hours:
-            if parse_active_window(item) is None:
-                return "作息时段要写成 HH:MM-HH:MM"
-    if settings.timezone is not None and not _zone_ok(settings.timezone):
-        return "时区名称无效"
-    if settings.interval_minutes is not None and not _in_int(settings.interval_minutes, 15, 720):
-        return "自主行动间隔要在 15 到 720 分钟"
-    if settings.care_min_zone is not None and settings.care_min_zone not in {"familiar", "close"}:
-        return "关心温区只能是 familiar 或 close"
-    return ""
-
-
-_AUTONOMY_PAYLOAD_KEYS = (
-    "active_hours",
-    "timezone",
-    "autonomy_interval_minutes",
-    "autonomy_care_min_zone",
-)
-
-
-def _read_str(payload: Mapping[str, object], key: str) -> tuple[str | None, str]:
-    if key not in payload:
-        return None, ""
-    value = payload[key]
-    if not isinstance(value, str):
-        return None, f"字段 {key} 必须是字符串"
-    return value, ""
-
-
-def _read_int(payload: Mapping[str, object], key: str) -> tuple[int | None, str]:
-    if key not in payload:
-        return None, ""
-    value = payload[key]
+def _validate_int_range(
+    value: object,
+    label: str,
+    low: int,
+    high: int,
+    *,
+    unit: str = "",
+) -> tuple[int | None, str]:
     if isinstance(value, bool) or not isinstance(value, int):
-        return None, f"字段 {key} 必须是整数"
+        return None, f"{label}必须是整数"
+    if value < low or value > high:
+        suffix = f" {unit}" if unit else " "
+        return None, f"{label}必须在 {low} 到 {high}{suffix}之间"
     return value, ""
 
 
-def _read_str_list(payload: Mapping[str, object], key: str) -> tuple[list[str] | None, str]:
-    if key not in payload:
-        return None, ""
-    value = payload[key]
-    if not isinstance(value, list):
-        return None, f"字段 {key} 必须是字符串列表"
-    found: list[str] = []
-    for item in value:
-        if not isinstance(item, str):
-            return None, f"字段 {key} 必须是字符串列表"
-        found.append(item)
-    return found, ""
+def _conflict_error(conflicts: Mapping[str, list[str]]) -> str | None:
+    if conflicts["group"]:
+        return f"无法设为全部群聊，因为 '{conflicts['group'][0]}' 已占用群聊全局范围"
+    if conflicts["private"]:
+        return f"无法设为全部私聊，因为 '{conflicts['private'][0]}' 已占用私聊全局范围"
+    return None
 
 
-def _zone_ok(name: str) -> bool:
-    try:
-        ZoneInfo(name.strip())
-    except ZoneInfoNotFoundError:
-        return False
-    return bool(name.strip())
-
-
-def _in_int(value: int, low: int, high: int) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
-
-
-def _stored_str(config: StringConfig, key: str, default: str) -> str:
-    if key not in config.config:
-        return default
-    raw = config.get_config(key).data
-    return raw if isinstance(raw, str) else default
-
-
-def _stored_int(config: StringConfig, key: str, default: int, low: int, high: int) -> int:
-    if key not in config.config:
-        return default
-    raw = config.get_config(key).data
-    if isinstance(raw, bool) or not isinstance(raw, int):
-        return default
-    if raw < low or raw > high:
-        return default
-    return raw
+def _apply_gsc(item: GSC, value: _ConfigScalar, *, commit: bool) -> bool:
+    if isinstance(item, GsBoolConfig) and isinstance(value, bool):
+        if commit:
+            item.data = value
+        return True
+    if isinstance(item, GsIntConfig) and isinstance(value, int) and not isinstance(value, bool):
+        if commit:
+            item.data = value
+        return True
+    if isinstance(item, GsFloatConfig) and isinstance(value, (int, float)) and not isinstance(value, bool):
+        if commit:
+            item.data = float(value)
+        return True
+    if isinstance(item, GsStrConfig) and isinstance(value, str):
+        if commit:
+            item.data = value
+        return True
+    if isinstance(item, GsListStrConfig) and isinstance(value, list):
+        if commit:
+            item.data = list(value)
+        return True
+    return False
 
 
 def _gsc_dict(key: str, data: str | list[str]) -> dict[str, object]:
@@ -671,6 +354,11 @@ def _write_channel_scopes(config: StringConfig, group_scope: str, private_scope:
     return True
 
 
+def _rollback_channel_scopes(released: Sequence[tuple[StringConfig, str, str]]) -> None:
+    for prev_cfg, prev_g, prev_p in reversed(released):
+        _write_channel_scopes(prev_cfg, prev_g, prev_p)
+
+
 def _migrate_legacy_scope_file(config_path: Path) -> bool:
     """加载前原位迁移旧 scope 到双通道字段（方案 A），避免 reconcile_config 先补 off。"""
     if not config_path.is_file():
@@ -679,11 +367,12 @@ def _migrate_legacy_scope_file(config_path: Path) -> bool:
         raw_obj: object = json.loads(config_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return False
-    if not isinstance(raw_obj, dict):
-        return False
-    if "group_scope" in raw_obj or "private_scope" in raw_obj:
-        return False
-    if "scope" not in raw_obj:
+    if (
+        not isinstance(raw_obj, dict)
+        or "group_scope" in raw_obj
+        or "private_scope" in raw_obj
+        or "scope" not in raw_obj
+    ):
         return False
 
     legacy_scope = "disabled"
@@ -751,14 +440,9 @@ def _migrate_legacy_scope_file(config_path: Path) -> bool:
 
 
 class PersonaConfigManager(ConfigSetManager):
-    """
-    Persona 配置管理器
+    """Persona 配置管理器（``StringConfig`` 落盘 + 双通道全局互斥校验）。"""
 
-    继承自 ConfigSetManager，使用 StringConfig 对象进行配置管理。
-    通道全局互斥：group_scope=all 与 private_scope=all 各自全系统唯一，互不冲突。
-    """
-
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(
             base_path=PERSONA_PATH,
             config_template=DEFAULT_PERSONA_CONFIG,
@@ -766,7 +450,7 @@ class PersonaConfigManager(ConfigSetManager):
         )
 
     def _get_config_path(self, config_name: str) -> Path:
-        """获取指定 persona 的配置文件路径（目录结构）"""
+        """获取指定 persona 的配置文件路径（目录结构）。"""
         from gsuid_core.utils.path_safety import safe_join
 
         return safe_join(self._base_path, config_name, "config.json")
@@ -776,32 +460,32 @@ class PersonaConfigManager(ConfigSetManager):
         return super()._create_string_config(config_name)
 
     def _list_configs(self) -> List[str]:
-        """列出所有 Persona 配置"""
+        """列出所有 Persona 配置。"""
         if not self._base_path.exists():
             return []
-
-        configs = []
-        for item in self._base_path.iterdir():
-            if item.is_dir():
-                configs.append(item.name)
-        return sorted(configs)
+        return sorted(item.name for item in self._base_path.iterdir() if item.is_dir())
 
     def get_all_configs(self) -> Dict[str, StringConfig]:
-        """
-        获取所有 Persona 的配置
-
-        Returns:
-            字典，key 为 persona 名称，value 为 StringConfig 实例
-        """
-        configs = {}
+        """获取所有 Persona 的配置（key 为 persona 名称，value 为 StringConfig）。"""
         if not self._base_path.exists():
-            return configs
+            return {}
+        return {
+            p.name: self.get_config(p.name)
+            for p in sorted(self._base_path.iterdir(), key=lambda p: p.name)
+            if p.is_dir()
+        }
 
-        for persona_dir in sorted(self._base_path.iterdir(), key=lambda p: p.name):
-            if persona_dir.is_dir():
-                persona_name = persona_dir.name
-                configs[persona_name] = self.get_config(persona_name)
-        return configs
+    def _write_field(
+        self,
+        persona_name: str,
+        key: str,
+        value: _ConfigScalar,
+        log_msg: str,
+    ) -> tuple[bool, str]:
+        if not self.get_config(persona_name).set_config(key, value):
+            return False, "配置写入失败"
+        logger.info(log_msg)
+        return True, "ok"
 
     def get_global_persona(self) -> Optional[str]:
         """获取同时占群聊与私聊全部通道的 Persona；单通道回退请用 get_fallback_persona。"""
@@ -815,8 +499,7 @@ class PersonaConfigManager(ConfigSetManager):
         """按会话类型取通道全局回退人格（group_scope=all / private_scope=all）。"""
         for persona_name, config in self.get_all_configs().items():
             scopes = read_channel_scopes(config)
-            channel_scope = scopes.private_scope if is_private else scopes.group_scope
-            if channel_scope == "all":
+            if (scopes.private_scope if is_private else scopes.group_scope) == "all":
                 return persona_name
         return None
 
@@ -861,9 +544,7 @@ class PersonaConfigManager(ConfigSetManager):
         """一次性恢复双通道范围、派生旧 scope 与目标列表，单次写盘避免中间态。"""
         self.drop_cache(persona_name)
         cfg = self.get_config(persona_name)
-        keys_str = ("group_scope", "private_scope", "scope")
-        keys_list = ("target_groups", "target_users")
-        if any(k not in cfg.config for k in (*keys_str, *keys_list)):
+        if any(k not in cfg.config for k in ("group_scope", "private_scope", "scope", "target_groups", "target_users")):
             return False
         group_item = cfg.config["group_scope"]
         private_item = cfg.config["private_scope"]
@@ -914,16 +595,10 @@ class PersonaConfigManager(ConfigSetManager):
                 return False, f"无效的私聊启用范围: {private_scope}"
             if takeover_conflicts:
                 return True, "ok"
-            conflicts = self.find_channel_conflicts(
-                persona_name,
-                group_scope=group_scope,
-                private_scope=private_scope,
+            err = _conflict_error(
+                self.find_channel_conflicts(persona_name, group_scope=group_scope, private_scope=private_scope)
             )
-            if conflicts["group"]:
-                return False, f"无法设为全部群聊，因为 '{conflicts['group'][0]}' 已占用群聊全局范围"
-            if conflicts["private"]:
-                return False, f"无法设为全部私聊，因为 '{conflicts['private'][0]}' 已占用私聊全局范围"
-            return True, "ok"
+            return (False, err) if err else (True, "ok")
 
         if legacy_scope is not None:
             if legacy_scope not in PERSONA_SCOPE_VALUES:
@@ -934,15 +609,14 @@ class PersonaConfigManager(ConfigSetManager):
             if derive_legacy_scope(current.group_scope, current.private_scope) == legacy_scope:
                 return True, "ok"
             mapped = legacy_scope_to_channels(legacy_scope)
-            conflicts = self.find_channel_conflicts(
-                persona_name,
-                group_scope=mapped.group_scope if mapped.group_scope == "all" else None,
-                private_scope=mapped.private_scope if mapped.private_scope == "all" else None,
+            err = _conflict_error(
+                self.find_channel_conflicts(
+                    persona_name,
+                    group_scope=mapped.group_scope if mapped.group_scope == "all" else None,
+                    private_scope=mapped.private_scope if mapped.private_scope == "all" else None,
+                )
             )
-            if conflicts["group"]:
-                return False, f"无法设为全部群聊，因为 '{conflicts['group'][0]}' 已占用群聊全局范围"
-            if conflicts["private"]:
-                return False, f"无法设为全部私聊，因为 '{conflicts['private'][0]}' 已占用私聊全局范围"
+            return (False, err) if err else (True, "ok")
         return True, "ok"
 
     def set_channel_scopes(
@@ -987,8 +661,7 @@ class PersonaConfigManager(ConfigSetManager):
                 next_g = "off" if "group" in channels else other_cur.group_scope
                 next_p = "off" if "private" in channels else other_cur.private_scope
                 if not _write_channel_scopes(other_cfg, next_g, next_p):
-                    for prev_cfg, prev_g, prev_p in reversed(released):
-                        _write_channel_scopes(prev_cfg, prev_g, prev_p)
+                    _rollback_channel_scopes(released)
                     return False, f"释放 '{other_name}' 通道冲突失败"
                 released.append((other_cfg, other_cur.group_scope, other_cur.private_scope))
                 logger.info(
@@ -1011,47 +684,21 @@ class PersonaConfigManager(ConfigSetManager):
             )
             return True, "ok"
         # 目标写入失败时回滚已释放的旧兜底，避免全系统失去通道覆盖
-        for prev_cfg, prev_g, prev_p in reversed(released):
-            _write_channel_scopes(prev_cfg, prev_g, prev_p)
+        _rollback_channel_scopes(released)
         return False, "配置写入失败"
 
-    def apply_field_updates(
-        self,
-        persona_name: str,
-        updates: Mapping[str, str | int | float | bool | list[str]],
-    ) -> tuple[bool, str]:
+    def apply_field_updates(self, persona_name: str, updates: Mapping[str, _ConfigScalar]) -> tuple[bool, str]:
         """一次性写入多个非通道配置项并单次落盘，避免逐键多次写盘和半写入。"""
         if not updates:
             return True, "ok"
         config = self.get_config(persona_name)
-        pending: list[tuple[GSC, str | int | float | bool | list[str]]] = []
         for key, value in updates.items():
             if key not in config.config:
                 return False, f"配置项不存在: {key}"
-            item = config.config[key]
-            if isinstance(item, GsBoolConfig) and isinstance(value, bool):
-                pending.append((item, value))
-            elif isinstance(item, GsIntConfig) and isinstance(value, int) and not isinstance(value, bool):
-                pending.append((item, value))
-            elif isinstance(item, GsFloatConfig) and isinstance(value, (int, float)) and not isinstance(value, bool):
-                pending.append((item, float(value)))
-            elif isinstance(item, GsStrConfig) and isinstance(value, str):
-                pending.append((item, value))
-            elif isinstance(item, GsListStrConfig) and isinstance(value, list):
-                pending.append((item, list(value)))
-            else:
+            if not _apply_gsc(config.config[key], value, commit=False):
                 return False, f"配置项类型不匹配: {key}"
-        for item, normalized in pending:
-            if isinstance(item, GsBoolConfig) and isinstance(normalized, bool):
-                item.data = normalized
-            elif isinstance(item, GsIntConfig) and isinstance(normalized, int) and not isinstance(normalized, bool):
-                item.data = normalized
-            elif isinstance(item, GsFloatConfig) and isinstance(normalized, float):
-                item.data = normalized
-            elif isinstance(item, GsStrConfig) and isinstance(normalized, str):
-                item.data = normalized
-            elif isinstance(item, GsListStrConfig) and isinstance(normalized, list):
-                item.data = normalized
+        for key, value in updates.items():
+            _apply_gsc(config.config[key], value, commit=True)
         config.write_config()
         return True, "ok"
 
@@ -1082,70 +729,36 @@ class PersonaConfigManager(ConfigSetManager):
 
     def set_target_groups(self, persona_name: str, target_groups: List[str]) -> tuple[bool, str]:
         """设置 Persona 的目标群聊列表。"""
-        cleaned = list(dict.fromkeys(str(item).strip() for item in target_groups if str(item).strip()))
-        config = self.get_config(persona_name)
-
-        success = config.set_config("target_groups", cleaned)
-        if success:
-            logger.info(
-                t(
-                    "log.persona.personaconfig_updated_name_target",
-                    persona_name=persona_name,
-                    target_groups=cleaned,
-                )
-            )
-            return True, "ok"
-        return False, "配置写入失败"
+        cleaned = _dedupe_str_list(target_groups)
+        return self._write_field(
+            persona_name,
+            "target_groups",
+            cleaned,
+            t("log.persona.personaconfig_updated_name_target", persona_name=persona_name, target_groups=cleaned),
+        )
 
     def set_target_users(self, persona_name: str, target_users: List[str]) -> tuple[bool, str]:
         """设置 Persona 的目标私聊用户列表。"""
-        cleaned = list(dict.fromkeys(str(item).strip() for item in target_users if str(item).strip()))
-        config = self.get_config(persona_name)
-
-        success = config.set_config("target_users", cleaned)
-        if success:
-            logger.info(
-                t(
-                    "log.persona.personaconfig_updated_name_target_users",
-                    persona_name=persona_name,
-                    target_users=cleaned,
-                )
-            )
-            return True, "ok"
-        return False, "配置写入失败"
+        cleaned = _dedupe_str_list(target_users)
+        return self._write_field(
+            persona_name,
+            "target_users",
+            cleaned,
+            t("log.persona.personaconfig_updated_name_target_users", persona_name=persona_name, target_users=cleaned),
+        )
 
     def set_ai_mode(self, persona_name: str, ai_mode: List[str]) -> tuple[bool, str]:
-        """
-        设置 Persona 的 AI 行动模式
-
-        Args:
-            persona_name: Persona 名称
-            ai_mode: AI 行动模式列表
-
-        Returns:
-            (是否成功, 消息)
-        """
-        config = self.get_config(persona_name)
-
-        # 验证选项有效性
-        ai_mode = normalize_ai_modes(ai_mode)
-        valid_options = list(AI_MODE_OPTIONS)
-        for mode in ai_mode:
-            if mode not in valid_options:
+        """设置 Persona 的 AI 行动模式。"""
+        normalized = normalize_ai_modes(ai_mode)
+        for mode in normalized:
+            if mode not in AI_MODE_OPTIONS:
                 return False, f"无效的 AI 行动模式: {mode}"
-
-        success = config.set_config("ai_mode", ai_mode)
-        if success:
-            logger.info(
-                t(
-                    "log.persona.personaconfig_updated_name_ai",
-                    persona_name=persona_name,
-                    ai_mode=ai_mode,
-                )
-            )
-            return True, "ok"
-        else:
-            return False, "配置写入失败"
+        return self._write_field(
+            persona_name,
+            "ai_mode",
+            normalized,
+            t("log.persona.personaconfig_updated_name_ai", persona_name=persona_name, ai_mode=normalized),
+        )
 
     def set_autonomy_settings(self, persona_name: str, settings: AutonomySettings) -> tuple[bool, str]:
         """保存自主行动和作息。任一字段不合法就整单不写。"""
@@ -1171,241 +784,154 @@ class PersonaConfigManager(ConfigSetManager):
 
     def set_aside_probability(self, persona_name: str, field: str, value: float) -> tuple[bool, str]:
         """命令补充的三种触发概率。field 是配置键，value 必须在 0 到 1。"""
-        allowed = {
-            "aside_image_probability",
-            "aside_text_probability",
-            "aside_mixed_probability",
-        }
-        if field not in allowed:
+        if field not in _ASIDE_PROB_FIELDS:
             return False, "未知的命令补充概率项"
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return False, "命令补充概率必须是 0 到 1 的数字"
         number = float(value)
         if number < 0 or number > 1:
             return False, "命令补充概率必须在 0 到 1 之间"
-        config = self.get_config(persona_name)
-        success = config.set_config(field, number)
-        if not success:
-            return False, "配置写入失败"
-        logger.info(
-            t(
-                "log.persona.personaconfig_updated_aside",
-                persona_name=persona_name,
-                field=field,
-                value=number,
-            )
+        return self._write_field(
+            persona_name,
+            field,
+            number,
+            t("log.persona.personaconfig_updated_aside", persona_name=persona_name, field=field, value=number),
         )
-        return True, "ok"
 
     def set_aside_allow_tools(self, persona_name: str, allow_tools: bool) -> tuple[bool, str]:
         """命令补充能不能使用工具。"""
         if not isinstance(allow_tools, bool):
             return False, "命令补充允许工具必须是布尔值"
-        config = self.get_config(persona_name)
-        success = config.set_config("aside_allow_tools", allow_tools)
-        if not success:
-            return False, "配置写入失败"
-        logger.info(
+        return self._write_field(
+            persona_name,
+            "aside_allow_tools",
+            allow_tools,
             t(
                 "log.persona.personaconfig_updated_aside",
                 persona_name=persona_name,
                 field="aside_allow_tools",
                 value=allow_tools,
-            )
+            ),
         )
-        return True, "ok"
 
     def set_allow_meme_reply(self, persona_name: str, allow: bool) -> tuple[bool, str]:
         """这个人格能不能在回复里发表情。"""
         if not isinstance(allow, bool):
             return False, "允许表情回复必须是布尔值"
-        config = self.get_config(persona_name)
-        success = config.set_config("allow_meme_reply", allow)
-        if not success:
-            return False, "配置写入失败"
-        logger.info(t("log.persona.allow_meme_reply", persona_name=persona_name, value=allow))
-        return True, "ok"
+        return self._write_field(
+            persona_name,
+            "allow_meme_reply",
+            allow,
+            t("log.persona.allow_meme_reply", persona_name=persona_name, value=allow),
+        )
 
     def set_meme_frequency(self, persona_name: str, value: object) -> tuple[bool, str]:
         """设置表情频率（0 到 100）。0 禁用表情发送；其余档位同时派生默认发图冷却。"""
         from gsuid_core.ai_core.persona.meme_style import MEME_FREQUENCY_MAX, MEME_FREQUENCY_MIN
 
-        if isinstance(value, bool) or not isinstance(value, int):
-            return False, "表情频率必须是整数"
-        if value < MEME_FREQUENCY_MIN or value > MEME_FREQUENCY_MAX:
-            return False, f"表情频率必须在 {MEME_FREQUENCY_MIN} 到 {MEME_FREQUENCY_MAX} 之间"
-        config = self.get_config(persona_name)
-        if not config.set_config("meme_frequency", value):
-            return False, "配置写入失败"
-        logger.info(t("log.persona.meme_frequency_set", persona_name=persona_name, value=value))
-        return True, "ok"
+        parsed, err = _validate_int_range(value, "表情频率", MEME_FREQUENCY_MIN, MEME_FREQUENCY_MAX)
+        if parsed is None:
+            return False, err
+        return self._write_field(
+            persona_name,
+            "meme_frequency",
+            parsed,
+            t("log.persona.meme_frequency_set", persona_name=persona_name, value=parsed),
+        )
 
     def set_meme_send_cooldown_sec(self, persona_name: str, value: object) -> tuple[bool, str]:
         """设置表情发送冷却（秒）。0 表示跟随档位自适应，>0 为固定秒数。"""
-        if isinstance(value, bool) or not isinstance(value, int):
-            return False, "表情发送冷却必须是整数"
-        if value < 0 or value > 3600:
-            return False, "表情发送冷却必须在 0 到 3600 秒之间"
-        config = self.get_config(persona_name)
-        if not config.set_config("meme_send_cooldown_sec", value):
-            return False, "配置写入失败"
-        logger.info(t("log.persona.meme_cooldown_set", persona_name=persona_name, value=value))
-        return True, "ok"
+        parsed, err = _validate_int_range(value, "表情发送冷却", 0, 3600, unit="秒")
+        if parsed is None:
+            return False, err
+        return self._write_field(
+            persona_name,
+            "meme_send_cooldown_sec",
+            parsed,
+            t("log.persona.meme_cooldown_set", persona_name=persona_name, value=parsed),
+        )
 
     def set_inspect_interval(self, persona_name: str, inspect_interval: int) -> tuple[bool, str]:
-        """
-        设置 Persona 的定时巡检间隔
-
-        Args:
-            persona_name: Persona 名称
-            inspect_interval: 巡检间隔（分钟）
-
-        Returns:
-            (是否成功, 消息)
-        """
-        if inspect_interval not in [5, 10, 15, 30, 60]:
+        """设置 Persona 的定时巡检间隔（分钟）。"""
+        if inspect_interval not in _INSPECT_INTERVAL_VALUES:
             return False, "无效的巡检间隔，可选值: 5, 10, 15, 30, 60"
-
-        config = self.get_config(persona_name)
-
-        success = config.set_config("inspect_interval", inspect_interval)
-        if success:
-            logger.info(
-                t(
-                    "log.persona.personaconfig_updated_name_inspection",
-                    persona_name=persona_name,
-                    inspect_interval=inspect_interval,
-                )
-            )
-            return True, "ok"
-        else:
-            return False, "配置写入失败"
+        return self._write_field(
+            persona_name,
+            "inspect_interval",
+            inspect_interval,
+            t(
+                "log.persona.personaconfig_updated_name_inspection",
+                persona_name=persona_name,
+                inspect_interval=inspect_interval,
+            ),
+        )
 
     def set_chat_style(self, persona_name: str, chat_style: int) -> tuple[bool, str]:
         """设置说话强度。0 到 100。新会话才用新的档。"""
         from gsuid_core.ai_core.persona.chat_style import CHAT_STYLE_MAX, CHAT_STYLE_MIN
 
-        if isinstance(chat_style, bool) or not isinstance(chat_style, int):
-            return False, "说话强度必须是整数"
-        if chat_style < CHAT_STYLE_MIN or chat_style > CHAT_STYLE_MAX:
-            return False, f"说话强度必须在 {CHAT_STYLE_MIN} 到 {CHAT_STYLE_MAX} 之间"
-        config = self.get_config(persona_name)
-        if not config.set_config("chat_style", chat_style):
-            return False, "配置写入失败"
-        logger.info(
-            t(
-                "log.persona.chat_style_set",
-                persona_name=persona_name,
-                chat_style=chat_style,
-            )
+        parsed, err = _validate_int_range(chat_style, "说话强度", CHAT_STYLE_MIN, CHAT_STYLE_MAX)
+        if parsed is None:
+            return False, err
+        return self._write_field(
+            persona_name,
+            "chat_style",
+            parsed,
+            t("log.persona.chat_style_set", persona_name=persona_name, chat_style=parsed),
         )
-        return True, "ok"
 
     def set_speech_len_soft(self, persona_name: str, count: int) -> tuple[bool, str]:
         """设置建议字数。等于模板默认时，发送仍跟随说话强度。"""
         from gsuid_core.ai_core.persona.chat_style import SPEECH_LEN_MAX, SPEECH_LEN_MIN
 
-        if isinstance(count, bool) or not isinstance(count, int):
-            return False, "字数必须是整数"
-        if count < SPEECH_LEN_MIN or count > SPEECH_LEN_MAX:
-            return False, f"字数必须在 {SPEECH_LEN_MIN} 到 {SPEECH_LEN_MAX} 之间"
-        config = self.get_config(persona_name)
-        if not config.set_config("speech_len_soft", count):
-            return False, "配置写入失败"
-        logger.info(t("log.persona.speech_len_soft_set", persona_name=persona_name, count=count))
-        return True, "ok"
+        parsed, err = _validate_int_range(count, "字数", SPEECH_LEN_MIN, SPEECH_LEN_MAX)
+        if parsed is None:
+            return False, err
+        return self._write_field(
+            persona_name,
+            "speech_len_soft",
+            parsed,
+            t("log.persona.speech_len_soft_set", persona_name=persona_name, count=parsed),
+        )
 
     def set_keywords(self, persona_name: str, keywords: List[str]) -> tuple[bool, str]:
-        """
-        设置 Persona 的唤醒关键词
-
-        Args:
-            persona_name: Persona 名称
-            keywords: 唤醒关键词列表
-
-        Returns:
-            (是否成功, 消息)
-        """
-        config = self.get_config(persona_name)
-
-        success = config.set_config("keywords", keywords)
-        if success:
-            logger.info(
-                t(
-                    "log.persona.personaconfig_updated_name_wake",
-                    persona_name=persona_name,
-                    keywords=keywords,
-                )
-            )
-            return True, "ok"
-        else:
-            return False, "配置写入失败"
+        """设置 Persona 的唤醒关键词。"""
+        return self._write_field(
+            persona_name,
+            "keywords",
+            keywords,
+            t("log.persona.personaconfig_updated_name_wake", persona_name=persona_name, keywords=keywords),
+        )
 
     def set_enabled_tools(self, persona_name: str, enabled_tools: List[str]) -> tuple[bool, str]:
-        """设置该人格进入向量检索池的插件名单（含 * / !插件名）。
-
-        不做注册表强校验：插件可能晚于本次写入才加载，未知插件名由
-        ToolScope 在运行时自然不匹配任何工具。
-        """
-        cleaned = list(dict.fromkeys(n.strip() for n in enabled_tools if n.strip()))
-        config = self.get_config(persona_name)
-        success = config.set_config("enabled_tools", cleaned)
-        if success:
-            logger.info(
-                t(
-                    "log.persona.personaconfig_updated_name_enabled_tools",
-                    persona_name=persona_name,
-                    cleaned=cleaned,
-                )
-            )
-            return True, "ok"
-        return False, "配置写入失败"
+        """设置该人格进入向量检索池的插件名单（含 * / !插件名）。不做注册表强校验。"""
+        cleaned = _dedupe_str_list(enabled_tools)
+        return self._write_field(
+            persona_name,
+            "enabled_tools",
+            cleaned,
+            t("log.persona.personaconfig_updated_name_enabled_tools", persona_name=persona_name, cleaned=cleaned),
+        )
 
     def set_tool_names(self, persona_name: str, tool_names: List[str]) -> tuple[bool, str]:
-        """
-        设置 Persona 的显式工具白名单
-
-        不校验工具是否已注册：gs_agent 装配层按名查 find_tool_base，
-        未注册的名字自然跳过（插件工具可能晚于本次写入才加载）。
-
-        Args:
-            persona_name: Persona 名称
-            tool_names: 工具名列表（并入保底池，不经向量检索）
-
-        Returns:
-            (是否成功, 消息)
-        """
-        cleaned = list(dict.fromkeys(n.strip() for n in tool_names if n.strip()))
-        config = self.get_config(persona_name)
-
-        success = config.set_config("tool_names", cleaned)
-        if success:
-            logger.info(
-                t(
-                    "log.persona.personaconfig_updated_name_explicit",
-                    persona_name=persona_name,
-                    cleaned=cleaned,
-                )
-            )
-            return True, "ok"
-        else:
-            return False, "配置写入失败"
+        """设置 Persona 的显式工具白名单（并入保底池，不校验工具是否已注册）。"""
+        cleaned = _dedupe_str_list(tool_names)
+        return self._write_field(
+            persona_name,
+            "tool_names",
+            cleaned,
+            t("log.persona.personaconfig_updated_name_explicit", persona_name=persona_name, cleaned=cleaned),
+        )
 
     def set_capability_agents(self, persona_name: str, agents: List[str]) -> tuple[bool, str]:
         """设置该人格可委派的能力代理 node_id（含 * / !node_id）。"""
-        cleaned = list(dict.fromkeys(n.strip() for n in agents if n.strip()))
-        config = self.get_config(persona_name)
-        success = config.set_config("capability_agents", cleaned)
-        if success:
-            logger.info(
-                t(
-                    "log.persona.personaconfig_updated_name_agents",
-                    persona_name=persona_name,
-                    cleaned=cleaned,
-                )
-            )
-            return True, "ok"
-        return False, "配置写入失败"
+        cleaned = _dedupe_str_list(agents)
+        return self._write_field(
+            persona_name,
+            "capability_agents",
+            cleaned,
+            t("log.persona.personaconfig_updated_name_agents", persona_name=persona_name, cleaned=cleaned),
+        )
 
     def set_prompt_group(self, persona_name: str, group_name: str) -> tuple[bool, str]:
         """绑定该人格使用的系统提示词组。组必须已存在。"""
@@ -1414,52 +940,32 @@ class PersonaConfigManager(ConfigSetManager):
         name = group_name.strip()
         if not group_exists(name):
             return False, "系统提示词组不存在"
-        config = self.get_config(persona_name)
-        success = config.set_config("prompt_group", name)
-        if success:
-            logger.info(t("log.persona.prompt_group_bound", persona_name=persona_name, group=name))
-            return True, "ok"
-        return False, "配置写入失败"
+        return self._write_field(
+            persona_name,
+            "prompt_group",
+            name,
+            t("log.persona.prompt_group_bound", persona_name=persona_name, group=name),
+        )
 
     def get_persona_for_session(self, session_id: str) -> Optional[str]:
-        """
-        根据 Session ID 获取应该使用的 Persona
-
-        Session ID 格式:
-        - 群聊: "{WS_BOT_ID}:{bot_id}:{bot_self_id}:group:{group_id}"
-        - 私聊: "{WS_BOT_ID}:{bot_id}:{bot_self_id}:private:{user_id}"
-
-        匹配规则：
-        1. HTTP_AGENT 会话专属请求级钉选（仅 ``HTTP_AGENT:`` 前缀）
-        2. 私聊 dm_lease 亲和租约（若存在且人格私聊通道覆盖当前用户）
-        3. 当前通道精准匹配（群聊: group_scope=specific 且含 group_id；
-           私聊: private_scope=specific 且含 user_id）
-        4. 当前通道全局兜底（群聊: group_scope=all；私聊: private_scope=all）
-        5. 没有则返回 None
-        """
+        """根据 Session ID 路由人格：HTTP 钉选 → 私聊租约 → 通道精准匹配 → 通道全局兜底。"""
         group_id: Optional[str] = None
         user_id: Optional[str] = None
         is_private_chat = False
 
-        # 解析 session_id 提取群聊 group_id 或私聊 user_id。
         parts = session_id.split(":", 4)
-        if len(parts) == 5:
-            target_type = parts[3]
-            target_id = parts[4]
-            if target_type == "group":
-                group_id = target_id
-            elif target_type == "private":
-                user_id = target_id
-                is_private_chat = True
-            else:
-                raise ValueError(f"Invalid session_id format: {session_id}")
-        else:
+        if len(parts) != 5 or parts[3] not in ("group", "private"):
             raise ValueError(f"Invalid session_id format: {session_id}")
+        if parts[3] == "group":
+            group_id = parts[4]
+        else:
+            user_id = parts[4]
+            is_private_chat = True
 
         all_configs = self.get_all_configs()
 
         if parts[0] == "HTTP_AGENT":
-            from gsuid_core.ai_core.http_agent.persona import get_http_persona_override
+            from gsuid_core.ai_core.http_agent.runtime import get_http_persona_override
 
             override_persona = get_http_persona_override(session_id)
             if override_persona and override_persona in all_configs:
@@ -1469,8 +975,7 @@ class PersonaConfigManager(ConfigSetManager):
         if is_private_chat and user_id:
             from gsuid_core.ai_core.proactive.dm_lease import get_active_dm_lease
 
-            bot_id = parts[1] if len(parts) > 1 else ""
-            lease = get_active_dm_lease(user_id, bot_id)
+            lease = get_active_dm_lease(user_id, parts[1])
             if lease is not None and lease.persona_name in all_configs:
                 if persona_covers_session(all_configs[lease.persona_name], user_id=user_id):
                     return lease.persona_name
@@ -1519,13 +1024,11 @@ class PersonaConfigManager(ConfigSetManager):
             if other_name == persona_name:
                 continue
             other_scopes = read_channel_scopes(other_cfg)
-            other_channel_scope = other_scopes.private_scope if is_private else other_scopes.group_scope
-            if other_channel_scope != "specific":
+            if (other_scopes.private_scope if is_private else other_scopes.group_scope) != "specific":
                 continue
             current_other = read_target_list(other_cfg, target_key)
             if tid in current_other:
-                cleaned_other = [g for g in current_other if g != tid]
-                ok, msg = setter(other_name, cleaned_other)
+                ok, msg = setter(other_name, [g for g in current_other if g != tid])
                 if not ok:
                     return False, msg
 
@@ -1538,26 +1041,13 @@ class PersonaConfigManager(ConfigSetManager):
 
         return True, "ok"
 
-    def get_persona_config_dict(self, persona_name: str) -> Optional[Dict]:
-        """
-        获取指定 Persona 的配置字典（用于 API 返回）
-
-        Args:
-            persona_name: Persona 名称
-
-        Returns:
-            配置字典，如果 persona 不存在则返回 None
-        """
-        config_path = self._get_config_path(persona_name)
-        if not config_path.exists():
+    def get_persona_config_dict(self, persona_name: str) -> Optional[Dict[str, object]]:
+        """获取指定 Persona 的配置字典（用于 API 返回）；不存在则返回 None。"""
+        if not self._get_config_path(persona_name).exists():
             return None
 
         config = self.get_config(persona_name)
-        from gsuid_core.ai_core.persona.chat_style import (
-            DEFAULT_CHAT_STYLE,
-            stored_int,
-            speech_shape_spec,
-        )
+        from gsuid_core.ai_core.persona.chat_style import DEFAULT_CHAT_STYLE, stored_int, speech_shape_spec
         from gsuid_core.ai_core.persona.meme_style import DEFAULT_MEME_FREQUENCY
 
         shape = speech_shape_spec()
@@ -1606,15 +1096,7 @@ class PersonaConfigManager(ConfigSetManager):
         }
 
     def delete_persona_config(self, persona_name: str) -> bool:
-        """
-        删除 Persona 的配置文件
-
-        Args:
-            persona_name: Persona 名称
-
-        Returns:
-            是否成功删除
-        """
+        """删除 Persona 的配置文件。"""
         if persona_name in self._cache:
             del self._cache[persona_name]
 

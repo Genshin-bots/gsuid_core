@@ -281,7 +281,7 @@ DB/前端，而在 usage 源头：vLLM/SGLang 系网关（SiliconFlow 等）流�
 「仅最后 chunk 带 usage」的 OpenAI 标准语义逐 chunk 累加 → input ≈ 真实值×chunk 数、
 output 近似平方级膨胀。Moonshot/OpenAI/DeepSeek 官方等标准网关不受影响。
 
-**修复**（`ai_core/configs/models.py` + `openai_config/config_manager.py`）：
+**修复**（`ai_core/configs/models.py` + `configs/provider_config_manager.py`）：
 
 - OpenAI 配置新增 `usage_stats_mode`：`auto`（默认）/ `incremental` / `cumulative`。
 - `auto` = 白名单（`_CUMULATIVE_USAGE_URL_KEYWORDS`）+ 进程内探测注册表
@@ -371,8 +371,8 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
   **不走 C6 SELF 轻量路由**，否则半数事实被跳过抽取、探针召回不到。
 - **SQLite 写并发**：窗口化并发多路写会撞 `UNIQUE(scope_key,name)` / `database is locked`。
   `entity.py`/`edge.py` 用**乐观重试**（`IntegrityError`/`OperationalError` 退避 6 次）+
-  进程内 `db_write_guard()` / `under_db_write()`（`eval_write_lock.py`，**线上与 eval 共用**，
-  与 `@with_session` 是同一把 `sqlite_write_gate`）串行化 commit 级写。**铁律**：LLM / 嵌入 / Qdrant 混合检索必须在写锁外（entity 先
+  进程内 `sqlite_write_gate`（`utils/database/write_gate.py`，**线上与 eval 共用**，
+  与 `@with_session` 是同一把写闸门）串行化 commit 级写。**铁律**：LLM / 嵌入 / Qdrant 混合检索必须在写锁外（entity 先
   `prefetch_hybrid_name_ids` 再锁内 SQL 写；hiergraph 向量预分配同理）。热路径 Episode /
   Preference / `touch_accessed` / `touch_applied` / 生命周期大写也走同一把锁。Conflict 记
   录用 `AIMemConflict.attach(session, …)` **同事务**，禁止在未提交 session 内再调
@@ -431,7 +431,7 @@ BEAM-10M / LongMemEval 这类"单题灌数百~上千 turn"的大语料，会撞�
 ## 12.22 输出安全防线的不变量（统一闸门 / 出戏 / 内容守卫，2026-08）
 
 **编排入口**：`ai_core/output_gate.py::pre_send_gate`（尖括号 + OOC 等「能不能发」的唯一短路编排，策略表委托 `control/policy_ring.py`）。
-检测实现分模块：`angle_bracket_guard`（非法 `<>`，含 **`<br>` 非法**）/ `control/outbound_detectors.py`
+检测实现分模块：`control/angle_guard.py`（非法 `<>`，含 **`<br>` 非法**）/ `control/outbound_detectors.py`
 （`inspect_outbound_ooc`）/ `content_guard`（不可信包裹）。环内接线在 `gs_agent`（feedback 注入、
 `_resolve_output_gate_after_run`）；呈现在 `send_chat_result`。详见 [§7.12](./07-tool-registry-and-agent.md)、
 [`AI_AGENT_LIFECYCLE_SEQUENCE.md`](../../../../docs/AI_AGENT_LIFECYCLE_SEQUENCE.md) §10.4–§10.6。

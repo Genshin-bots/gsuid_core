@@ -20,8 +20,7 @@ from gsuid_core.ai_core.planning.handle_resolver import (
     resolve_handle,
     format_resolved,
 )
-from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord
-from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text
+from gsuid_core.ai_core.planning.tool_output_store import AIToolOutputRecord, load_payload_text
 
 
 def _owner_scope(ctx: RunContext[ToolContext], scope: str = "auto") -> tuple[Optional[str], Optional[str]]:

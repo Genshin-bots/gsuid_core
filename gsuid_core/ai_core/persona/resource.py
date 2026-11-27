@@ -611,8 +611,9 @@ async def copy_persona(source_name: str) -> str:
 
     from gsuid_core.utils.path_safety import safe_join
 
-    from .config import EMPTY_CHANNEL_DEPLOYMENT, persona_config_manager
+    from .config import persona_config_manager
     from ..resource import PERSONA_PATH
+    from .config_rules import EMPTY_CHANNEL_DEPLOYMENT
 
     source = Persona(source_name)
     if not source.exists():

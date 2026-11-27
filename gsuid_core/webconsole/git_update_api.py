@@ -5,7 +5,7 @@ Git Update API
 
 from typing import Any, Dict, List
 
-from fastapi import Body, Depends, Request
+from fastapi import Body, Query, Depends, Request
 
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth, require_admin
@@ -46,6 +46,11 @@ def _format_status(status: GitStatusInfo) -> Dict[str, Any]:
         "branch": status["branch"],
         "is_git_repo": status["is_git_repo"],
         "current_commit": _format_commit(status["current_commit"]),
+        "remote_url": status["remote_url"],
+        "mirror": status["mirror"],
+        "source_kind": status["source_kind"],
+        "upstream_host": status["upstream_host"],
+        "upstream_url": status["upstream_url"],
     }
 
 
@@ -55,6 +60,7 @@ def _format_status(status: GitStatusInfo) -> Dict[str, Any]:
 @app.get("/api/git-update/status", summary="获取所有插件的 Git 状态", tags=GIT_UPDATE)
 async def get_plugins_git_status(
     request: Request,
+    fresh: bool = Query(default=False, description="是否强制现扫磁盘与 commit"),
     _user: Dict[str, Any] = Depends(require_auth),
 ):
     """
@@ -65,13 +71,14 @@ async def get_plugins_git_status(
 
     Args:
         request: FastAPI 请求对象
+        fresh: 是否跳过缓存现扫
         _user: 认证用户信息
 
     Returns:
         status: 0成功
         data: 插件 git 状态列表
     """
-    all_status = await get_all_plugins_status()
+    all_status = await get_all_plugins_status(fresh=fresh)
 
     return {
         "status": 0,

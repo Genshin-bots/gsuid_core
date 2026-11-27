@@ -323,7 +323,7 @@ async def cognitionArticlePreview(
 ) -> Dict[str, Any]:
     """控制台预览枢纽挂文。网页落盘是 ``to_``，插件/手动/Agent 文是 ``kb_*``。"""
     from gsuid_core.ai_core.planning.handle_resolver import handle_kind_of, resolve_handle
-    from gsuid_core.ai_core.planning.tool_output_protocol import load_payload_text
+    from gsuid_core.ai_core.planning.tool_output_store import load_payload_text
 
     hid = (handle or "").strip()
     if hid.startswith("kbdoc:"):

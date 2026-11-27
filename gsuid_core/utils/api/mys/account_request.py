@@ -20,9 +20,11 @@ from .api import (
     CHECK_QRCODE_HYP,
     GET_COOKIE_TOKEN,
     CREATE_QRCODE_HYP,
+    LOGIN_BY_AUTH_TICKET,
     GET_ALL_TOKEN_BY_STOKEN,
     GET_STOKEN_BY_GAME_TOKEN,
     GET_STOKEN_BY_LOGIN_TICKET,
+    CREATE_AUTH_TICKET_BY_GAME_BIZ,
     GET_COOKIE_TOKEN_BY_GAME_TOKEN,
 )
 from .tools import (
@@ -36,6 +38,7 @@ from .tools import (
 from .models import (
     AuthKeyInfo,
     QrCodeStatus,
+    BbsStokenInfo,
     GameTokenInfo,
     CookieTokenInfo,
     HypQrCodeStatus,
@@ -210,12 +213,12 @@ class AccountMysApi(PassMysApi):
             game_name="account",
         )
 
-    async def get_cookie_token_by_stoken_cn(
-        self,
+    @staticmethod
+    def _parse_stoken_fields(
         stoken: str,
         mys_id: str,
         full_sk: Optional[str] = None,
-    ) -> Union[CookieTokenInfo, int]:
+    ) -> tuple[str, str, str]:
         mid = ""
         if full_sk:
             simp_dict = SimpleCookie(full_sk)
@@ -233,6 +236,109 @@ class AccountMysApi(PassMysApi):
                     if key in simp_dict:
                         mys_id = simp_dict[key].value
                         break
+        return stoken, mys_id, mid
+
+    async def exchange_hyp_stoken_to_bbs_stoken(
+        self,
+        stoken: str,
+        mys_id: str = "",
+        full_sk: Optional[str] = None,
+        device_id: Optional[str] = None,
+        device_fp: Optional[str] = None,
+        device_info: Optional[str] = None,
+    ) -> Union[BbsStokenInfo, int]:
+        """将 HYP 启动器作用域 stoken 通过 AuthTicket 换取米游社 App(bll8iq97cem8) stoken。"""
+        raw_stoken, resolved_aid, mid = self._parse_stoken_fields(stoken, mys_id, full_sk)
+        if not raw_stoken or not mid or not resolved_aid.isdigit():
+            return -100
+
+        dev_id = device_id or self.get_device_id()
+        dev_fp = device_fp or self.generate_random_fp()
+        brand, model_name, sys_version, _ = self._parse_device_info(device_info or "")
+
+        hyp_header: Dict[str, str] = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "x-rpc-app_id": "ddxf5dufpuyo",
+            "x-rpc-client_type": "3",
+            "x-rpc-game_biz": "hyp_cn",
+            "x-rpc-sdk_version": "2.55.2",
+            "x-rpc-device_id": dev_id,
+            "x-rpc-device_fp": dev_fp,
+            "User-Agent": f"HYPContainer/{self.HYP_VERSION}",
+        }
+        ticket_res = await self._mys_request(
+            url=CREATE_AUTH_TICKET_BY_GAME_BIZ.get(),
+            method="POST",
+            header=hyp_header,
+            data={
+                "game_biz": "bbs_cn",
+                "stoken": raw_stoken,
+                "uid": int(resolved_aid),
+                "mid": mid,
+            },
+            game_name="account",
+        )
+        if isinstance(ticket_res, int):
+            return ticket_res
+        ticket_data = ticket_res["data"] if "data" in ticket_res else None
+        ticket = (
+            ticket_data["ticket"]
+            if isinstance(ticket_data, dict) and "ticket" in ticket_data and isinstance(ticket_data["ticket"], str)
+            else ""
+        )
+        if not ticket:
+            return -999
+
+        login_body: Dict[str, object] = {"ticket": ticket}
+        bbs_header: Dict[str, str] = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "x-rpc-app_id": "bll8iq97cem8",
+            "x-rpc-client_type": "2",
+            "x-rpc-game_biz": "bbs_cn",
+            "x-rpc-app_version": self.mysVersion,
+            "x-rpc-sdk_version": "2.44.0",
+            "x-rpc-account_version": "2.44.0",
+            "x-rpc-sys_version": sys_version,
+            "x-rpc-device_id": dev_id,
+            "x-rpc-device_fp": dev_fp,
+            "x-rpc-device_name": f"{brand}%20{model_name}",
+            "x-rpc-device_model": model_name,
+            "x-rpc-lifecycle_id": str(uuid.uuid4()),
+            "DS": generate_passport_ds(b=login_body),
+            "User-Agent": "okhttp/4.9.3",
+        }
+        login_res = await self._mys_request(
+            url=LOGIN_BY_AUTH_TICKET.get(),
+            method="POST",
+            header=bbs_header,
+            data=login_body,
+            game_name="account",
+        )
+        if isinstance(login_res, int):
+            return login_res
+
+        bbs_stoken, resp_aid, resp_mid = self._extract_exchange_token(login_res)
+        if not bbs_stoken:
+            return -999
+        final_aid = resp_aid or resolved_aid
+        final_mid = resp_mid or mid
+        result: BbsStokenInfo = {
+            "stoken": bbs_stoken,
+            "uid": final_aid,
+            "mid": final_mid,
+            "app_cookie": f"stuid={final_aid};stoken={bbs_stoken};mid={final_mid}",
+        }
+        return result
+
+    async def get_cookie_token_by_stoken_cn(
+        self,
+        stoken: str,
+        mys_id: str,
+        full_sk: Optional[str] = None,
+    ) -> Union[CookieTokenInfo, int]:
+        stoken, mys_id, mid = self._parse_stoken_fields(stoken, mys_id, full_sk)
 
         if not stoken:
             return -100

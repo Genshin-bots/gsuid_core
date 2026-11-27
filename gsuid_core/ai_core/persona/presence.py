@@ -18,6 +18,7 @@ from gsuid_core.ai_core.persona.homeostasis import (
     advance_homeostasis,
     apply_cold_shoulder,
 )
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 
 _ECHO_AGE_SECONDS = 900.0
 _OFFSCREEN_WINDOW = 21600.0
@@ -83,6 +84,8 @@ async def load_presence(persona_name: str) -> PresenceRibbon:
 async def save_presence(persona_name: str, ribbon: PresenceRibbon) -> None:
     from gsuid_core.ai_core.state_store import state_set_value
 
+    if is_persona_frozen(persona_name):
+        return
     await state_set_value(persona_scope(persona_name), _PRESENCE_KEY, asdict(ribbon))
 
 
@@ -160,7 +163,8 @@ def history_has_human_after(target_key: str, ts: float) -> bool:
 async def refresh_persona_state(persona_name: str, now: float) -> tuple[PersonaHomeostasis, PresenceRibbon]:
     """读两边状态 → 时间推进 → 结算 echo（无人接的喂冷肩 + 冷淡情绪）→ 存回。"""
     from gsuid_core.ai_core.persona.mood import update_mood
-    from gsuid_core.ai_core.persona.config import read_drive_traits, read_autonomy_runtime, persona_config_manager
+    from gsuid_core.ai_core.persona.config import persona_config_manager
+    from gsuid_core.ai_core.persona.config_rules import read_drive_traits, read_autonomy_runtime
 
     config = persona_config_manager.get_config(persona_name)
     traits = read_drive_traits(config)

@@ -10,11 +10,19 @@ Git Update 工具模块
 所有 git 操作均通过 git_async 模块异步执行，避免阻塞事件循环。
 """
 
+import asyncio
 from typing import List, Optional, TypedDict
 from pathlib import Path
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
+from gsuid_core.plugin_registry import (
+    CORE_PLUGIN_NAME,
+    LocalPluginMeta,
+    plugin_registry,
+    probe_plugin_disk,
+    resolve_plugin_path_sync,
+)
 
 from .api import CORE_PATH, PLUGINS_PATH
 from .git_async import run_git, git_pull, git_fetch, git_reset_hard, git_get_current_branch
@@ -38,6 +46,11 @@ class GitStatusInfo(TypedDict):
     current_commit: CommitInfo
     is_git_repo: bool
     branch: str
+    remote_url: str
+    mirror: str
+    source_kind: str
+    upstream_host: str
+    upstream_url: str
 
 
 def _parse_commit_line(line: str) -> Optional[CommitInfo]:
@@ -201,6 +214,10 @@ async def get_local_commits(
     return commits
 
 
+def _repo_plugin_name(repo_path: Path) -> str:
+    return CORE_PLUGIN_NAME if repo_path.resolve() == CORE_PATH.resolve() else repo_path.name
+
+
 async def get_git_status(repo_path: Path) -> Optional[GitStatusInfo]:
     """
     获取仓库的完整状态信息。
@@ -219,13 +236,24 @@ async def get_git_status(repo_path: Path) -> Optional[GitStatusInfo]:
         return None
 
     branch = await git_get_current_branch(repo_path)
+    name = await asyncio.to_thread(_repo_plugin_name, repo_path)
+    cached = plugin_registry.get(name, include_core=True, include_buildin=True)
+    if cached is None:
+        scope = "core" if name == CORE_PLUGIN_NAME else "plugin"
+        cached = await probe_plugin_disk(repo_path, scope=scope, with_commit=False)
+    git = cached.git if cached is not None else None
 
     return GitStatusInfo(
-        name=repo_path.name,
+        name=name,
         path=str(repo_path),
         current_commit=current_commit,
         is_git_repo=True,
         branch=branch,
+        remote_url=git.remote_url if git is not None else "",
+        mirror=git.active_mirror if git is not None else "unknown",
+        source_kind=cached.source_kind if cached is not None else "third_party",
+        upstream_host=git.upstream_host if git is not None else "",
+        upstream_url=git.upstream_url if git is not None else "",
     )
 
 
@@ -266,6 +294,8 @@ async def checkout_commit(repo_path: Path, commit_hash: str) -> tuple[bool, str]
         return False, f"reset --hard 失败: {msg}"
 
     logger.info(t("log.plugin.git_update_rolled_commit_hash", commit_hash=commit_hash))
+    refresh_name = await asyncio.to_thread(_repo_plugin_name, repo_path)
+    await plugin_registry.refresh_one(refresh_name, with_commit=True)
     return True, f"已回退到 commit: {commit_hash[:7]}"
 
 
@@ -314,6 +344,8 @@ async def force_update(repo_path: Path) -> tuple[bool, str]:
         message = "强制更新成功"
 
     logger.info(t("log.git_update.force_update_result", message=message))
+    refresh_name = await asyncio.to_thread(_repo_plugin_name, repo_path)
+    await plugin_registry.refresh_one(refresh_name, with_commit=True)
     return True, message
 
 
@@ -352,67 +384,60 @@ async def update(repo_path: Path) -> tuple[bool, str]:
         message = "更新成功"
 
     logger.info(t("log.git_update.update_result", message=message))
+    refresh_name = await asyncio.to_thread(_repo_plugin_name, repo_path)
+    await plugin_registry.refresh_one(refresh_name, with_commit=True)
     return True, message
 
 
-async def get_all_plugins_status() -> List[GitStatusInfo]:
-    """
-    获取所有插件（包括 core 本体）的 git 状态信息。
+def _meta_to_status(meta: LocalPluginMeta) -> GitStatusInfo | None:
+    git = meta.git
+    if not meta.is_git or not meta.has_remote or git is None or not git.commit_hash:
+        return None
+    return GitStatusInfo(
+        name=meta.name,
+        path=str(meta.path),
+        current_commit=CommitInfo(
+            hash=git.commit_hash,
+            short_hash=git.short_commit,
+            author=git.commit_author,
+            date=git.commit_date,
+            message=git.commit_message,
+        ),
+        is_git_repo=True,
+        branch=git.branch or "main",
+        remote_url=git.remote_url,
+        mirror=git.active_mirror,
+        source_kind=meta.source_kind,
+        upstream_host=git.upstream_host,
+        upstream_url=git.upstream_url,
+    )
 
-    Returns:
-        GitStatusInfo 列表
-    """
+
+async def get_all_plugins_status(*, fresh: bool = False) -> List[GitStatusInfo]:
+    """获取所有含 origin 的 Git 插件（含 core 本体）状态，默认复用元信息中心缓存。"""
+    entries = await plugin_registry.list_plugins(
+        scope="plugin",
+        git_only=True,
+        include_core=True,
+        fresh=fresh,
+        with_commit=True,
+    )
     result: List[GitStatusInfo] = []
-
-    # core 本体
-    core_status = await get_git_status(CORE_PATH)
-    if core_status:
-        result.append(core_status)
-
-    # 所有插件
-    if PLUGINS_PATH.exists():
-        for plugin_dir in sorted(PLUGINS_PATH.iterdir()):
-            if plugin_dir.is_dir() and plugin_dir.name != "__pycache__":
-                plugin_status = await get_git_status(plugin_dir)
-                if plugin_status:
-                    result.append(plugin_status)
-
+    for entry in entries:
+        status = _meta_to_status(entry)
+        if status is not None:
+            result.append(status)
     return result
 
 
 def _resolve_plugin_path(plugin_name: str) -> Optional[Path]:
-    """
-    解析插件名称到实际路径。
-
-    Args:
-        plugin_name: 插件名称
-
-    Returns:
-        插件路径，不存在返回 None
-    """
-    if plugin_name.lower() in {"gsuid_core", "gscore"}:
-        return CORE_PATH
-
-    from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
-
-    if not is_safe_filename(plugin_name):
-        return None
-
-    # 尝试精确匹配
-    try:
-        plugin_path = safe_join(PLUGINS_PATH, plugin_name)
-    except PathEscapeError:
-        return None
-    if plugin_path.exists() and plugin_path.is_dir():
-        return plugin_path
-
-    # 尝试大小写不敏感匹配（仅枚举 plugins 的直接子目录）
-    if PLUGINS_PATH.exists():
-        for d in PLUGINS_PATH.iterdir():
-            if d.is_dir() and d.name.lower() == plugin_name.lower():
-                try:
-                    return safe_join(PLUGINS_PATH, d.name)
-                except PathEscapeError:
-                    return None
-
-    return None
+    """解析插件名称到实际路径（统一走安全路径围栏）。"""
+    found = resolve_plugin_path_sync(
+        plugin_name,
+        include_core=True,
+        include_buildin=False,
+        plugins_path=PLUGINS_PATH,
+        buildin_path=plugin_registry.buildin_path,
+        core_path=CORE_PATH,
+    )
+    return found[0] if found is not None else None

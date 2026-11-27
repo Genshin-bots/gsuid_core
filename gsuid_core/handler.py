@@ -886,6 +886,7 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                 ai_config.get_config("follow_up_max_replies").data if "follow_up_max_replies" in ai_config.config else 2
             )
             _busy_rpm = 12  # 高活跃群抑制无 @ 续聊软唤醒阈值（条/分）
+            has_at_others = any(uid != str(event.bot_self_id) for uid in link.at_targets)
             in_followup = bool(
                 _fw
                 and event.group_id
@@ -902,19 +903,26 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     busy_per_min=_busy_rpm,
                 ):
                     in_followup = False
+            scheduler = get_inbox_scheduler()
+            in_settle_continuation = bool(
+                event.group_id
+                and not has_at_others
+                and scheduler.is_awaiting_speaker(session_id, persona_name, str(event.user_id or ""))
+            )
             kind = classify_wake(
                 user_type=event.user_type or "group",
                 at_self=link.at_self,
                 reply_to_author=link.reply_to_author,
                 raw_text=event.raw_text or "",
                 wake_names=wake_names,
-                in_followup=in_followup,
-                has_at_others=any(uid != str(event.bot_self_id) for uid in link.at_targets),
+                in_followup=in_followup or in_settle_continuation,
+                has_at_others=has_at_others,
             )
             if kind is None:
                 return
-            statistics_manager.record_trigger(trigger_type=kind)
-            get_inbox_scheduler().submit(
+            if not (kind == "followup" and in_settle_continuation and not in_followup):
+                statistics_manager.record_trigger(trigger_type=kind)
+            scheduler.submit(
                 ws,
                 PendingEntry(
                     item=WakeItem(

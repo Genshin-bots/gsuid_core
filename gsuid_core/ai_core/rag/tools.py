@@ -917,10 +917,11 @@ async def search_tools(
             debug=debug,
         )
     )
-    query_vec = await embedding_model.aembed_query(query)
-    if not query_vec:
-        logger.warning(i18n_t("log.rag.tools_embedding_empty_result_skip"))
-        return []
+    query_vec: Sequence[float] = []
+    try:
+        query_vec = await embedding_model.aembed_query(query)
+    except Exception as e:
+        logger.warning(i18n_t("log.rag.tools_vector_retrieval_skipping", e=e))
 
     async def _query_tools():
         # 如果启用 debug，使用大 limit 获取所有工具以便查看分数
@@ -937,33 +938,37 @@ async def search_tools(
             score_threshold=threshold if threshold > 0 else None,
         )
 
-    try:
-        response = await _query_tools()
-    except Exception as e:
-        from .collection_migration import is_vector_structure_error
+    response_points = []
+    if query_vec:
+        try:
+            response = await _query_tools()
+            response_points = list(response.points)
+        except Exception as e:
+            from .collection_migration import is_vector_structure_error
 
-        if is_vector_structure_error(str(e)):
-            logger.warning(i18n_t("log.rag.tools_collection_vector_dimension_fail", e=e))
-            try:
-                await client.delete_collection(collection_name=TOOLS_COLLECTION_NAME)
-            except Exception:
-                pass
-            await init_tools_collection()
-            await sync_tools(get_all_tools())
-            try:
-                response = await _query_tools()
-            except Exception as retry_e:
-                logger.warning(i18n_t("log.rag.tools_collection_fails_query_fail", retry_e=retry_e))
-                return []
-        else:
-            logger.warning(i18n_t("log.rag.tools_vector_retrieval_skipping", e=e))
-            return []
+            if is_vector_structure_error(str(e)):
+                logger.warning(i18n_t("log.rag.tools_collection_vector_dimension_fail", e=e))
+                try:
+                    await client.delete_collection(collection_name=TOOLS_COLLECTION_NAME)
+                except Exception:
+                    pass
+                await init_tools_collection()
+                await sync_tools(get_all_tools())
+                try:
+                    response = await _query_tools()
+                    response_points = list(response.points)
+                except Exception as retry_e:
+                    logger.warning(i18n_t("log.rag.tools_collection_fails_query_fail", retry_e=retry_e))
+            else:
+                logger.warning(i18n_t("log.rag.tools_vector_retrieval_skipping", e=e))
+    else:
+        logger.warning(i18n_t("log.rag.tools_embedding_empty_result_skip"))
 
     tool_names: List[str] = []
     score_map: Dict[str, float] = {}
     all_scores_info: List[str] = []
 
-    for point in response.points:
+    for point in response_points:
         if point.payload is None or "name" not in point.payload:
             continue
         name = point.payload["name"]
@@ -1036,7 +1041,8 @@ async def search_tools(
     )
 
     ensure_index(all_tools_dict)
-    lexical = lexical_scores(query, set(all_tools_dict)) if has_cjk(query) else {}
+    # 向量离线时（tool_names 为空）无论中英文都启用内存 BM25 词法降级，避免返回空池
+    lexical = lexical_scores(query, set(all_tools_dict)) if (has_cjk(query) or not tool_names) else {}
     if lexical:
         fused_names = rrf_fuse(tool_names, lexical)
     else:

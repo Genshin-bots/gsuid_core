@@ -102,33 +102,6 @@ class ImageEntity(TypedDict):
     _hash: Optional[str]  # 内容哈希，用于增量更新检测
 
 
-class KnowledgeHash(TypedDict):
-    """知识点哈希值类型"""
-
-    id: str
-    hash: str
-
-
-class ModelInfo(TypedDict):
-    """模型信息类型"""
-
-    title: str
-    content: str
-    tags: List[str]
-
-
-class FunctionDef(TypedDict):
-    name: str
-    description: str
-    # JSON Schema 对象（OpenAI function-calling 的 parameters 字段）
-    parameters: Dict[str, object]
-
-
-class ToolDef(TypedDict):
-    type: str
-    function: FunctionDef
-
-
 # AI 会话日志序列化结构
 # 这三个 TypedDict 是 ``AISessionLogger`` 落盘格式的唯一类型来源
 
@@ -191,6 +164,7 @@ class SessionLogFileData(TypedDict):
     session_uuid: str
     persona_name: Optional[str]
     create_by: str
+    task_kind: NotRequired[Optional[str]]
     is_subagent: bool
     # 逻辑会话链三元组（同链多分段共享 chain_id）。标记 NotRequired 仅为兼容历史（升级前
     # 落盘）文件——新写入恒包含；读取旧文件缺失时以其 session_uuid 兜底为独立一条链。

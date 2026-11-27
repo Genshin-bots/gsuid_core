@@ -6,7 +6,7 @@ interaction_scaffold.py。新句子写在这里再 import。约定见 AGENTS.md 
 """
 
 import re
-from typing import Final
+from typing import Final, Literal, Sequence
 
 # 消息外壳。程序靠这些记号切正文。
 MSG_SECTION_MARK = "--- 消息 ---"
@@ -24,6 +24,11 @@ TOOL_NAME_LEAK_NUDGE = (
     TOOL_NAME_LEAK_PREFIX + " / 句柄 / 编排文案。"
     "请判断后用角色口吻只说结论；不要对用户念工具、句柄或内部提示。"
     "直接输出你决定发给用户的正文，不要再调用发送工具重复同一句。）"
+)
+HANDLE_IMAGE_LEAK_NUDGE = (
+    TOOL_NAME_LEAK_PREFIX + " / 图片资源句柄。"
+    "不要把 img_/res_ 等资源 ID 写进回复正文；图片请用 send_message_by_ai(image_ids=[...]) 发送，"
+    "正文只用角色口吻简短回应，直接输出重写后的内容。）"
 )
 INNER_OS_NUDGE = INNER_OS_PREFIX + "…）段落，只保留角色台词）"
 
@@ -260,6 +265,162 @@ def failure_wake_line(delivery: str, at_hint: str, title_ban: str) -> str:
     )
 
 
+BACKGROUND_TOOL_PENDING_PREFIX: Final[str] = "⏳ 后台操作执行中"
+
+PENDING_BACKGROUND_TOOL_HOLD = (
+    "（系统：后台操作已开始执行，这不是终局结果。对用户只输出 <SILENCE>，勿重试或改调同类工具，等待完成后自动回灌。）"
+)
+
+PENDING_BACKGROUND_TOOL_OPENING = (
+    "（系统：后台操作已开始执行，这不是终局结果。本轮你还没对用户开口："
+    "用当前人格短说一句已经开始处理、稍等片刻，完成后会告知。"
+    "禁止复述工具名/后台/回灌等内部词，勿重试或改调同类工具。）"
+)
+
+PENDING_BACKGROUND_TOOL_MIXED_NOTE = (
+    "（系统：本轮有后台操作仍在继续执行、完成后会自动回灌；请先回答同轮已完成工具的结果，"
+    "对后台操作切勿提前宣称已完成或重试。）"
+)
+
+
+def delivery_at_hint(owner: str) -> str:
+    """群聊异步回灌的 @发起人 提示。"""
+    return f"收尾时 @发起人 `<@{owner}>`。"
+
+
+def delivery_title_ban_hint(title: str) -> str:
+    """非主人发起人的称呼禁令提示。"""
+    return f"发起人不是主人，禁止称「{title}」。"
+
+
+def _bg_ack_speech_rule(spoken: str, opening_missed: bool) -> str:
+    if spoken:
+        return f"你的开场句已经发给用户：「{spoken}」。对用户只输出 <SILENCE>，不要再说一遍。"
+    if opening_missed:
+        return "本轮你还没对用户开口：用当前人格短说一句已经开始处理、稍等片刻，完成后会告知。"
+    return "对用户默认 <SILENCE>。"
+
+
+def background_tool_detached_ack(
+    *,
+    spoken: str = "",
+    opening_missed: bool = False,
+) -> str:
+    """长耗时工具超出宽限自动转后台时的非终态回执。"""
+    return (
+        f"{BACKGROUND_TOOL_PENDING_PREFIX}（完成后将自动回灌）。\n"
+        f"本 tool_return 不是终局结论。{_bg_ack_speech_rule(spoken, opening_missed)}"
+        "禁止复述工具名/后台/回灌等内部词；禁止重试或改调同类工具，等待完成后自动回灌。"
+    )
+
+
+def background_tool_already_running_ack(
+    *,
+    elapsed_sec: int,
+    spoken: str = "",
+    opening_missed: bool = False,
+) -> str:
+    """同主体重复触发已在途的后台工具时的防重入回执。"""
+    return (
+        f"{BACKGROUND_TOOL_PENDING_PREFIX}（已运行 {elapsed_sec} 秒，完成后将自动回灌），无需重复发起。\n"
+        f"本 tool_return 不是终局结论。{_bg_ack_speech_rule(spoken, opening_missed)}"
+        "禁止复述工具名/后台/回灌等内部词；告知对方还在处理中、完成后会自动回复即可。"
+    )
+
+
+def format_rm_resource_hint(
+    kind: Literal["image", "audio", "video", "file"],
+    resource_ids: Sequence[str],
+) -> str:
+    """统一构造 RM 资源句柄提示（供 trigger_bridge 与 background_tools 复用）。"""
+    id_list = ", ".join(resource_ids)
+    count = len(resource_ids)
+    if kind == "image":
+        return (
+            f"[已生成 {count} 张图片，资源ID: {id_list}。"
+            "如需发送给用户，请调用 send_message_by_ai 传入 image_ids；严禁把资源ID写入回复正文。]"
+        )
+    if kind == "audio":
+        return (
+            f"[已生成 {count} 个音频，资源ID: {id_list}。"
+            "如需发送给用户，请调用 send_message_by_ai 传入 audio_id；严禁把资源ID写入回复正文。]"
+        )
+    if kind == "video":
+        return (
+            f"[已生成 {count} 个视频，资源ID: {id_list}。"
+            "如需发送给用户，请调用 send_message_by_ai 传入 video_id；严禁把资源ID写入回复正文。]"
+        )
+    return (
+        f"[已生成 {count} 个文件，资源ID: {id_list}。"
+        "如需发送给用户，请调用 send_message_by_ai 传入 file_ids；严禁把资源ID写入回复正文。]"
+    )
+
+
+_RM_HINT_LINE_RE = re.compile(r"资源ID:.*(?:res|img|aud|vid|fil)_[0-9a-fA-F]{3,}")
+
+
+def _trim_result_preserving_rm_hints(result_body: str, limit: int = 2000) -> str:
+    """截断超长后台结果时保留尾部 RM 媒体资源提示，避免切掉可发送句柄。"""
+    raw = result_body.strip()
+    if len(raw) <= limit:
+        return raw
+    text_lines: list[str] = []
+    hint_lines: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if _RM_HINT_LINE_RE.search(stripped):
+            hint_lines.append(stripped)
+        else:
+            text_lines.append(line)
+    text_body = "\n".join(text_lines).strip()
+    if not hint_lines:
+        return text_body[:limit].rstrip() + "…[过长已截断]"
+    hint_block = "\n".join(hint_lines)
+    text_budget = max(200, limit - len(hint_block) - 16)
+    if len(text_body) > text_budget:
+        text_body = text_body[:text_budget].rstrip() + "…[过长已截断]"
+    return f"{text_body}\n{hint_block}" if text_body else hint_block
+
+
+def background_tool_wake_line(
+    *,
+    tool_label: str,
+    result_body: str,
+    owner: str,
+    at_hint: str,
+    title_ban: str,
+) -> str:
+    """后台工具完成后的主会话交付回灌帧。"""
+    attr = f"发起人：`@{owner}`。\n" if owner else ""
+    body = _trim_result_preserving_rm_hints(result_body, limit=2000)
+    return (
+        f"[框架·任务完成]\n"
+        f"【后台操作完成】「{tool_label}」已执行完毕。\n"
+        f"{attr}"
+        f"执行结果：\n{body}\n"
+        "（系统：用当前角色口吻简短把结果转告发起人；如有图片/媒体资源ID请用 send_message_by_ai 发送，"
+        f"严禁把资源ID写入台词，严禁复述内部实现词。{at_hint}{title_ban}）"
+    )
+
+
+def background_tool_failure_wake_line(
+    *,
+    tool_label: str,
+    reason: str,
+    owner: str,
+    at_hint: str,
+    title_ban: str,
+) -> str:
+    """后台工具失败或超时后的主会话失败回灌帧。"""
+    attr = f"发起人：`@{owner}`。\n" if owner else ""
+    delivery = (
+        f"【后台操作未完成】「{tool_label}」未能完成。\n"
+        f"{attr}"
+        f"内部受阻原因（仅供知情，勿对用户复述内部细节，禁止为此出图）: {reason[:360]}"
+    )
+    return failure_wake_line(delivery, at_hint, title_ban)
+
+
 def approval_resume_line(
     *,
     task_id: str,
@@ -428,6 +589,11 @@ def omitted_lines_marker(count: int) -> str:
     return f"（中间省略 {count} 条）"
 
 
+def pending_later_delivery_note(entry_seq: int, delivered_seq: int) -> str:
+    """待回应项排队期间已向同用户送达更晚的出站回复/交付，防止误将旧追问当新质疑。"""
+    return f"注意：在该条(#{entry_seq})之后你已于 #{delivered_seq} 向其发过回复/交付（本条为更早排队的旧追问）"
+
+
 # 当轮动态块头（入史前剥除；正文组装在 inbox/blocks.py）
 PENDING_BLOCK_HEAD = "（待你回应）"
 RECEIPT_CONTEXT_HEAD = "（回执上下文）"
@@ -478,6 +644,28 @@ PROCESS_META_CORE_PATTERN: Final[str] = (
     r"回炉了?你再|回炉|系统校验|框架[·・.]任务|产物句柄|"
     r"交给主人格|主人格发|（系统提示|\[框架[·・.]|禁止再检索|禁止把句柄|禁止念"
 )
+INTERNAL_HANDLE_HINTS: Final[tuple[str, ...]] = (
+    "res_",
+    "img_",
+    "aud_",
+    "vid_",
+    "fil_",
+    "to_",
+    "sa_",
+    "dlg_",
+    "note:",
+    "kb_plugin:",
+    "kb_kbdoc:",
+    "journal:",
+)
+INTERNAL_HANDLE_PATTERN: Final[str] = (
+    r"(?<![A-Za-z0-9_])(?:res|img|aud|vid|fil|to|sa)_[0-9a-fA-F]{6,}(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])dlg_[0-9a-fA-F-]{8,}(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])note:[^\s:：,，。；;、？！!?）)\]】」』`\"'<>]+:[^\s:：,，。；;、？！!?）)\]】」』`\"'<>]+"
+    r"|(?<![A-Za-z0-9_])(?:kb_plugin|kb_kbdoc):[^\s：,，。；;、？！!?）)\]】」』`\"'<>]+"
+    r"|(?<![A-Za-z0-9_])journal:[^\s:：,，。；;、？！!?）)\]】」』`\"'<>]+:[^\s：,，。；;、？！!?）)\]】」』`\"'<>]*\d{4}-\d{2}(?:-\d{2})?"
+)
+INTERNAL_HANDLE_RE: Final[re.Pattern[str]] = re.compile(INTERNAL_HANDLE_PATTERN, re.IGNORECASE)
 INTERNAL_ARTIFACT_TOKEN_PATTERN: Final[str] = (
     r"\bsend_message_by_ai\b|\bcreate_subagent\b|\bartifact_get\b|\bartifact_put\b|"
     r"\bread_handle\b|\bsearch_handles\b|\bsearch_persisted_outputs\b|"
@@ -486,9 +674,8 @@ INTERNAL_ARTIFACT_TOKEN_PATTERN: Final[str] = (
     r"\brender_html_to_image\b|\brender_agent\b|"
     r"\bresearch_agent\b|\bcheck_delegation\b|\bdispute_directive\b|"
     r"\bagent_profile\s*=|\bimage_ids?\s*=|"
-    r"\bres_[0-9a-f]{6,}\b|\bimg_[0-9a-f]{6,}\b|\bto_[0-9a-f]{6,}\b|"
-    r"\bsa_[0-9a-f]{6,}\b|\bdlg_[0-9a-f-]{8,}\b|"
-    r"persisted\s+id|\btool_return\b|\blong_structured\b|\binline_head\b|"
+    + INTERNAL_HANDLE_PATTERN
+    + r"|persisted\s+id|\btool_return\b|\blong_structured\b|\binline_head\b|"
     r"\bhow_to_read\b|\bKanban\b|artifact\s*:|资源ID\s*:|产物句柄"
 )
 INTERNAL_LEAK_RE: Final[re.Pattern[str]] = re.compile(

@@ -17,15 +17,13 @@ from gsuid_core.i18n import t
 from gsuid_core.pool import to_thread
 from gsuid_core.logger import logger
 from gsuid_core.data_store import AI_CORE_PATH
-from gsuid_core.ai_core.persona.config import (
-    is_persona_enabled,
-    persona_config_manager,
-)
+from gsuid_core.ai_core.persona.config import persona_config_manager
 from gsuid_core.ai_core.journal.sanitizer import (
     SILENT_CHECK_SUMMARY,
     is_silent_payload,
     truncate_at_boundary,
 )
+from gsuid_core.ai_core.persona.config_rules import is_persona_enabled
 
 JOURNAL_DIR: Path = AI_CORE_PATH / "journals"
 
@@ -310,6 +308,11 @@ def _group_shard_path(persona_name: str, group_id: str) -> Path:
 
 def _dormant_group_path(persona_name: str, group_id: str) -> Path:
     return _persona_root(persona_name) / "dormant_groups" / f"{_safe_token(group_id, 'group')}.md"
+
+
+def _dormant_user_path(persona_name: str, user_id: str) -> Path:
+    raw_uid = user_id[len(USER_SHARD_PREFIX) :] if user_id.startswith(USER_SHARD_PREFIX) else user_id
+    return _persona_root(persona_name) / "dormant_users" / f"{_safe_token(raw_uid, 'user')}.md"
 
 
 def _archives_dir(persona_name: str) -> Path:
@@ -602,12 +605,24 @@ def _load_shard_sync(persona_name: str, shard_id: str, *, create_if_missing: boo
             text = render_shard_markdown(persona_name, init_doc)
             path.write_text(text, encoding="utf-8")
     elif _is_user_shard(shard_id):
-        path = _user_shard_path(persona_name, shard_id)
+        udir = _persona_root(persona_name) / "users"
+        raw_uid = shard_id[len(USER_SHARD_PREFIX) :]
+        path = udir / f"{_safe_token(raw_uid, 'user')}.md"
         if not path.exists():
-            if not create_if_missing:
+            # 超 60 天静默移入休眠目录的私聊分片，在读取或写入时无缝唤醒
+            dormant = _dormant_user_path(persona_name, shard_id)
+            if dormant.exists():
+                udir.mkdir(parents=True, exist_ok=True)
+                try:
+                    dormant.replace(path)
+                except OSError:
+                    path = dormant
+            elif create_if_missing:
+                udir.mkdir(parents=True, exist_ok=True)
+                init_doc = ShardDocument(shard_id=shard_id)
+                path.write_text(render_shard_markdown(persona_name, init_doc), encoding="utf-8")
+            else:
                 return None
-            init_doc = ShardDocument(shard_id=shard_id)
-            path.write_text(render_shard_markdown(persona_name, init_doc), encoding="utf-8")
     else:
         gdir = _persona_root(persona_name) / "groups"
         path = gdir / f"{_safe_token(shard_id, 'group')}.md"
@@ -793,11 +808,6 @@ def _load_full_state() -> Dict[str, PersonaJournalStateEntry]:
         return _load_full_state_unlocked()
 
 
-def _save_full_state(state: Mapping[str, PersonaJournalStateEntry]) -> None:
-    with _STATE_LOCK:
-        _save_full_state_unlocked(state)
-
-
 def _mark_shard_dirty_sync(persona_name: str, shard_id: str) -> None:
     key = _safe_token(persona_name)
     with _STATE_LOCK:
@@ -937,3 +947,50 @@ def get_all_journal_personas() -> List[str]:
                 if sub.is_dir() and not sub.name.startswith("."):
                     names.add(sub.name)
     return sorted(names)
+
+
+def persona_journal_dir(persona_name: str) -> Path:
+    """人格手账根目录（不自动创建）。人格重置 / 备份还原整体处理这一层。"""
+    return _persona_root(persona_name)
+
+
+def legacy_journal_file(persona_name: str) -> Path:
+    return JOURNAL_DIR / f"{_safe_token(persona_name)}.md"
+
+
+def pop_journal_state_sync(persona_name: str) -> PersonaJournalStateEntry | None:
+    key = _safe_token(persona_name)
+    with _STATE_LOCK:
+        state = _load_full_state_unlocked()
+        if key not in state:
+            return None
+        entry = state.pop(key)
+        _save_full_state_unlocked(state)
+        return entry
+
+
+def put_journal_state_sync(persona_name: str, entry: PersonaJournalStateEntry) -> None:
+    key = _safe_token(persona_name)
+    with _STATE_LOCK:
+        state = _load_full_state_unlocked()
+        state[key] = entry
+        _save_full_state_unlocked(state)
+
+
+def forget_persona_cache_sync(persona_name: str) -> None:
+    """目录被整体删除 / 覆盖后丢掉分片缓存与时间戳，防止旧文档被写回。"""
+    key = _safe_token(persona_name)
+    root = _persona_root(persona_name)
+    with _CACHE_LOCK:
+        for path in [p for p in _SHARD_CACHE if root in p.parents]:
+            del _SHARD_CACHE[path]
+        for ts_key in [k for k in _SHARD_UPDATE_TS if k[0] == key]:
+            del _SHARD_UPDATE_TS[ts_key]
+        for recent_key in [k for k in _RECENT_ENTRY_TS if k[0] == key]:
+            del _RECENT_ENTRY_TS[recent_key]
+
+
+def read_journal_state_sync(persona_name: str) -> PersonaJournalStateEntry | None:
+    key = _safe_token(persona_name)
+    state = _load_full_state()
+    return state[key] if key in state else None

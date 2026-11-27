@@ -120,11 +120,9 @@ def _kanban_wait_sec(parent_create_by: str) -> float:
     return 0.0
 
 
-# 纯 lookup 默认同步 ad-hoc（transient），不建看板卡。
-# 外部检索默认 Kanban：超时可回灌，取消不会把事实包扔掉。
+# 仅超轻纯单步 lookup 默认同步 ad-hoc（transient）；重盘点/外部检索走 Kanban 异步回灌，不阻塞群聊。
 _TRANSIENT_DEFAULT_PROFILES = frozenset(
     {
-        "internal_reporter",
         "memory_curator",
         "scheduler_assistant",
     }
@@ -367,6 +365,7 @@ async def _dispatch_via_kanban(
     from gsuid_core.ai_core.planning.kanban_executor import (
         kick_root,
         claim_inline_delivery,
+        record_inline_claimed_root,
         mark_deferred_main_delivery,
         format_task_delivery_receipt,
     )
@@ -449,13 +448,21 @@ async def _dispatch_via_kanban(
             opening_missed=opening_missed,
         )
 
-    if not claim_inline_delivery(root.id):
+    is_completed = final.status == "completed"
+    if not claim_inline_delivery(root.id, track_delivery=is_completed):
+        if is_completed:
+            return (
+                f"✅ 任务#{root.ordinal} 刚好完成，但交付已被框架接手。"
+                "请只输出 <SILENCE>，勿向用户说话、勿重复 create_subagent。"
+            )
         return (
-            f"✅ 任务#{root.ordinal} 刚好完成，但交付已被框架接手。"
-            "请只输出 <SILENCE>，勿向用户说话、勿重复 create_subagent。"
+            f"任务#{root.ordinal} 已结束（状态={final.status}），通知已被框架接手。"
+            "请只输出 <SILENCE>，勿重复 create_subagent。"
         )
+    if is_completed:
+        record_inline_claimed_root(ctx.deps.extra, root.id)
 
     from gsuid_core.ai_core.agent_node.registry import persona_allows_capability_agent
 
-    allow_render = persona_allows_capability_agent(persona_name, "render_agent")
-    return await format_task_delivery_receipt(final, allow_render=allow_render)
+    allow_render = is_completed and persona_allows_capability_agent(persona_name, "render_agent")
+    return await format_task_delivery_receipt(final, allow_render=allow_render, inline_claimed=is_completed)

@@ -9,7 +9,7 @@ from pydantic import Field, BaseModel
 
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_admin_header
-from gsuid_core.ai_core.http_agent.keys import KeyStoreError, public_view, get_key_store
+from gsuid_core.ai_core.http_agent.auth import KeyStoreError, public_view, get_key_store
 
 from ._api_tags import CORE_CONFIG
 

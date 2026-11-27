@@ -924,7 +924,7 @@ async def artifact_put(
             select_data={"id": plan_ctx.task_id},
             update_data={"output_artifact_id": art.id},
         )
-    from gsuid_core.ai_core.planning.tool_output_protocol import is_raster_image_mime
+    from gsuid_core.ai_core.planning.tool_output_store import is_raster_image_mime
 
     binary_hint = ""
     if art.payload_path and art.mime and is_raster_image_mime(art.mime):
@@ -1129,26 +1129,17 @@ def _format_artifact(
     limit: int = 8000,
 ) -> str:
     """格式化 artifact；与 FileOS 共用分页读协议。"""
-    from gsuid_core.ai_core.planning.tool_output_protocol import (
-        load_payload_text,
-        format_paginated_body,
-    )
+    from gsuid_core.ai_core.planning.tool_output_store import format_payload_paginated
 
     head = f"artifact {art.id} | kind={art.artifact_kind} | mime={art.mime}\nsummary: {art.summary}\n"
-    text, err = load_payload_text(
+    return format_payload_paginated(
+        head=head,
         payload_inline=art.payload_inline,
         payload_path=art.payload_path or "",
-    )
-    if err:
-        return head + f"⚠️ {err}"
-    if not text:
-        return head + "（无 inline / 落盘内容）"
-    return format_paginated_body(
-        head=head,
-        text=text,
         offset=offset,
         limit=limit,
         read_hint="artifact_get(res_id, offset, limit)",
+        empty_label="（无 inline / 落盘内容）",
     )
 
 

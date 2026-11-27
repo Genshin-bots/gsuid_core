@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import ssl
 import json
+import math
 import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Union, Literal, Protocol
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 from collections.abc import Callable
 from typing_extensions import override
 
@@ -738,13 +739,19 @@ class TaskModelRoute:
     inherited_from: str | None = None
 
 
-def _level_primary(task_level: TaskLevel) -> str:
+def get_level_primary(task_level: TaskLevel) -> str:
+    """读取指定任务档位当前激活的主配置全名。"""
     return get_high_level_config_name() if task_level == "high" else get_low_level_config_name()
 
 
-def _level_secondary(task_level: TaskLevel) -> str:
+def get_level_secondary(task_level: TaskLevel) -> str:
+    """读取指定任务档位当前配置的备用配置全名。"""
     raw: object = ai_config.get_config(f"{task_level}_level_2nd_provider_config_name").data
     return raw if isinstance(raw, str) else ""
+
+
+_level_primary = get_level_primary
+_level_secondary = get_level_secondary
 
 
 def normalize_provider_config_name(full_name: str) -> str:
@@ -798,6 +805,213 @@ def save_task_model_overrides(overrides: dict[str, TaskModelOverride]) -> bool:
         secondary = "" if ov.primary in TASK_ROUTE_LEVEL_REFS else ov.secondary
         data[key] = [ov.primary, secondary]
     return ai_config.set_config("task_model_overrides", data)
+
+
+TaskGraphNodeRole = Literal["high", "low", "custom"]
+
+
+@dataclass(frozen=True)
+class TaskGraphPos:
+    x: float
+    y: float
+
+
+@dataclass(frozen=True)
+class TaskGraphHubNode:
+    id: str
+    primary: str
+    secondary: str
+    role: TaskGraphNodeRole = "custom"
+    pos: TaskGraphPos | None = None
+
+
+@dataclass(frozen=True)
+class TaskModelGraph:
+    nodes: tuple[TaskGraphHubNode, ...]
+    edges: dict[str, str] = field(default_factory=dict)
+    split_subagents: tuple[str, ...] = ()
+    task_positions: dict[str, TaskGraphPos] = field(default_factory=dict)
+
+
+def _parse_graph_pos(raw: object) -> TaskGraphPos | None:
+    if not isinstance(raw, dict) or "x" not in raw or "y" not in raw:
+        return None
+    rx = raw["x"]
+    ry = raw["y"]
+    if (
+        isinstance(rx, (int, float))
+        and not isinstance(rx, bool)
+        and isinstance(ry, (int, float))
+        and not isinstance(ry, bool)
+    ):
+        fx = float(rx)
+        fy = float(ry)
+        if math.isfinite(fx) and math.isfinite(fy):
+            return TaskGraphPos(fx, fy)
+    return None
+
+
+def _parse_graph_role(raw: object) -> TaskGraphNodeRole:
+    if raw == "high":
+        return "high"
+    if raw == "low":
+        return "low"
+    return "custom"
+
+
+def get_task_model_graph() -> TaskModelGraph | None:
+    """读取已持久化的节点图谱；为空或结构非法时返回 None（由 API 层按高低档合成默认双核）。"""
+    raw: object = ai_config.get_config("task_model_graph").data
+    if not isinstance(raw, dict) or "nodes" not in raw:
+        return None
+    raw_nodes = raw["nodes"]
+    if not isinstance(raw_nodes, list) or not raw_nodes:
+        return None
+
+    nodes: list[TaskGraphHubNode] = []
+    seen_ids: set[str] = set()
+    for item in raw_nodes:
+        if not isinstance(item, dict) or "id" not in item:
+            continue
+        raw_id = item["id"]
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            continue
+        nid = raw_id.strip()
+        if nid in seen_ids:
+            continue
+        seen_ids.add(nid)
+        raw_p = item["primary"] if "primary" in item else ""
+        raw_s = item["secondary"] if "secondary" in item else ""
+        primary = normalize_provider_config_name(raw_p.strip()) if isinstance(raw_p, str) and raw_p.strip() else ""
+        secondary = (
+            normalize_provider_config_name(raw_s.strip())
+            if primary and isinstance(raw_s, str) and raw_s.strip()
+            else ""
+        )
+        if secondary == primary:
+            secondary = ""
+        role = _parse_graph_role(item["role"] if "role" in item else "custom")
+        pos = _parse_graph_pos(item["pos"]) if "pos" in item else None
+        nodes.append(TaskGraphHubNode(id=nid, primary=primary, secondary=secondary, role=role, pos=pos))
+
+    if not nodes:
+        return None
+
+    edges: dict[str, str] = {}
+    if "edges" in raw and isinstance(raw["edges"], dict):
+        for k, v in raw["edges"].items():
+            if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip() in seen_ids:
+                edges[k.strip()] = v.strip()
+
+    split_subagents: list[str] = []
+    if "split_subagents" in raw and isinstance(raw["split_subagents"], list):
+        for s in raw["split_subagents"]:
+            if isinstance(s, str) and s.strip() and s.strip() not in split_subagents:
+                split_subagents.append(s.strip())
+
+    task_positions: dict[str, TaskGraphPos] = {}
+    if "task_positions" in raw and isinstance(raw["task_positions"], dict):
+        for tk, pv in raw["task_positions"].items():
+            if isinstance(tk, str) and tk.strip():
+                parsed_pos = _parse_graph_pos(pv)
+                if parsed_pos is not None:
+                    task_positions[tk.strip()] = parsed_pos
+
+    return TaskModelGraph(
+        nodes=tuple(nodes),
+        edges=edges,
+        split_subagents=tuple(split_subagents),
+        task_positions=task_positions,
+    )
+
+
+def save_task_model_graph(graph: TaskModelGraph | None) -> bool:
+    """写回或清空（None -> {}）任务节点图谱状态。"""
+    if graph is None:
+        return ai_config.set_config("task_model_graph", {})
+    nodes_out: list[dict[str, object]] = []
+    for n in graph.nodes:
+        node_dict: dict[str, object] = {
+            "id": n.id,
+            "primary": n.primary,
+            "secondary": n.secondary,
+            "role": n.role,
+        }
+        if n.pos is not None:
+            node_dict["pos"] = {"x": n.pos.x, "y": n.pos.y}
+        nodes_out.append(node_dict)
+    task_pos_out: dict[str, dict[str, float]] = {tk: {"x": p.x, "y": p.y} for tk, p in graph.task_positions.items()}
+    payload: dict[str, object] = {
+        "nodes": nodes_out,
+        "edges": dict(graph.edges),
+        "split_subagents": list(graph.split_subagents),
+        "task_positions": task_pos_out,
+    }
+    return ai_config.set_config("task_model_graph", payload)
+
+
+def sync_saved_graph_slot(task_level: TaskLevel, primary_full_name: str) -> None:
+    """旧版槽位接口更新高低档主配置时，就地同步已存图谱对应锚点，避免下次保存回滚。"""
+    saved = get_task_model_graph()
+    if saved is None:
+        return
+    norm_p = normalize_provider_config_name(primary_full_name.strip()) if primary_full_name.strip() else ""
+    anchor_key = "chat" if task_level == "high" else "turn_router"
+    node_ids = {n.id for n in saved.nodes}
+    target_id = saved.edges[anchor_key] if anchor_key in saved.edges and saved.edges[anchor_key] in node_ids else ""
+    if not target_id:
+        target_id = next((n.id for n in saved.nodes if n.role == task_level), saved.nodes[0].id)
+    updated_nodes = tuple(
+        TaskGraphHubNode(
+            id=n.id,
+            primary=norm_p,
+            secondary="" if not norm_p or n.secondary == norm_p else n.secondary,
+            role=n.role,
+            pos=n.pos,
+        )
+        if n.id == target_id
+        else n
+        for n in saved.nodes
+    )
+    save_task_model_graph(
+        TaskModelGraph(
+            nodes=updated_nodes,
+            edges=dict(saved.edges),
+            split_subagents=saved.split_subagents,
+            task_positions=dict(saved.task_positions),
+        )
+    )
+
+
+def list_active_provider_config_refs(full_name: str) -> list[str]:
+    """列出当前引用了指定 provider++config_name 的槽位、图谱星核与任务覆盖。"""
+    target = normalize_provider_config_name(full_name)
+    if not target:
+        return []
+    refs: list[str] = []
+    slot_keys = (
+        ("high_level_provider_config_name", "高级任务默认配置"),
+        ("low_level_provider_config_name", "低级任务默认配置"),
+        ("high_level_2nd_provider_config_name", "高级任务备用配置"),
+        ("low_level_2nd_provider_config_name", "低级任务备用配置"),
+    )
+    for cfg_key, label in slot_keys:
+        val: object = ai_config.get_config(cfg_key).data
+        if isinstance(val, str) and normalize_provider_config_name(val) == target:
+            refs.append(label)
+    for tk, ov in get_task_model_overrides().items():
+        if ov.primary not in TASK_ROUTE_LEVEL_REFS and normalize_provider_config_name(ov.primary) == target:
+            refs.append(tk)
+        elif ov.secondary and normalize_provider_config_name(ov.secondary) == target:
+            refs.append(f"{tk}(备用)")
+    graph = get_task_model_graph()
+    if graph is not None:
+        for node in graph.nodes:
+            if node.primary == target or node.secondary == target:
+                tag = f"图谱节点:{node.id}"
+                if tag not in refs:
+                    refs.append(tag)
+    return refs
 
 
 def resolve_task_route(task_level: TaskLevel, task_kind: str | None = None) -> TaskModelRoute:
@@ -880,14 +1094,6 @@ def get_fast_model_by_full_name(full_name: str) -> AnyModel:
     ``model_effort="max"`` 让每次轻量调用吐出数千推理 Token。
     """
     return _build_model_by_full_name(full_name, fast=True)
-
-
-def get_fast_model_for_task(task_level: TaskLevel = "low", task_kind: str | None = None) -> AnyModel:
-    """按任务级别取无思考快模型（默认 low）。未配置时抛 ValueError。"""
-    full_name = get_config_name_for_task(task_level, task_kind)
-    if not full_name:
-        raise ValueError(t("log.ai.gscore_ai_config_model_file"))
-    return get_fast_model_by_full_name(full_name)
 
 
 def get_model_config_by_full_name(full_name: str) -> StringConfig:

@@ -27,7 +27,12 @@
 兼容入口），框架内置不含任何业务域专属节点。
 """
 
-from gsuid_core.ai_core.agent_node import TASK_BASICS_PACK, AgentNode, register_agent_node
+from gsuid_core.ai_core.agent_node import (
+    TASK_BASICS_PACK,
+    INTERNAL_DATA_PACK,
+    AgentNode,
+    register_agent_node,
+)
 from gsuid_core.ai_core.control.lines import MAX_RENDERS_PER_TASK
 
 _RESEARCH_PROMPT = """你负责外部检索与综合分析，交付可复核的 Markdown/JSON **事实包**。
@@ -898,7 +903,7 @@ def register_builtin_profiles() -> None:
                 "报表",
                 "整理数据",
             ],
-            tool_packs=[TASK_BASICS_PACK],
+            tool_packs=[INTERNAL_DATA_PACK],
             tool_names=[
                 "search_cognition",
                 "query_scheduled_task",

@@ -81,6 +81,7 @@ class SessionInbox:
     settle_started: float = 0.0
     settle_deadline: float = 0.0
     last_speaker: str = ""
+    in_flight_seqs: frozenset[int] = frozenset()
 
 
 def classify_wake(

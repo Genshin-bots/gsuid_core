@@ -17,7 +17,7 @@ from gsuid_core.logger import logger
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.path_safety import PathEscapeError, safe_join
 from gsuid_core.ai_core.rag.qmodels import Vector, Condition, SparseVector
-from gsuid_core.ai_core.meme.normalize import prepare_meme_image
+from gsuid_core.ai_core.meme.normalize import PreparedMeme, prepare_meme_image
 from gsuid_core.ai_core.meme.database_model import AiMemeRecord
 
 
@@ -98,8 +98,23 @@ class MemeLibrary:
         source_url: str = "",
     ) -> Optional[AiMemeRecord]:
         """缩到短边 156 后写入 inbox。已有同一张图时返回 None。"""
-        # 先缩放再算 id，磁盘上的字节和 meme_id 是同一张图。
         prepared = await to_thread(prepare_meme_image)(image_data, file_mime)
+        return await MemeLibrary.save_prepared(
+            prepared,
+            source_group=source_group,
+            source_user=source_user,
+            source_url=source_url,
+        )
+
+    @staticmethod
+    async def save_prepared(
+        prepared: PreparedMeme,
+        source_group: str = "",
+        source_user: str = "",
+        source_url: str = "",
+    ) -> Optional[AiMemeRecord]:
+        """写入已归一化的图到 inbox。已有同一张图时返回 None。"""
+        # 先缩放再算 id，磁盘上的字节和 meme_id 是同一张图。
         image_data = prepared.data
         file_mime = prepared.mime
         width = prepared.width
@@ -444,13 +459,10 @@ class MemeLibrary:
 
     @staticmethod
     async def mark_tag_failed(meme_id: str) -> None:
-        """标记打标失败。清空待定包，不改 assign_default_pack。"""
+        """标记打标失败。保留待定包，重新打标成功后仍归入；不改 assign_default_pack。"""
         await AiMemeRecord.update_record(
             meme_id,
-            {
-                "status": "pending_manual",
-                "pending_pack_id": "",
-            },
+            {"status": "pending_manual"},
         )
 
     @staticmethod

@@ -66,6 +66,8 @@ class AgentNode:
     # 其余按注册的静态族 / capability_domain 解析）；names 为显式白名单 ──
     tool_packs: List[str] = field(default_factory=list)
     tool_names: List[str] = field(default_factory=list)
+    # 供本节点使用但不从主人格池中独占剥离的只读/共享工具名（须为 tool_names 子集或工具名）
+    shared_tool_names: List[str] = field(default_factory=list)
     tool_query: str = ""
     # ── task-mode 行为 ──
     boundary_override: str = ""

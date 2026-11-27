@@ -16,8 +16,8 @@ from typing import Dict, List, Union, Literal, Mapping, Optional
 from gsuid_core.bot import Bot, _Bot
 from gsuid_core.models import Event, Message
 from gsuid_core.message_models import ButtonType
-from gsuid_core.ai_core.http_agent.types import AttachmentKind, AttachmentEncoding
 from gsuid_core.ai_core.http_agent.config import ATTACHMENT_RUN_MAX, ATTACHMENT_FRAME_MAX
+from gsuid_core.ai_core.http_agent.protocol import AttachmentKind, AttachmentEncoding
 
 
 class CaptureItem:

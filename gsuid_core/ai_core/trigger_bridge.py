@@ -7,6 +7,7 @@
 """
 
 import re
+import json
 import inspect
 import contextvars
 from copy import deepcopy
@@ -253,30 +254,16 @@ def _assemble_trigger_output(call_ctx: Dict[str, Any], extra: object = None) -> 
         _remember_mcp_image_ids(extra, image_ids)
         _append_mcp_av_notes(parts, audio_ids, video_ids, file_ids)
         return "\n".join(parts)
+    from gsuid_core.ai_core.control.lines import format_rm_resource_hint
+
     if image_ids:
-        id_list = ", ".join(image_ids)
-        parts.append(
-            f"[已生成 {len(image_ids)} 张图片，资源ID: {id_list}。"
-            "如需发送给用户，请调用 send_message_by_ai 传入 image_ids。]"
-        )
+        parts.append(format_rm_resource_hint("image", image_ids))
     if audio_ids:
-        id_list = ", ".join(audio_ids)
-        parts.append(
-            f"[已生成 {len(audio_ids)} 个音频，资源ID: {id_list}。"
-            "如需发送给用户，请调用 send_message_by_ai 传入 audio_id。]"
-        )
+        parts.append(format_rm_resource_hint("audio", audio_ids))
     if video_ids:
-        id_list = ", ".join(video_ids)
-        parts.append(
-            f"[已生成 {len(video_ids)} 个视频，资源ID: {id_list}。"
-            "如需发送给用户，请调用 send_message_by_ai 传入 video_id。]"
-        )
+        parts.append(format_rm_resource_hint("video", video_ids))
     if file_ids:
-        id_list = ", ".join(file_ids)
-        parts.append(
-            f"[已生成 {len(file_ids)} 个文件，资源ID: {id_list}。"
-            "如需发送给用户，请调用 send_message_by_ai 传入 file_ids。]"
-        )
+        parts.append(format_rm_resource_hint("file", file_ids))
     return "\n".join(parts)
 
 
@@ -319,6 +306,9 @@ def _register_trigger_as_ai_tool(
     trigger_type: str,
     covers: list[str] | None = None,
     aliases: list[str] | None = None,
+    timeout: Optional[float] = 60.0,
+    background: bool = False,
+    background_grace: float = 5.0,
 ) -> None:
     """
     将一个触发器函数包装为 AI 工具并注册到 _TOOL_REGISTRY["by_trigger"]。
@@ -372,12 +362,17 @@ def _register_trigger_as_ai_tool(
             return False, f"❌ 权限不足：该功能需要权限等级 {sv.pm}，当前用户权限等级为 {ev.user_pm}。"
         return True, ""
 
-    async def _ai_tool_wrapper(ctx: RunContext[ToolContext], text: str, image_id: str = "", audio_id: str = "") -> str:
+    async def _ai_tool_wrapper(
+        ctx: RunContext[ToolContext],
+        text: str = "",
+        image_id: str = "",
+        audio_id: str = "",
+    ) -> str:
         from gsuid_core.ai_core.register import execute_guarded_tool
 
-        async def _call() -> str:
-            real_bot = ctx.deps.bot
-            ev = ctx.deps.ev
+        async def _call_with_ctx(run_ctx: RunContext[ToolContext]) -> str:
+            real_bot = run_ctx.deps.bot
+            ev = run_ctx.deps.ev
             assert real_bot is not None, "触发器 AI 工具调用时 bot 不能为 None"
             assert ev is not None, "触发器 AI 工具调用时 ev 不能为 None"
 
@@ -402,7 +397,7 @@ def _register_trigger_as_ai_tool(
                     fake_ev.command = text
 
             try:
-                out = await run_trigger_via_mockbot(real_bot, fake_ev, func, ctx.deps.extra)
+                out = await run_trigger_via_mockbot(real_bot, fake_ev, func, run_ctx.deps.extra)
             except Exception as e:
                 logger.exception(t("log.ai.trigger_ai_primary_keyword_fail", primary_keyword=primary_keyword, e=e))
                 return f"❌ 执行命令 [{primary_keyword}] 时发生错误: {e}。请尝试其他方式或检查输入参数。"
@@ -410,14 +405,28 @@ def _register_trigger_as_ai_tool(
                 return out
             return f"命令 [{primary_keyword}] 已执行，但没有产出可发送的文本或图片。不要对用户说已经发出。"
 
+        async def _call() -> str:
+            return await _call_with_ctx(ctx)
+
+        norm_text = text.strip()
+        args_key = (
+            json.dumps((norm_text, image_id, audio_id), ensure_ascii=False)
+            if (norm_text or image_id or audio_id)
+            else ""
+        )
         res = await execute_guarded_tool(
             tool_func_name,
             ctx,
             _call,
+            call_with_ctx=_call_with_ctx,
             check_func=_check_sv_access,
-            timeout=60.0,
+            timeout=timeout,
             track_health=True,
             raw_passthrough=True,
+            background=background,
+            background_grace=background_grace,
+            background_label=primary_keyword,
+            background_args_key=args_key,
         )
         return res if isinstance(res, str) else str(res)
 
@@ -436,6 +445,7 @@ def _register_trigger_as_ai_tool(
         "return": str,
     }
 
+    text_default = "" if trigger_type == "fullmatch" else inspect.Parameter.empty
     new_params = [
         inspect.Parameter(
             "ctx",
@@ -446,6 +456,7 @@ def _register_trigger_as_ai_tool(
             "text",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             annotation=str,
+            default=text_default,
         ),
         inspect.Parameter(
             "image_id",
@@ -487,6 +498,7 @@ def _register_trigger_as_ai_tool(
         covers=merged_covers,
         aliases=aliases,
         check_func=_check_sv_access,
+        code_callable=not background,
         check_in_wrapper=True,
     )
 

@@ -133,6 +133,20 @@ async def qrcode_login(bot: Bot, ev: Event, user_id: str) -> str:
             stoken = tokens[0]["token"]
         mid = user_info["mid"]
         app_cookie = f"stuid={account_id};stoken={stoken};mid={mid}"
+        # HYP 扫码签发的 stoken 会被社区 sapi/signIn 拒签 -100，升级为米游社 App 作用域
+        bbs_sk = await mys_api.exchange_hyp_stoken_to_bbs_stoken(
+            stoken,
+            account_id,
+            app_cookie,
+            device_id=code_data["device_id"],
+        )
+        if isinstance(bbs_sk, dict):
+            stoken = bbs_sk["stoken"]
+            account_id = bbs_sk["uid"]
+            mid = bbs_sk["mid"]
+            app_cookie = bbs_sk["app_cookie"]
+        else:
+            logger.warning(t("log.cookie.bbs_stoken_upgrade_fail", retcode=bbs_sk))
         logger.info(t("log.cookie.stoken_ok"))
 
         ck = await mys_api.get_cookie_token_by_stoken(stoken, account_id, app_cookie)

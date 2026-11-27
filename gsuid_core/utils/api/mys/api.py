@@ -103,6 +103,14 @@ EXCHANGE_TOKEN = ApiEndpoint(
     cn=f"{PASSPORT_URL}/account/ma-cn-session/app/exchange",
     name="EXCHANGE_TOKEN",
 )
+CREATE_AUTH_TICKET_BY_GAME_BIZ = ApiEndpoint(
+    cn=f"{PASSPORT_URL}/account/ma-cn-verifier/app/createAuthTicketByGameBiz",
+    name="CREATE_AUTH_TICKET_BY_GAME_BIZ",
+)
+LOGIN_BY_AUTH_TICKET = ApiEndpoint(
+    cn=f"{PASSPORT_URL}/account/ma-cn-passport/app/loginByAuthTicket",
+    name="LOGIN_BY_AUTH_TICKET",
+)
 GET_ALL_TOKEN_BY_STOKEN = ApiEndpoint(
     os=f"{PUBLIC_API_OS}/account/ma-passport/token/getBySToken",
     name="GET_ALL_TOKEN_BY_STOKEN",
@@ -263,31 +271,35 @@ REG_TIME = ApiEndpoint(
 
 # --- BBS ---
 BBS_TASKS = ApiEndpoint(
-    cn=f"{BBS_URL}/apihub/sapi/getUserMissionsState",
+    cn=f"{NEW_BBS_URL}/apihub/sapi/getUserMissionsState",
     name="BBS_TASKS",
 )
+BBS_TASKS_WEB = ApiEndpoint(
+    cn=f"{NEW_BBS_URL}/apihub/wapi/getUserMissionsState",
+    name="BBS_TASKS_WEB",
+)
 BBS_SIGN = ApiEndpoint(
-    cn=f"{BBS_URL}/apihub/app/api/signIn",
+    cn=f"{NEW_BBS_URL}/apihub/app/api/signIn",
     name="BBS_SIGN",
 )
 BBS_LIST = ApiEndpoint(
-    cn=BBS_URL + "/post/api/getForumPostList?forum_id={}&is_good=false&is_hot=false&page_size=20&sort_type=1",
+    cn=NEW_BBS_URL + "/post/api/getForumPostList?forum_id={}&is_good=false&is_hot=false&page_size=20&sort_type=1",
     name="BBS_LIST",
 )
 BBS_COLLECTION = ApiEndpoint(
-    cn=BBS_URL + "/post/wapi/getPostFullInCollection",
+    cn=NEW_BBS_URL + "/post/wapi/getPostFullInCollection",
     name="BBS_COLLECTION",
 )
 BBS_DETAIL = ApiEndpoint(
-    cn=BBS_URL + "/post/api/getPostFull?post_id={}",
+    cn=NEW_BBS_URL + "/post/api/getPostFull?post_id={}",
     name="BBS_DETAIL",
 )
 BBS_SHARE = ApiEndpoint(
-    cn=BBS_URL + "/apihub/api/getShareConf?entity_id={}&entity_type=1",
+    cn=NEW_BBS_URL + "/apihub/api/getShareConf?entity_id={}&entity_type=1",
     name="BBS_SHARE",
 )
 BBS_LIKE = ApiEndpoint(
-    cn=f"{BBS_URL}/apihub/sapi/upvotePost",
+    cn=f"{NEW_BBS_URL}/apihub/sapi/upvotePost",
     name="BBS_LIKE",
 )
 

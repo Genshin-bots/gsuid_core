@@ -6,6 +6,7 @@ Plugin Icon API
 from fastapi import Request
 from fastapi.responses import FileResponse
 
+from gsuid_core.plugin_registry import plugin_registry
 from gsuid_core.utils.path_safety import PathEscapeError, safe_join, is_safe_filename
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.utils.plugins_update.api import CORE_PATH, PLUGINS_PATH
@@ -37,6 +38,17 @@ async def get_plugin_icon(request: Request, plugin_name: str):
                 media_type="image/png",
                 filename="gsuid_core_ICON.png",
             )
+
+    # 优先走元信息中心快照（先精确查含单下划线原名，再查去下划线名与 -dev 目录）
+    cached = plugin_registry.get(plugin_name, include_core=True, include_buildin=True)
+    if cached is None:
+        cached = plugin_registry.get(plugin_name.strip("_"), include_core=True, include_buildin=True)
+    if cached is not None and cached.icon_path is not None and cached.icon_path.is_file():
+        return FileResponse(
+            path=str(cached.icon_path),
+            media_type="image/png",
+            filename=f"{cached.name}_ICON.png",
+        )
 
     # 依次尝试多种名称匹配方式查找 ICON.png
     candidates = [

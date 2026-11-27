@@ -8,6 +8,7 @@ import hashlib
 import zipfile
 from pathlib import Path
 from datetime import datetime
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -20,21 +21,23 @@ def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def _mk_data(tmp_path: Path) -> tuple[Path, Path]:
+def _patch_roots(monkeypatch: pytest.MonkeyPatch, data: Path, backup: Path) -> None:
+    monkeypatch.setattr(backup_core, "gs_data_path", data)
+    monkeypatch.setattr(backup_core, "backup_path", backup)
+    monkeypatch.setattr(restore, "gs_data_path", data)
+    monkeypatch.setattr(restore, "backup_path", backup)
+
+
+@pytest.fixture
+def backup_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     data = tmp_path / "data"
     backup = data / "GsCore_BACKUP_PATH"
     (data / "keep" / "sub").mkdir(parents=True)
     backup.mkdir(parents=True)
     (data / "keep" / "a.txt").write_text("aaa", encoding="utf-8")
     (data / "keep" / "sub" / "b.txt").write_text("bbb", encoding="utf-8")
+    _patch_roots(monkeypatch, data, backup)
     return data, backup
-
-
-def _patch_roots(monkeypatch: pytest.MonkeyPatch, data: Path, backup: Path) -> None:
-    monkeypatch.setattr(backup_core, "gs_data_path", data)
-    monkeypatch.setattr(backup_core, "backup_path", backup)
-    monkeypatch.setattr(restore, "gs_data_path", data)
-    monkeypatch.setattr(restore, "backup_path", backup)
 
 
 def _make_zip(path: Path, files: dict[str, bytes], manifest: bool = True) -> Path:
@@ -50,9 +53,8 @@ def _make_zip(path: Path, files: dict[str, bytes], manifest: bool = True) -> Pat
     return path
 
 
-@pytest.mark.parametrize(
-    "name,ok",
-    [
+def test_validate_entry_name() -> None:
+    cases: tuple[tuple[str, bool], ...] = (
         ("a/b.txt", True),
         ("dir/sub/", True),
         ("中文目录/文件.txt", True),
@@ -67,15 +69,13 @@ def _make_zip(path: Path, files: dict[str, bytes], manifest: bool = True) -> Pat
         ("a /b.txt", False),
         ("a./b.txt", False),
         ("x" * 256 + "/a.txt", False),
-    ],
-)
-def test_validate_entry_name(name: str, ok: bool) -> None:
-    assert (restore.validate_entry_name(name) is None) is ok
+    )
+    for name, ok in cases:
+        assert (restore.validate_entry_name(name) is None) is ok, name
 
 
-def test_streaming_backup_writes_zip_with_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    data, backup = _mk_data(tmp_path)
-    _patch_roots(monkeypatch, data, backup)
+def test_streaming_backup_writes_zip_with_manifest(backup_env: tuple[Path, Path]) -> None:
+    data, backup = backup_env
     legacy = backup / f"T1-{_today()}"
     legacy.mkdir()
     (legacy / "junk.txt").write_text("x", encoding="utf-8")
@@ -129,9 +129,8 @@ def test_resolve_backup_src_foreign_paths(tmp_path: Path) -> None:
     assert backup_core.resolve_backup_src("a/../b", root) is None
 
 
-def test_restore_preview_conflicts_and_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    data, backup = _mk_data(tmp_path)
-    _patch_roots(monkeypatch, data, backup)
+def test_restore_preview_conflicts_and_digest(backup_env: tuple[Path, Path]) -> None:
+    data, backup = backup_env
     (data / "same.txt").write_bytes(b"1234")
     (data / "diff.txt").write_bytes(b"local-diff-size")
     zip_path = _make_zip(
@@ -154,9 +153,8 @@ def test_restore_preview_conflicts_and_digest(tmp_path: Path, monkeypatch: pytes
     assert preview["can_restore"] is True
 
 
-def test_apply_restore_skip_and_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    data, backup = _mk_data(tmp_path)
-    _patch_roots(monkeypatch, data, backup)
+def test_apply_restore_skip_and_overwrite(backup_env: tuple[Path, Path]) -> None:
+    data, backup = backup_env
     (data / "keep" / "a.txt").write_text("old-content", encoding="utf-8")
     zip_path = _make_zip(backup / "r.zip", {"keep/a.txt": b"new-content", "keep/new.txt": b"added"})
 
@@ -182,16 +180,15 @@ def test_apply_restore_skip_and_overwrite(tmp_path: Path, monkeypatch: pytest.Mo
         assert zf.read("keep/a.txt") == b"old-content"
 
 
-def test_pending_db_restore_and_startup_swap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    data, backup = _mk_data(tmp_path)
-    _patch_roots(monkeypatch, data, backup)
+def test_pending_db_restore_and_startup_swap(backup_env: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    data, backup = backup_env
     fake_db = data / "GsData.db"
     fake_db.write_bytes(b"live-db")
     monkeypatch.setattr(restore, "DB_PATH", fake_db)
     zip_path = _make_zip(backup / "r.zip", {"GsData.db": b"restored-db"})
 
-    assert restore.preview_restore(zip_path)["pending_db"] is True
     preview = restore.preview_restore(zip_path)
+    assert preview["pending_db"] is True
     result = restore.apply_restore(zip_path, "overwrite", preview["digest"])
     assert result["pending_db"] is True
     assert fake_db.read_bytes() == b"live-db"
@@ -207,13 +204,12 @@ def test_pending_db_restore_and_startup_swap(tmp_path: Path, monkeypatch: pytest
     assert (archives[0] / "GsData.db").read_bytes() == b"live-db"
 
 
-async def _agen(data: bytes):
+async def _agen(data: bytes) -> AsyncIterator[bytes]:
     yield data
 
 
-def test_upload_chunk_offset_and_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _data, backup = _mk_data(tmp_path)
-    monkeypatch.setattr(restore, "backup_path", backup)
+def test_upload_chunk_offset_and_retry(backup_env: tuple[Path, Path]) -> None:
+    _data, backup = backup_env
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -245,9 +241,11 @@ def test_upload_chunk_offset_and_retry(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_backup_dir_unresolved_data_root_and_restore_edge_cases(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    backup_env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    data, backup = _mk_data(tmp_path)
+    data, backup = backup_env
     # 模拟 gs_data_path 未 resolve（含 .. 或符号路径）时打包目录不能漏掉文件
     unresolved_data = tmp_path / "sub" / ".." / "data"
     _patch_roots(monkeypatch, unresolved_data, backup)

@@ -201,6 +201,8 @@ async def _get_group_summary_for_heartbeat(group_id: str) -> str:
 
 def _last_user_seen(history: List[MessageRecord]) -> dict[str, tuple[float, str]]:
     """user_id → (最后发言 ts, 显示名)。窗口里没出现过的人不收录。"""
+    from gsuid_core.ai_core.utils import sanitize_display_name
+
     last: dict[str, tuple[float, str]] = {}
     for record in history:
         if record.role != "user":
@@ -209,7 +211,7 @@ def _last_user_seen(history: List[MessageRecord]) -> dict[str, tuple[float, str]
         if not uid:
             continue
         ts = float(record.timestamp)
-        name = str(record.user_name) if record.user_name else uid
+        name = sanitize_display_name(record.user_name, uid) or uid
         if uid not in last or ts >= last[uid][0]:
             last[uid] = (ts, name)
     return last
@@ -567,19 +569,3 @@ async def run_heartbeat(
         return None
     logger.info(t("log.ai.heartbeat_message_proactive", message=repr(message)))
     return mood, message, generator_log_files
-
-
-def _find_recent_ai_turn_index(history: List[MessageRecord]) -> int:
-    for idx in range(len(history) - 1, -1, -1):
-        if history[idx].role == "assistant":
-            return idx
-    return -1
-
-
-def _meta_text(rec: MessageRecord, key: str) -> str:
-    if key not in rec.metadata:
-        return ""
-    raw = rec.metadata[key]
-    if isinstance(raw, str):
-        return raw
-    return ""

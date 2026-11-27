@@ -25,10 +25,17 @@ Git 版本管理 API 提供对所有插件（含 core 本体）的 git commit �
 获取所有插件（含 core 本体）的 git 状态信息，包括当前 commit、分支等。这是前端页面的**主数据接口**，页面加载时应首先调用此接口。
 
 ```
-GET /api/git-update/status
+GET /api/git-update/status?fresh=false
 ```
 
-**请求参数**：无
+**查询参数**：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `fresh` | `boolean` | `false` | 是否强制现扫磁盘与 commit（默认复用元信息中心内存快照） |
+
+> 仅返回 `gsuid_core` 本体与具备 `origin` 远端的有效 Git 插件；非 Git 插件与无远端本地仓自动排除。
+> 每条记录额外附带向后兼容字段：`remote_url`、`mirror`、`source_kind`、`upstream_host`、`upstream_url`。
 
 **响应**：
 ```json

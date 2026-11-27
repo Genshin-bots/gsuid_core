@@ -38,14 +38,17 @@
 
 **端点**: `GET /api/ai/session_logs`
 
-**描述**: 获取 AI Session 日志列表，**自动合并内存活跃会话与磁盘持久化文件，按 session_uuid 去重**。每个条目包含 `source` 字段标识来源（`"memory"` 或 `"disk"`），`is_active` 字段标识是否仍在运行。结果按创建时间倒序排列。
+**描述**: 获取 AI Session 日志列表，**自动合并内存活跃会话与磁盘持久化文件，按 session_uuid 去重**。每个条目包含 `source` 字段标识来源（`"memory"` 或 `"disk"`），`is_active` 字段标识是否仍在运行。结果按最近更新时间（`updated_at`，缺失时回退 `created_at`）倒序排列。
 
 **请求参数**（Query）:
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | session_id | string | 否 | 按 session_id 精确筛选 |
-| create_by | string | 否 | 按创建来源筛选（Chat/SubAgent/BuildPersona/LLM） |
+| search | string | 否 | 模糊搜索关键词（大小写不敏感，跨 session_id / file_name / persona_name / create_by / task_kind 子串匹配） |
+| create_by | string | 否 | 按创建来源筛选（Chat/SubAgent/BuildPersona/LLM；`Unknown` 匹配空来源） |
+| task_kind | string | 否 | 按任务类型筛选（对齐 `/api/ai_task_models`；`capability_agent` 匹配全部能力代理，`capability_agent:<node_id>` 精确匹配单代理） |
+| unmapped_only | bool | 否 | 仅保留未归入任何 `task_kind` 的记录（配合 `create_by` 使用，与 `categories.unmapped` 计数严格一致），默认 `false` |
 | persona_name | string | 否 | 按 Persona 名称筛选 |
 | is_active | bool | 否 | 按是否活跃筛选（true=仅活跃，false=仅已结束） |
 | date_from | string | 否 | 起始日期，格式 YYYY-MM-DD |
@@ -65,6 +68,7 @@
 | segments | array | 链内各分段的有序轻量元数据（见下表），供前端按序懒加载/拼接各分段详情 |
 | persona_name | string | Persona 名称 |
 | create_by | string | 创建来源（Chat/SubAgent/BuildPersona/LLM），取最新分段 |
+| task_kind | string \| null | 任务类型 ID（如 `chat`、`memory_algebra`、`capability_agent:render_agent`）；旧日志缺省时按注册表与前缀推断 |
 | is_subagent | bool | 是否为子 Agent |
 | created_at | float | 链创建时间 = 各分段最早（Unix 时间戳） |
 | created_at_str | string | 创建时间格式化字符串 |
@@ -565,7 +569,25 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
             "heartbeat": 12,
             "proactive": 4
         },
-        "total": 4
+        "total": 4,
+        "task_kinds": {
+            "chat": { "count": 100, "active_count": 2, "subagent_count": 0 },
+            "capability_agent:render_agent": { "count": 6, "active_count": 0, "subagent_count": 6 }
+        },
+        "unmapped": [
+            {
+                "create_by": "Proactive_heartbeat",
+                "label": "主动消息(heartbeat)",
+                "description": "主动消息发送器触发的会话",
+                "group": "proactive",
+                "count": 4,
+                "active_count": 0,
+                "subagent_count": 0
+            }
+        ],
+        "personas": [
+            { "persona_name": "测试人格A", "count": 96, "active_count": 2 }
+        ]
     }
 }
 ```
@@ -577,6 +599,9 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 | categories | array | 分类列表，按 `count` 倒序排列（见下表） |
 | groups | object | 分组维度的会话数量聚合 `{group: count}` |
 | total | int | 分类种类数（即 categories 长度） |
+| task_kinds | object | 按 `task_kind` 聚合的实时计数 `{task_kind: {count, active_count, subagent_count}}`，可直接与 `/api/ai_task_models` 合并渲染分层筛选 |
+| unmapped | array | 未归入任何 `task_kind` 的来源列表（结构同 `categories`），前端配合 `create_by` + `unmapped_only=true` 筛选 |
+| personas | array | 全量日志中出现的人格列表（不受列表分页限制），每项含 `{persona_name, count, active_count}`，按 `count` 倒序 |
 
 **categories 条目字段说明**：
 
@@ -712,7 +737,7 @@ GET /api/ai/session_logs/ws-onebot:onebot:bot_001:group:123456/abc12345/detail
 2. **收集内存活跃会话的当前分段**：遍历 `AISessionRegistry._ai_sessions`，从每个 `GsCoreAIAgent._session_logger` 提取当前分段摘要
 3. **按 session_uuid 合并单分段**：同一 session_uuid 在内存和磁盘中都存在时，**优先使用内存版本**（数据更新）；磁盘分段做 `is_active` 修正（`ended_at` 为 null 但不在内存 registry 中的视为已结束）
 4. **按 chain_id 归并为链卡片**：把同一 `chain_id` 的多个分段聚合成一张卡片（条数/类型计数求和、时长取整段、`linked_agents` 跨分段去重合并、身份取最新分段），并附有序 `segments[]`
-5. **按 created_at 倒序排列**
+5. **按 `updated_at`（最近更新时间，缺失时回退 `created_at`）倒序排列**
 
 > 单分段会话（`segment_count === 1`，含全部旧格式文件）归并后行为与旧版一致——每张卡片仍对应一个 `session_uuid`。
 

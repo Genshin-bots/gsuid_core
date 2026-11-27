@@ -76,10 +76,6 @@ class OpenAIChatVideoFilePart(TypedDict):
     file: OpenAIChatVideoFileBody
 
 
-class OpenAIChatVideoUrlBody(TypedDict, total=False):
-    url: str
-
-
 class OpenAIChatVideoUrlPart(TypedDict, total=False):
     type: Literal["video_url"]
     video_url: dict[str, JsonValue]

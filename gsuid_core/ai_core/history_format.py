@@ -157,13 +157,6 @@ def _format_timestamp(ts: float, ref_ts: Optional[float] = None) -> str:
         return f"{msg_dt.year}年{msg_dt.month}月{msg_dt.day}日 {time_str}"
 
 
-# 用户连发消息合并窗口（秒）：窗口内同用户的相邻消息在历史中合并为一个发言块。
-def _merge_window() -> float:
-    from gsuid_core.ai_core.const import HISTORY_MERGE_WINDOW_S
-
-    return HISTORY_MERGE_WINDOW_S
-
-
 # 出站产物句柄。不含 to_/sa_：那些是检索落盘，不是对这个人发出去的内容。
 _THREAD_HANDLE_RE = re.compile(r"\b(?:res|img|aud|vid|fil)_[0-9a-fA-F]{6,}\b|\bdlg_[0-9a-fA-F-]{8,}\b")
 SPEAKER_THREAD_LIMIT = 14

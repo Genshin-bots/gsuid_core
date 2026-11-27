@@ -7,6 +7,7 @@ AI Session Logs APIs
 """
 
 import os
+import re
 import json
 import time
 import threading
@@ -40,10 +41,18 @@ from gsuid_core.ai_core.models import (
     SessionUsageModelUnit,
 )
 from gsuid_core.ai_core.resource import AI_SESSION_LOGS_PATH, AI_SUBAGENT_LOGS_PATH
+from gsuid_core.ai_core.agent_node import list_nodes
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.session_logger import extract_session_usage
 from gsuid_core.ai_core.session_registry import get_ai_session_registry
+from gsuid_core.ai_core.configs.task_kinds import (
+    TASK_CAPABILITY_AGENT,
+    CAPABILITY_AGENT_TASK_PREFIX,
+    AITaskKind,
+    list_ai_task_kinds,
+    capability_agent_task_kind,
+)
 
 from ._api_tags import AI_SESSION_LOGS
 
@@ -94,6 +103,7 @@ class SessionLogSummary(TypedDict):
     session_uuid: Optional[str]
     persona_name: Optional[str]
     create_by: Optional[str]
+    task_kind: NotRequired[Optional[str]]
     is_subagent: bool
     # 逻辑会话链身份（同链多分段共享 chain_id）；旧格式文件缺失时以 session_uuid 兜底。
     chain_id: str
@@ -126,6 +136,120 @@ class SessionLogDetail(SessionLogSummary, total=False):
     """Session 日志详情（含完整 entries）"""
 
     entries: List[SessionLogEntry]
+
+
+class TaskKindCountOut(TypedDict):
+    count: int
+    active_count: int
+    subagent_count: int
+
+
+class PersonaCountOut(TypedDict):
+    persona_name: str
+    count: int
+    active_count: int
+
+
+class CategoryEntryOut(TypedDict):
+    create_by: str
+    label: str
+    description: str
+    group: str
+    count: int
+    active_count: int
+    subagent_count: int
+
+
+class CategoriesDataOut(TypedDict):
+    categories: List[CategoryEntryOut]
+    groups: Dict[str, int]
+    total: int
+    task_kinds: Dict[str, TaskKindCountOut]
+    unmapped: List[CategoryEntryOut]
+    personas: List[PersonaCountOut]
+
+
+class _TaskKindContext(NamedTuple):
+    """当前任务类型与能力代理注册表的只读快照及缓存签名。"""
+
+    stats_key_map: Dict[str, str]
+    kind_by_id: Dict[str, AITaskKind]
+    known_node_ids: Tuple[str, ...]
+    signature: Tuple[Tuple[Tuple[str, str], ...], Tuple[str, ...]]
+
+
+# 剥离 capagent_<node_id>_<suffix> 尾部运行后缀（仅未命中已注册节点时兜底历史日志）
+_CAPAGENT_SUFFIX_RE = re.compile(r"_(?:adhoc|kanban(?:_[0-9a-f]+(?:_[0-9a-f]+)?)?|transient_[^_]+|present_[^_]+)$")
+
+
+def _snapshot_task_kind_ctx() -> _TaskKindContext:
+    """一次性构建 stats_key 映射、能力代理节点列表及注册表签名（微秒级纯内存操作）。"""
+    key_to_kind: Dict[str, str] = {}
+    kind_by_id: Dict[str, AITaskKind] = {}
+    for kind in list_ai_task_kinds():
+        kind_by_id[kind.id] = kind
+        for sk in kind.stats_keys:
+            low = sk.strip().lower()
+            if low and low not in key_to_kind:
+                key_to_kind[low] = kind.id
+        id_low = kind.id.lower()
+        if id_low not in key_to_kind:
+            key_to_kind[id_low] = kind.id
+    known_ids = tuple(
+        sorted({n.node_id for n in list_nodes(include_persona=False) if n.node_id}, key=len, reverse=True)
+    )
+    sig = (tuple(sorted(key_to_kind.items())), known_ids)
+    return _TaskKindContext(key_to_kind, kind_by_id, known_ids, sig)
+
+
+def _extract_capagent_node_id(session_id: str, known_node_ids: Sequence[str]) -> str:
+    """从 capagent_<node_id>_<suffix> 提取 node_id；优先最长前缀匹配已注册节点。"""
+    if not session_id.startswith("capagent_"):
+        return ""
+    rest = session_id[len("capagent_") :]
+    for nid in known_node_ids:
+        if rest == nid or rest.startswith(f"{nid}_"):
+            return nid
+    return _CAPAGENT_SUFFIX_RE.sub("", rest).strip()
+
+
+def _infer_task_kind(
+    create_by: Optional[str],
+    session_id: str,
+    tk_ctx: Optional[_TaskKindContext] = None,
+) -> Optional[str]:
+    """根据 create_by 与 session_id 推断 task_kind（用于旧日志或未显式写入 task_kind 的会话）。"""
+    ctx = tk_ctx if tk_ctx is not None else _snapshot_task_kind_ctx()
+    if session_id.startswith("capagent_"):
+        node_id = _extract_capagent_node_id(session_id, ctx.known_node_ids)
+        return capability_agent_task_kind(node_id) if node_id else TASK_CAPABILITY_AGENT
+    if create_by == "CapabilityAgent":
+        return TASK_CAPABILITY_AGENT
+    if not create_by:
+        return None
+    cb_low = create_by.strip().lower()
+    if not cb_low:
+        return None
+    return ctx.stats_key_map[cb_low] if cb_low in ctx.stats_key_map else None
+
+
+def _matches_task_kind_filter(item_tk: Optional[str], wanted: str) -> bool:
+    """判断单条日志是否命中 task_kind 筛选；父项 capability_agent 涵盖全部子代理。"""
+    if not item_tk:
+        return False
+    if wanted == TASK_CAPABILITY_AGENT:
+        return item_tk == TASK_CAPABILITY_AGENT or item_tk.startswith(CAPABILITY_AGENT_TASK_PREFIX)
+    return item_tk == wanted
+
+
+def _detail_task_kind(resp: Mapping[str, object]) -> Optional[str]:
+    """解析详情字典的 task_kind，旧文件缺省时按 create_by/session_id 补齐。"""
+    existing = resp["task_kind"] if "task_kind" in resp else None
+    if isinstance(existing, str) and existing.strip():
+        return existing.strip()
+    cb = resp["create_by"] if "create_by" in resp and isinstance(resp["create_by"], str) else None
+    sid = resp["session_id"] if "session_id" in resp and isinstance(resp["session_id"], str) else ""
+    return _infer_task_kind(cb, sid)
 
 
 # --- 辅助函数 ---
@@ -223,6 +347,7 @@ def _build_summary_from_memory(
         "session_uuid": logger_obj.session_uuid,
         "persona_name": logger_obj.persona_name,
         "create_by": logger_obj.create_by,
+        "task_kind": logger_obj.task_kind,
         "is_subagent": logger_obj.is_subagent,
         "chain_id": logger_obj.chain_id or logger_obj.session_uuid,
         "segment_index": logger_obj.segment_index,
@@ -483,17 +608,31 @@ def _base_summary_from_data(
     """从已解析的日志文件数据（头部或全文）构建基础摘要；``usage`` 缺省时该键不出现。"""
     created_at: float = data.get("created_at", 0)
     ended_at: Optional[float] = data.get("ended_at")
-    updated_at: float = data.get("updated_at", 0)
+    raw_updated = data.get("updated_at")
+    # 旧格式/异常日志缺少 updated_at 时回退 created_at，避免排序沉底
+    updated_at: float = (
+        float(raw_updated)
+        if isinstance(raw_updated, (int, float)) and not isinstance(raw_updated, bool) and raw_updated > 0
+        else created_at
+    )
 
     duration: Optional[float] = (ended_at - created_at) if (ended_at and created_at) else None
     linked_agents: List[LinkedAgentRecord] = data.get("linked_agents", [])
 
     session_uuid_val: Optional[str] = data.get("session_uuid")
+    session_id_val: str = data.get("session_id", "")
+    create_by_val: Optional[str] = data.get("create_by")
+    # sidecar 缓存仅存文件原生 task_kind，避免固化推断结果；推断留在链聚合层随注册表生效
+    raw_task_kind = data["task_kind"] if "task_kind" in data else None
+    task_kind_val: Optional[str] = (
+        raw_task_kind.strip() if isinstance(raw_task_kind, str) and raw_task_kind.strip() else None
+    )
     summary: SessionLogSummary = {
-        "session_id": data.get("session_id", ""),
+        "session_id": session_id_val,
         "session_uuid": session_uuid_val,
         "persona_name": data.get("persona_name"),
-        "create_by": data.get("create_by"),
+        "create_by": create_by_val,
+        "task_kind": task_kind_val,
         "is_subagent": data.get("is_subagent", False),
         # 旧格式文件缺 chain_id → 以 session_uuid 兜底为独立一条链（见 session_logger 模块 docstring）
         "chain_id": data.get("chain_id") or session_uuid_val or "",
@@ -771,6 +910,7 @@ def _find_log_by_file_stem(file_stem: str) -> Optional[Dict[str, Any]]:
                 continue
             # 在原始文件结构上补充响应字段（source / is_active / 已 enrich 的 linked_agents）
             resp: Dict[str, Any] = dict(file_data)
+            resp["task_kind"] = _detail_task_kind(resp)
             if "entries" in resp and isinstance(resp["entries"], list):
                 resp["entries"] = _format_entries_for_display(resp["entries"])
             resp["source"] = "disk"
@@ -846,7 +986,22 @@ def _merge_usage_stats(usages: Sequence[SessionUsageStats]) -> SessionUsageStats
     return merged
 
 
-def _aggregate_chain(chain_id: str, segs: List[SessionLogSummary]) -> SessionLogSummary:
+def _resolve_chain_task_kind(segs: Sequence[SessionLogSummary], tk_ctx: _TaskKindContext) -> Optional[str]:
+    """倒序取链内最近一段的原生 task_kind，均缺失时按最新段 create_by/session_id 推断。"""
+    for seg in reversed(segs):
+        if "task_kind" in seg:
+            raw = seg["task_kind"]
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+    latest = segs[-1]
+    return _infer_task_kind(latest["create_by"], latest["session_id"], tk_ctx)
+
+
+def _aggregate_chain(
+    chain_id: str,
+    segs: List[SessionLogSummary],
+    tk_ctx: Optional[_TaskKindContext] = None,
+) -> SessionLogSummary:
     """把同一 chain_id 的多个分段摘要聚合成一张「逻辑会话链卡片」。
 
     ``segs`` 已按 (segment_index, created_at) 升序。聚合口径：
@@ -860,7 +1015,7 @@ def _aggregate_chain(chain_id: str, segs: List[SessionLogSummary]) -> SessionLog
     latest = segs[-1]
 
     created_at = min(s["created_at"] for s in segs)
-    updated_at = max(s["updated_at"] for s in segs)
+    updated_at = max((s["updated_at"] or s["created_at"]) for s in segs)
     is_active = latest["is_active"]
     ended_at: Optional[float] = None if is_active else latest["ended_at"]
 
@@ -896,11 +1051,13 @@ def _aggregate_chain(chain_id: str, segs: List[SessionLogSummary]) -> SessionLog
             break
         usages.append(su)
 
+    ctx = tk_ctx if tk_ctx is not None else _snapshot_task_kind_ctx()
     card: SessionLogSummary = {
         "session_id": latest["session_id"],
         "session_uuid": latest["session_uuid"],
         "persona_name": latest["persona_name"],
         "create_by": latest["create_by"],
+        "task_kind": _resolve_chain_task_kind(segs, ctx),
         "is_subagent": latest["is_subagent"],
         "chain_id": chain_id,
         "segment_index": latest["segment_index"],
@@ -926,8 +1083,12 @@ def _aggregate_chain(chain_id: str, segs: List[SessionLogSummary]) -> SessionLog
     return card
 
 
-def _group_segments_into_chains(segments: List[SessionLogSummary]) -> List[SessionLogSummary]:
+def _group_segments_into_chains(
+    segments: List[SessionLogSummary],
+    tk_ctx: Optional[_TaskKindContext] = None,
+) -> List[SessionLogSummary]:
     """把一组「单分段」摘要按 chain_id 分组、聚合成链卡片列表。"""
+    ctx = tk_ctx if tk_ctx is not None else _snapshot_task_kind_ctx()
     by_chain: Dict[str, List[SessionLogSummary]] = {}
     for s in segments:
         cid = s.get("chain_id") or s.get("session_uuid") or s.get("file_name") or ""
@@ -935,7 +1096,7 @@ def _group_segments_into_chains(segments: List[SessionLogSummary]) -> List[Sessi
     cards: List[SessionLogSummary] = []
     for cid, segs in by_chain.items():
         segs.sort(key=lambda x: (x["segment_index"], x["created_at"]))
-        cards.append(_aggregate_chain(cid, segs))
+        cards.append(_aggregate_chain(cid, segs, ctx))
     return cards
 
 
@@ -959,6 +1120,7 @@ def _memory_signature(sessions: Dict[str, "GsCoreAIAgent"]) -> Tuple[Tuple[str, 
 def _build_unified_list(
     disk_entries: Optional[List[Tuple[Path, os.stat_result]]] = None,
     sessions: Optional[Dict[str, "GsCoreAIAgent"]] = None,
+    tk_ctx: Optional[_TaskKindContext] = None,
 ) -> List[SessionLogSummary]:
     """
     构建统一的**逻辑会话链**列表：合并内存活跃会话 + 磁盘持久化分段，按 chain_id 归并。
@@ -1019,50 +1181,82 @@ def _build_unified_list(
     for key, summary in memory_segs.items():
         seg_by_uuid[key] = summary
 
-    # 4. 按 chain_id 归并为链卡片，按 created_at 倒序
-    chains = _group_segments_into_chains(list(seg_by_uuid.values()))
-    return sorted(chains, key=lambda x: x["created_at"], reverse=True)
+    # 4. 按 chain_id 归并为链卡片，按最近更新时间倒序（缺失时回退创建时间）
+    chains = _group_segments_into_chains(list(seg_by_uuid.values()), tk_ctx)
+    return sorted(
+        chains,
+        key=lambda x: (x["updated_at"] or x["created_at"], x["created_at"]),
+        reverse=True,
+    )
 
 
 class _UnifiedCache(NamedTuple):
     disk_sig: Tuple[Tuple[str, int, int], ...]
     mem_sig: Tuple[Tuple[str, int, float], ...]
+    reg_sig: Tuple[Tuple[Tuple[str, str], ...], Tuple[str, ...]]
     chains: List[SessionLogSummary]
 
 
-# 目录和活跃会话都没变就复用上次的链列表，不再逐个打开日志。
+class _CategoriesCache(NamedTuple):
+    disk_sig: Tuple[Tuple[str, int, int], ...]
+    mem_sig: Tuple[Tuple[str, int, float], ...]
+    reg_sig: Tuple[Tuple[Tuple[str, str], ...], Tuple[str, ...]]
+    data: CategoriesDataOut
+
+
+# 目录、活跃会话与任务注册表都没变就复用上次的链列表与分类统计，不再逐个打开日志或重扫。
 _unified_cache: Optional[_UnifiedCache] = None
-# 仅用于"同一时刻多线程并发构建"的去重，避免三个接口各跑一遍全量构建。
 _UNIFIED_BUILD_LOCK = threading.Lock()
+_categories_cache: Optional[_CategoriesCache] = None
+_CATEGORIES_BUILD_LOCK = threading.Lock()
 
 
-def _build_unified_list_cached() -> List[SessionLogSummary]:
-    """供 list / overview / categories 共用的统一列表。
-
-    先比目录签名和活跃会话签名。都没变就返回上次的链卡片，不再逐个打开日志。
-    未命中时加锁构建，并发请求复用刚建好的结果。返回结果只读共享。
-    """
+def _get_unified_snapshot() -> Tuple[
+    Tuple[Tuple[str, int, int], ...],
+    Tuple[Tuple[str, int, float], ...],
+    _TaskKindContext,
+    List[SessionLogSummary],
+]:
+    """返回 (disk_sig, mem_sig, tk_ctx, chains)，供 list / overview / categories 复用同一次目录扫描。"""
     global _unified_cache
     disk_entries = _iter_log_files_with_stat()
     disk_sig = _file_signature(disk_entries)
     sessions = get_ai_session_registry().get_all_ai_sessions()
     mem_sig = _memory_signature(sessions)
+    tk_ctx = _snapshot_task_kind_ctx()
     cache = _unified_cache
-    if cache is not None and cache.disk_sig == disk_sig and cache.mem_sig == mem_sig:
-        return cache.chains
+    if (
+        cache is not None
+        and cache.disk_sig == disk_sig
+        and cache.mem_sig == mem_sig
+        and cache.reg_sig == tk_ctx.signature
+    ):
+        return disk_sig, mem_sig, tk_ctx, cache.chains
     with _UNIFIED_BUILD_LOCK:
         cache = _unified_cache
-        if cache is not None and cache.disk_sig == disk_sig and cache.mem_sig == mem_sig:
-            return cache.chains
-        results = _build_unified_list(disk_entries, sessions)
-        _unified_cache = _UnifiedCache(disk_sig, mem_sig, results)
-        return results
+        if (
+            cache is not None
+            and cache.disk_sig == disk_sig
+            and cache.mem_sig == mem_sig
+            and cache.reg_sig == tk_ctx.signature
+        ):
+            return disk_sig, mem_sig, tk_ctx, cache.chains
+        results = _build_unified_list(disk_entries, sessions, tk_ctx)
+        _unified_cache = _UnifiedCache(disk_sig, mem_sig, tk_ctx.signature, results)
+        return disk_sig, mem_sig, tk_ctx, results
+
+
+def _build_unified_list_cached() -> List[SessionLogSummary]:
+    """供 list / overview / usage 共用的统一列表，返回结果只读共享。"""
+    return _get_unified_snapshot()[3]
 
 
 def _apply_filters(
     items: List[SessionLogSummary],
     session_id: Optional[str] = None,
     create_by: Optional[str] = None,
+    task_kind: Optional[str] = None,
+    unmapped_only: bool = False,
     persona_name: Optional[str] = None,
     is_active: Optional[bool] = None,
     date_from: Optional[str] = None,
@@ -1071,28 +1265,55 @@ def _apply_filters(
 ) -> List[SessionLogSummary]:
     """对统一列表应用筛选条件
 
-    ``session_id`` 为精确匹配（供程序化调用）；``search`` 为大小写不敏感的模糊搜索，
-    跨 session_id / file_name / persona_name 做子串匹配（前端搜索框用它，能搜到诸如
-    ``capagent_..._developer_...`` 这类以文件名体现的“标题”）。
+    ``session_id`` 为精确匹配；``task_kind`` 支持按任务类型筛选（``capability_agent`` 涵盖全部子代理）；
+    ``unmapped_only`` 仅保留未归入任何 ``task_kind`` 的记录；``search`` 跨可读字段子串匹配。
     """
     results: List[SessionLogSummary] = []
 
     search_lc: Optional[str] = search.strip().lower() if search and search.strip() else None
+    wanted_tk: Optional[str] = task_kind.strip() if task_kind and task_kind.strip() else None
+    wanted_persona: Optional[str] = persona_name.strip() if persona_name and persona_name.strip() else None
+    # 链卡片已由 _aggregate_chain 预解 task_kind；仅外部直接传入缺键摘要时按需建上下文兜底
+    fallback_ctx: Optional[_TaskKindContext] = None
 
     for item in items:
         if session_id and item["session_id"] != session_id:
             continue
-        if create_by and item["create_by"] != create_by:
+        if create_by:
+            if create_by == "Unknown":
+                if item["create_by"] and item["create_by"] != "Unknown":
+                    continue
+            elif item["create_by"] != create_by:
+                continue
+        item_tk: Optional[str] = None
+        if wanted_tk or unmapped_only or search_lc:
+            if "task_kind" in item:
+                raw_tk = item["task_kind"]
+                item_tk = raw_tk if isinstance(raw_tk, str) and raw_tk else None
+            else:
+                if fallback_ctx is None:
+                    fallback_ctx = _snapshot_task_kind_ctx()
+                item_tk = _infer_task_kind(item["create_by"], item["session_id"], fallback_ctx)
+        if unmapped_only and item_tk is not None:
             continue
-        if persona_name and item["persona_name"] != persona_name:
+        if wanted_tk and not _matches_task_kind_filter(item_tk, wanted_tk):
+            continue
+        if wanted_persona and (item["persona_name"] or "").strip() != wanted_persona:
             continue
         if is_active is not None and item["is_active"] != is_active:
             continue
 
         if search_lc:
-            # 跨可读字段子串匹配：session_id / file_name（子 Agent 日志的标题来源）/
-            # persona_name。用 \n 拼接，避免含空格的关键词跨字段边界误命中。
-            haystack = "\n".join((item["session_id"], item["file_name"] or "", item["persona_name"] or "")).lower()
+            # 跨可读字段子串匹配：用 \n 拼接，避免含空格关键词跨字段边界误命中
+            haystack = "\n".join(
+                (
+                    item["session_id"],
+                    item["file_name"] or "",
+                    item["persona_name"] or "",
+                    item["create_by"] or "",
+                    item_tk or "",
+                )
+            ).lower()
             if search_lc not in haystack:
                 continue
 
@@ -1159,6 +1380,7 @@ def _find_log_by_session_id_and_uuid(
                 "session_uuid": mem_uuid,
                 "persona_name": logger_obj.persona_name,
                 "create_by": logger_obj.create_by,
+                "task_kind": logger_obj.task_kind or _infer_task_kind(logger_obj.create_by, session_id),
                 "is_subagent": logger_obj.is_subagent,
                 "chain_id": logger_obj.chain_id or mem_uuid,
                 "segment_index": logger_obj.segment_index,
@@ -1186,6 +1408,7 @@ def _find_log_by_session_id_and_uuid(
 
     # 在原始文件结构上补充响应字段（source / is_active / 已 enrich 的 linked_agents）
     resp: Dict[str, Any] = dict(best_file)
+    resp["task_kind"] = _detail_task_kind(resp)
     if "entries" in resp and isinstance(resp["entries"], list):
         resp["entries"] = _format_entries_for_display(resp["entries"])
     resp["source"] = "disk"
@@ -1240,12 +1463,14 @@ _CREATE_BY_PREFIX_CATALOG: Dict[str, Tuple[str, str, str]] = {
 }
 
 
-def _categorize_create_by(create_by: Optional[str]) -> Dict[str, str]:
+def _categorize_create_by(
+    create_by: Optional[str],
+    tk_ctx: Optional[_TaskKindContext] = None,
+) -> Dict[str, str]:
     """把原始 create_by 归一化为带展示名/说明/分组的分类元数据。"""
     cb = create_by or "Unknown"
-    meta = _CREATE_BY_CATALOG.get(cb)
-    if meta is not None:
-        label, desc, group = meta
+    if cb in _CREATE_BY_CATALOG:
+        label, desc, group = _CREATE_BY_CATALOG[cb]
         return {"create_by": cb, "label": label, "description": desc, "group": group}
 
     for prefix, (label, desc, group) in _CREATE_BY_PREFIX_CATALOG.items():
@@ -1254,10 +1479,50 @@ def _categorize_create_by(create_by: Optional[str]) -> Dict[str, str]:
             display = f"{label}({suffix})" if suffix else label
             return {"create_by": cb, "label": display, "description": desc, "group": group}
 
+    # 未在静态字典收录时，回查 task_kinds 注册表（同步覆盖新增核心/插件来源）
+    ctx = tk_ctx if tk_ctx is not None else _snapshot_task_kind_ctx()
+    cb_low = cb.strip().lower()
+    if cb_low in ctx.stats_key_map:
+        tk_id = ctx.stats_key_map[cb_low]
+        if tk_id in ctx.kind_by_id:
+            kind = ctx.kind_by_id[tk_id]
+            return {"create_by": cb, "label": kind.title, "description": kind.desc, "group": kind.group}
+
     return {"create_by": cb, "label": cb, "description": "未归类的会话来源", "group": "other"}
 
 
 # --- 1. 统一日志列表 API（合并内存 + 磁盘，去重） ---
+
+
+def _list_session_logs_sync(
+    *,
+    session_id: Optional[str],
+    search: Optional[str],
+    create_by: Optional[str],
+    task_kind: Optional[str],
+    unmapped_only: bool,
+    persona_name: Optional[str],
+    is_active: Optional[bool],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    limit: int,
+    offset: int,
+) -> Tuple[List[SessionLogSummary], int]:
+    """列表扫描与过滤整段在线程池执行，避免大列表遍历阻塞事件循环。"""
+    unified = _build_unified_list_cached()
+    filtered = _apply_filters(
+        unified,
+        session_id=session_id,
+        search=search,
+        create_by=create_by,
+        task_kind=task_kind,
+        unmapped_only=unmapped_only,
+        persona_name=persona_name,
+        is_active=is_active,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return filtered[offset : offset + limit], len(filtered)
 
 
 @app.get("/api/ai/session_logs", summary="列出会话日志", tags=AI_SESSION_LOGS)
@@ -1265,6 +1530,8 @@ async def list_session_logs(
     session_id: Optional[str] = None,
     search: Optional[str] = None,
     create_by: Optional[str] = None,
+    task_kind: Optional[str] = None,
+    unmapped_only: bool = False,
     persona_name: Optional[str] = None,
     is_active: Optional[bool] = None,
     date_from: Optional[str] = None,
@@ -1278,12 +1545,14 @@ async def list_session_logs(
 
     返回综合列表，每个条目包含 source 字段标识来源（"memory" 或 "disk"），
     is_active 字段标识是否仍在运行。同一 session_uuid 在内存和磁盘中都存在时，
-    优先使用内存版本（数据更新）。结果按创建时间倒序排列。
+    优先使用内存版本（数据更新）。结果按最近更新时间（updated_at）倒序排列。
 
     Args:
         session_id: 按 session_id 精确筛选
-        search: 模糊搜索关键词（大小写不敏感，跨 session_id/file_name/persona_name 子串匹配）
+        search: 模糊搜索关键词（大小写不敏感，跨 session_id/file_name/persona_name/create_by/task_kind 子串匹配）
         create_by: 按创建来源筛选
+        task_kind: 按任务类型筛选（capability_agent 匹配全部能力代理；capability_agent:<node_id> 匹配单代理）
+        unmapped_only: 仅返回未归入任何 task_kind 的记录（配合 create_by 与 categories.unmapped 口径一致）
         persona_name: 按 Persona 名称筛选
         is_active: 按是否活跃筛选 (true=仅活跃, false=仅已结束)
         date_from: 起始日期 YYYY-MM-DD
@@ -1296,21 +1565,20 @@ async def list_session_logs(
         data: 日志列表及分页信息
     """
     try:
-        # 磁盘扫描放线程池。目录未变时复用上次链列表，三个接口共用这一份。
-        unified = await run_in_threadpool(_build_unified_list_cached)
-        filtered = _apply_filters(
-            unified,
+        paginated, total = await run_in_threadpool(
+            _list_session_logs_sync,
             session_id=session_id,
             search=search,
             create_by=create_by,
+            task_kind=task_kind,
+            unmapped_only=unmapped_only,
             persona_name=persona_name,
             is_active=is_active,
             date_from=date_from,
             date_to=date_to,
+            limit=limit,
+            offset=offset,
         )
-
-        total: int = len(filtered)
-        paginated = filtered[offset : offset + limit]
 
         return {
             "status": 0,
@@ -1519,6 +1787,7 @@ def _get_session_log_by_file_sync(file_name: str) -> Dict[str, Any]:
 
     # 在原始文件结构上 enrich linked_agents（type_counts / entry_count / is_active）
     resp: Dict[str, Any] = dict(file_data)
+    resp["task_kind"] = _detail_task_kind(resp)
     if "entries" in resp and isinstance(resp["entries"], list):
         resp["entries"] = _format_entries_for_display(resp["entries"])
     file_linked = file_data.get("linked_agents", [])
@@ -1832,64 +2101,119 @@ async def get_session_chain_usage(
 # --- 6. 日志分类 API（按会话来源 create_by 聚合） ---
 
 
+def _bump_category(
+    bucket: Dict[str, CategoryEntryOut],
+    cb: str,
+    meta: Mapping[str, str],
+    item: SessionLogSummary,
+) -> None:
+    if cb not in bucket:
+        bucket[cb] = {
+            "create_by": meta["create_by"],
+            "label": meta["label"],
+            "description": meta["description"],
+            "group": meta["group"],
+            "count": 0,
+            "active_count": 0,
+            "subagent_count": 0,
+        }
+    entry = bucket[cb]
+    entry["count"] += 1
+    if item["is_active"]:
+        entry["active_count"] += 1
+    if item["is_subagent"]:
+        entry["subagent_count"] += 1
+
+
+def _get_session_log_categories_cached() -> CategoriesDataOut:
+    """按 (目录签名, 活跃会话签名, 任务注册表签名) 缓存聚合结果，未变化时 O(1) 返回。"""
+    global _categories_cache
+    disk_sig, mem_sig, tk_ctx, unified = _get_unified_snapshot()
+    cached = _categories_cache
+    if (
+        cached is not None
+        and cached.disk_sig == disk_sig
+        and cached.mem_sig == mem_sig
+        and cached.reg_sig == tk_ctx.signature
+    ):
+        return cached.data
+
+    with _CATEGORIES_BUILD_LOCK:
+        cached = _categories_cache
+        if (
+            cached is not None
+            and cached.disk_sig == disk_sig
+            and cached.mem_sig == mem_sig
+            and cached.reg_sig == tk_ctx.signature
+        ):
+            return cached.data
+
+        stats: Dict[str, CategoryEntryOut] = {}
+        group_counts: Dict[str, int] = {}
+        task_kind_stats: Dict[str, TaskKindCountOut] = {}
+        unmapped_stats: Dict[str, CategoryEntryOut] = {}
+        persona_stats: Dict[str, PersonaCountOut] = {}
+        meta_cache: Dict[str, Dict[str, str]] = {}
+
+        for item in unified:
+            cb: str = item["create_by"] or "Unknown"
+            if cb not in meta_cache:
+                meta_cache[cb] = _categorize_create_by(cb, tk_ctx)
+            meta = meta_cache[cb]
+            _bump_category(stats, cb, meta, item)
+            grp = meta["group"]
+            group_counts[grp] = (group_counts[grp] if grp in group_counts else 0) + 1
+
+            # 链卡片已由 _aggregate_chain 预解 task_kind，零重复推断
+            raw_tk = item["task_kind"] if "task_kind" in item else None
+            tk: Optional[str] = raw_tk if isinstance(raw_tk, str) and raw_tk else None
+            if tk is not None:
+                if tk not in task_kind_stats:
+                    task_kind_stats[tk] = {"count": 0, "active_count": 0, "subagent_count": 0}
+                tk_entry = task_kind_stats[tk]
+                tk_entry["count"] += 1
+                if item["is_active"]:
+                    tk_entry["active_count"] += 1
+                if item["is_subagent"]:
+                    tk_entry["subagent_count"] += 1
+            else:
+                _bump_category(unmapped_stats, cb, meta, item)
+
+            pname = item["persona_name"]
+            if isinstance(pname, str) and pname.strip():
+                pn = pname.strip()
+                if pn not in persona_stats:
+                    persona_stats[pn] = {"persona_name": pn, "count": 0, "active_count": 0}
+                p_entry = persona_stats[pn]
+                p_entry["count"] += 1
+                if item["is_active"]:
+                    p_entry["active_count"] += 1
+
+        categories = sorted(stats.values(), key=lambda x: x["count"], reverse=True)
+        data: CategoriesDataOut = {
+            "categories": categories,
+            "groups": group_counts,
+            "total": len(categories),
+            "task_kinds": task_kind_stats,
+            "unmapped": sorted(unmapped_stats.values(), key=lambda x: x["count"], reverse=True),
+            "personas": sorted(persona_stats.values(), key=lambda x: x["count"], reverse=True),
+        }
+        _categories_cache = _CategoriesCache(disk_sig, mem_sig, tk_ctx.signature, data)
+        return data
+
+
 @app.get("/api/ai/session_logs/categories", summary="获取会话日志分类", tags=AI_SESSION_LOGS)
 async def get_session_log_categories(
     _: Dict[str, Any] = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
-    获取当前后台日志的会话分类（按来源 create_by 聚合）
+    获取当前后台日志的会话分类、按 task_kind 分桶统计、未归类来源及全量人格计数。
 
-    扫描内存活跃会话 + 磁盘持久化日志中实际出现的所有会话来源（create_by，
-    如 Chat / MemCategorization / Heartbeat_Decision / Heartbeat_Output 等），
-    为每个分类附带前端展示名、说明、所属分组与数量统计，供前端渲染分类筛选 Tab/Chip。
-    返回的 create_by 可直接作为 /api/ai/session_logs 的 create_by 查询参数使用。
-
-    Returns:
-        status: 0成功，1失败
-        data:
-            categories: 分类列表（按 count 倒序），每项含:
-                create_by:       原始来源标识，可直接用于列表接口筛选
-                label:           前端展示名
-                description:     分类说明
-                group:           所属分组（chat/memory/heartbeat/...）
-                count:           该来源会话总数
-                active_count:    其中仍活跃的会话数
-                subagent_count:  其中属于 SubAgent 的会话数
-            groups: 分组维度的会话数量聚合 {group: count}
-            total: 分类种类数
+    目录、活跃会话与任务注册表均未变化时直接命中内存缓存（O(1) 返回）。
     """
     try:
-        # 与列表/概览接口一致，目录未变时复用同一份链列表，并放线程池执行。
-        unified = await run_in_threadpool(_build_unified_list_cached)
-
-        stats: Dict[str, Dict[str, Any]] = {}
-        group_counts: Dict[str, int] = {}
-
-        for item in unified:
-            cb: str = item["create_by"] or "Unknown"
-            meta = _categorize_create_by(cb)
-            entry: Optional[Dict[str, Any]] = stats.get(cb)
-            if entry is None:
-                entry = {**meta, "count": 0, "active_count": 0, "subagent_count": 0}
-                stats[cb] = entry
-            entry["count"] += 1
-            if item["is_active"]:
-                entry["active_count"] += 1
-            if item["is_subagent"]:
-                entry["subagent_count"] += 1
-            group_counts[meta["group"]] = group_counts.get(meta["group"], 0) + 1
-
-        categories = sorted(stats.values(), key=lambda x: x["count"], reverse=True)
-
-        return {
-            "status": 0,
-            "msg": "ok",
-            "data": {
-                "categories": categories,
-                "groups": group_counts,
-                "total": len(categories),
-            },
-        }
+        data = await run_in_threadpool(_get_session_log_categories_cached)
+        return {"status": 0, "msg": "ok", "data": data}
     except Exception as e:
         logger.error(t("log.webconsole.sesslog_retrieve_log_categories", e=e))
         return {

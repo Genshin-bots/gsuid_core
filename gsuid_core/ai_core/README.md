@@ -30,10 +30,10 @@
 |---|---|
 | `gs_agent.py` | **`GsCoreAIAgent`**：会话类 + 重试 / history 裁剪 / 闸门收尾 / 工厂。**单次 run 主路径已拆到 `agent_run/`**（见下）。 |
 | `agent_run/` | **单次 `_execute_run_once` 阶段包**（2026-08）：prepare → tools → loop → settle；`speech_policy` 提供检测原语，裁决表收敛于 `control/policy_ring.py`。详见 §`agent_run/`。 |
-| `control/policy_ring.py` | **单表驱动策略环**：收口 `_SPEECH_RING`（裁决+重说指令）、`_OUTBOUND_RING`（出站闸门）与 `_SETTLE_PRE_RING`（settle 前置+出口环）。 |
+| `control/policy_ring.py` | **单表驱动策略环**：收口 `_SPEECH_RING`（裁决+重说指令）、`_OUTBOUND_RING`（出站闸门与纠正目录）与 `_SETTLE_PRE_RING`（settle 前置+出口环）。 |
 | `output_gate.py` | **`pre_send_gate`**：发送前统一入口（执行态/熔断与 `GateBag`，规则表委托 `control/policy_ring.py`）。 |
-| `angle_bracket_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
-| `control/outbound_detectors.py` | 无状态出站话术/OOC 检测原语与数据驱动 `_OOC_RING` 规则表；含框架泄漏（工具名 / 句柄 / 节点 id）。 |
+| `control/angle_guard.py` | 非法 `<>` 检测/文案/sanitize（`<br>`/`<report>` 非法；协议仅 SILENCE/meme）。 |
+| `control/outbound_detectors.py` | 无状态出站话术/OOC 检测原语、`OutboundTextView` 单遍视图与数据驱动 `_OOC_RING` 规则表；含独立于软开关的 `internal_handle_leak` 与框架泄漏检测。 |
 | `handle_ai.py` | 收件箱轮次入口。`handle_inbox_turn`（InboxScheduler 回调）：会话匹配、前置规则过滤、`thread_view.render_delta` 装配、调用 `GsCoreAIAgent.run`；`run_interactive_turn` 为评测/HTTP 共用编排。 |
 | `context_assembly.py` | 生产/评测共用的 system + 每轮动态 user 装配（历史/记忆/口吻锚/任务上下文顺序唯一来源）。 |
 | `interaction_scaffold.py` | 群聊寻址 / 软触发 / 省略续聊 / cheap gate（TurnGraph）。 |
@@ -51,7 +51,7 @@
 | `startup.py` | ai_core 的启动钩子聚合点，被 `gsuid_core.startup` 调用。 |
 | `self_cognition.py` | 自我认知（"你是谁、能做什么"）相关的辅助常量。 |
 | `wall_clock.py` | 墙钟软预算时钟（ask_user 挂起时段可排除）。 |
-| `tool_state_signals.py` | 工具池状态信号（意图/活跃任务驱动 L2 挂载）。 |
+| `tool_health.py` | 工具健康熔断与工具池状态信号（意图/活跃任务驱动 L2 挂载）。 |
 
 ---
 
@@ -101,8 +101,10 @@
 
 | 文件 | 职责 |
 |---|---|
-| `emitter.py` | 唯一发送出口 `emit_proactive_message`：串联 C8 抑制、`send_chat_result`、主 session 同步与网关登记。 |
+| `emitter.py` | 唯一发送出口 `emit_proactive_message`：串联统一门控、`send_chat_result`、主 session 同步与网关登记。 |
+| `policy.py` | 主动触达统一准入策略门（`evaluate_proactive_gate` / `is_session_busy` / `is_session_scope_banned` / `dm_allowed` / `check_target_rate_and_gap`）。 |
 | `dispatcher.py` | `UnifiedProactiveDispatcher`：C8 网关单例（`should_suppress_heartbeat / consume_merge_context / register_send`，原 `heartbeat/dispatcher.py` 迁入）。 |
+| `speak.py` / `dm_lease.py` | Heartbeat/Autonomy 共享发声表达层与 72 小时私聊亲和租约。 |
 
 **唯一入口**：`emit_proactive_message(event, message, *, source, trigger_reason, generator_log_files=None, bot=None, suppress_when_heartbeat_recent=True)`。
 
@@ -138,6 +140,17 @@
 
 ⚠️ 巡检入口 `_inspect_session` 不再调 `_send_proactive_message`，而是 `await emit_proactive_message(event=event, message=message, source="heartbeat", trigger_reason=mood, generator_log_files=generator_log_files)`。
 
+### `autonomy/` — 自主行动（已收敛为 9 文件）
+
+| 文件 | 职责 |
+|---|---|
+| `scheduler.py` | `AutonomyScheduler` 调度循环 + `init_autonomy` / `stop_autonomy` 启停钩子。 |
+| `observer.py` / `select.py` | 阶段一观察底片采集（含插件 Bind UID 反射）与纯选人/渲染规则。 |
+| `runner.py` | 阶段二无状态行动执行器 + `AUTONOMY_SYSTEM_GUIDE` + 调度级冷却门控。 |
+| `delivery.py` | 工具轨迹事实验证、6 行尾块解析、交付路径裁决与合并槽读写（原 `verifier` + `dispatch`）。 |
+| `tools.py` | 自主行动专用工具闭包、笔记 scope 头与经 `proactive/policy.py` 门控的 `send_message_by_ai`。 |
+| `models.py` / `micro_arc.py` | 数据结构与审计 JSON 编解码（原 `models` + `codec`）+ 微弧话题跟进状态机。 |
+
 ### `scheduled_task/` — 用户预约的定时唤醒
 
 | 文件 | 职责 |
@@ -162,7 +175,8 @@
 | `workspace.py` | Artifact Workspace 沙盒（`ensure_workspace / put_artifact / list_artifacts`）。 |
 | `resolver.py` / `handle_resolver.py` | 工件 ID（`res_xxx`）解析与 RM 资源桥接。 |
 | `context.py` | 每轮注入「正在推进的事项」摘要（**脱敏**：不注入 agent_profile，附对外人话提示）。 |
-| `tool_output_*.py` | FileOS：工具长输出落盘 / 折叠卡 / 索引 / 协议（主人格防 OOC）。 |
+| `tool_output_store.py` | FileOS + Artifact 统一层：SQL 真身、句柄卡与分页读协议、Qdrant dense+sparse 混合索引。 |
+| `tool_output_helper.py` / `tool_output_tools.py` | FileOS 落盘脱敏折叠与 agent 检索 / `read_handle` 工具。 |
 | `startup.py` | 启动期把数据库里 `armed` 的周期模板重新挂回 APScheduler。 |
 
 ⚠️ Kanban 转译子 Agent **必须**启用 SubAgent 日志（`is_subagent=True`）；早期为避免噪声曾经禁用，但归一到 emitter 后必须保留以供审计——日志路径会通过 `generator_log_files` 挂到主 session 的 `linked_agents`。
@@ -202,7 +216,7 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `ingestion/` | `window_router.py`（Pass 1 话题分诊）、`algebra.py`（Pass 2 四态代数）、`worker.py`（窗口编排）。 |
 | `retrieval/` | 五模态意图检索（Dense + FTS5 + Thread 时间轴）。 |
 | `vector/` | 四个 Qdrant 记忆集合（episodes / entities / edges / threads）。 |
-| `database/` | schema_v2 四表 + 偏好 ORM、FTS5、净室迁移。 |
+| `database/` | schema_v2 四表（`models.py`）+ 偏好表（`preference.py`）、FTS5、净室迁移。 |
 | `prompts/` | 两阶段摄入 prompt（`extraction.py`）。 |
 | `lifecycle/` | 线程补挂、衰减、遗忘与容量维护。 |
 | `scope.py` | `ScopeType.GROUP / USER / GLOBAL` + `make_scope_key`，所有记忆都按 scope_key 隔离。 |
@@ -231,7 +245,8 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `prompts.py` | `SYSTEM_CONSTRAINTS` / `TOOL_ORCHESTRATION_*` / 人设模板；含**对外单一表面**与**长任务/在途**纪律。 |
 | `resource.py` | `load_persona / extract_compact_persona`（Heartbeat 决策阶段用压缩版 persona 节省 token）。 |
 | `mood.py` | 情绪状态机（per `mood_key` 隔离）。 |
-| `config.py` | `persona_config_manager`：每个 persona 一份 config.json，含 `ai_mode / inspect_interval / scope / target_groups / tool_packs / tool_names` 等。 |
+| `config.py` | `persona_config_manager`：每个 persona 一份 config.json 的模板、持久化与通道互斥管理。 |
+| `config_rules.py` | 人格配置的纯无状态规则、值对象与解析校验（双通道范围、AI 模式归一化、驱动参数与作息校验）。 |
 | `group_context.py` | 群聊场景的群组画像注入。 |
 | `models.py` | `PersonaFiles / PersonaMetadata` dataclass。 |
 | `startup.py` | 把所有 persona 启动期注入。 |
@@ -259,7 +274,8 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | 文件 | 用途 |
 |---|---|
 | `client.py` | MCP 客户端核心。 |
-| `server.py` | MCP server 实现。 |
+| `server.py` | MCP server 主入口（鉴权、插件钩子、工具导出与生命周期编排）。 |
+| `server_http.py` | Streamable HTTP ASGI 运行时、取消隔离与无斜杠挂载原语。 |
 | `mcp_tool_caller.py` | 把 MCP 工具桥接为 pydantic_ai Tool。 |
 | `utils.py` | MCP 复用函数层（`build_mcp_arguments` / `is_mcp_provider` 等），含 **details 参数映射**。 |
 | `mcp_tools_config.py / mcp_presets.py / config_manager.py` | 配置层。`mcp_tools_config` 支持 `details` 字段实现参数名映射。 |
@@ -273,16 +289,16 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 |---|---|
 | `ai_config.py` | `ai_config` 主开关（含 `scaffold_wall_clock_budget` / `suppress_intermediate_text` / 呈现层出图兜底等）。 |
 | `models.py` | `get_model_for_task("high" / "low")`：按 `task_level` 路由；§23 墙钟 HTTP 超时。 |
-| `provider_config_manager.py` / `provider_router.py` | 多 provider 注册与路由。 |
-| `openai_config/` / `anthropic_config/` / `gemini_config/` | 内置 provider 工厂。 |
+| `provider_config_manager.py` / `provider_router.py` | 多 provider 模板、配置集管理与主备路由。 |
 
 ### `budget/` / `approval/` / `command_exec/` / `multimodal/` / `image_understand/`
 
 | 目录 | 用途 |
 |---|---|
 | `budget/` | 用量预算规则 + `budget_manager` 闸门（交互/自主 scope）。 |
-| `approval/` | 统一审批中心（`AIApprovalRequest` + submit/resolve）。 |
-| `command_exec/` | 主人 shell 审批执行链（policy / runner / audit）。 |
+| `approval/` | 统一审批中心（`models` / `center` / `delivery`：审批表、submit/resolve 与通知续跑）。 |
+| `command_exec/` | 主人 shell 审批执行链（`models` / `policy` / `executor` / `provisioner` / `tools`）。 |
+| `http_agent/` | OpenAI/SSE 对外 HTTP 代理（`protocol` / `auth` / `runtime` / `capture_bot` / `routes`）。 |
 | `multimodal/` | ASR / 文档 / 视频帧 / Gemini Files / OpenAI file 视频 等。 |
 | `image_understand/` | 图片理解入口（可被 run 内嵌调用）。 |
 
@@ -338,6 +354,8 @@ Persona 与能力代理同构为一个 `AgentNode`（统一注册表 + persona �
 | `asr.py` | 语音转文字。 |
 | `video.py` | 视频生成 / 处理。 |
 | `document.py` | 文档解析（PDF / DOCX 等）。 |
+| `payload.py` | 图片/视频媒体载荷构造与物化。 |
+| `inbound_prepare.py` | 入站用户消息的视频/图片适配预处理。 |
 
 ### `image_understand/` — 图片理解（视觉模型）
 

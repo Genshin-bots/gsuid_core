@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 import asyncio
+import logging
 from typing import List
 from collections.abc import Iterator
 
@@ -56,7 +58,7 @@ def test_decode_inbound_frame_contract(monkeypatch: pytest.MonkeyPatch) -> None:
 
     warnings.clear()
     assert decode_inbound_frame(b"[]", "yunzai") is None
-    assert len(warnings) == 1 and "Expected" in warnings[0]
+    assert len(warnings) == 1 and "yunzai" in warnings[0]
 
     warnings.clear()
     raw = msgjson.encode(
@@ -92,7 +94,7 @@ def test_gs_logger_and_disconnect_lifecycle() -> None:
         gss.active_bot[BOT_ID] = bot
 
         await gss.disconnect(BOT_ID, stale_ws)
-        assert gss.active_ws.get(BOT_ID) is fresh_ws and bot.bot is fresh_ws
+        assert BOT_ID in gss.active_ws and gss.active_ws[BOT_ID] is fresh_ws and bot.bot is fresh_ws
         assert not any(m["type"] == "websocket.close" for m in fresh_sent)
 
         await gss.disconnect(BOT_ID, fresh_ws)
@@ -104,9 +106,25 @@ def test_gs_logger_and_disconnect_lifecycle() -> None:
 
 def test_console_renderer_avoids_rich_traceback() -> None:
     """控制台异常渲染禁止启用 RichTracebackFormatter（同步读盘 + Pygments 会冻住事件循环）。"""
-    import structlog.dev
-
     from gsuid_core import logger as core_logger
 
     renderer = core_logger._build_console_renderer()
-    assert renderer._exception_formatter is structlog.dev.plain_traceback
+    try:
+        raise RuntimeError("boom-sentinel")
+    except RuntimeError:
+        exc_info = sys.exc_info()
+
+    rendered = renderer(
+        logging.getLogger("test"),
+        "error",
+        {
+            "timestamp": "01-01 00:00:00",
+            "level": "error",
+            "plugin": "GsCore",
+            "event": "fail",
+            "exc_info": exc_info,
+        },
+    )
+    assert "\nTraceback (most recent call last):\n" in rendered
+    assert "RuntimeError: boom-sentinel" in rendered
+    assert not any(ch in rendered for ch in ("┌", "╭", "│", "└", "╰"))

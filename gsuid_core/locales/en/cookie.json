@@ -1,5 +1,6 @@
 {
   "log.cookie.add_ck_im_create": "ℹ️ [Add CK] {im}",
+  "log.cookie.bbs_stoken_upgrade_fail": "[Login] Failed to upgrade BBS-scoped stoken (retcode={retcode}), keeping original stoken",
   "log.cookie.login_qr_code_confirmed": "[Login] QR code confirmed",
   "log.cookie.login_qr_code_expired": "[Login] QR code expired",
   "log.cookie.login_qr_code_scanned": "[Login] QR code scanned",

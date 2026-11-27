@@ -27,10 +27,29 @@ from gsuid_core.ai_core.rag.qmodels import (
     FieldCondition,
 )
 
-from .collections import (
-    MEMORY_EDGES_COLLECTION,
-    MEMORY_ENTITIES_COLLECTION,
+MEMORY_EPISODES_COLLECTION = "memory_episodes"
+MEMORY_ENTITIES_COLLECTION = "memory_entities"
+MEMORY_EDGES_COLLECTION = "memory_edges"
+
+MEMORY_COLLECTIONS: tuple[str, ...] = (
     MEMORY_EPISODES_COLLECTION,
+    MEMORY_ENTITIES_COLLECTION,
+    MEMORY_EDGES_COLLECTION,
+)
+
+# 迁移时删除 + 清备份：旧集合 + 三个活跃集合与历史 memory_threads（净室重建）。
+LEGACY_MEMORY_COLLECTIONS: tuple[str, ...] = (
+    "memory_sessions",
+    "memory_gists",
+    "memory_events",
+    "memory_categories",
+    "memory_hiergraph",
+    "memory_conflicts",
+    "memory_episodes_cold",
+    "memory_episodes",
+    "memory_entities",
+    "memory_edges",
+    "memory_threads",
 )
 
 if TYPE_CHECKING:
@@ -69,28 +88,6 @@ async def _upsert_locked(collection_name: str, points: list[PointStruct]) -> Non
     written = await upsert_points_with_backoff(points, _do_upsert, log_tag=collection_name)
     if written != len(points):
         raise RuntimeError(f"{written}/{len(points)}")
-
-
-def _embed(text: str) -> list[float]:
-    """同步单条嵌入"""
-    from gsuid_core.ai_core.rag.base import embedding_provider
-
-    if embedding_provider is None:
-        raise RuntimeError(t("embedding_provider 未初始化，请检查 rag/base.py 的 init_embedding_model()"))
-    return embedding_provider.embed_single_sync(text)
-
-
-def _embed_batch(texts: list[str]) -> list[list[float]]:
-    """同步批量嵌入，利用底层批量接口一次处理多条文本。
-
-    相比逐条调用 _embed，批量接口可减少 Python↔C++ 上下文切换开销，
-    在 45 条文本场景下性能提升约 10-40x。
-    """
-    from gsuid_core.ai_core.rag.base import embedding_provider
-
-    if embedding_provider is None:
-        raise RuntimeError(t("embedding_provider 未初始化，请检查 rag/base.py 的 init_embedding_model()"))
-    return embedding_provider.embed_sync(texts)
 
 
 async def _embed_async(text: str) -> list[float]:
@@ -821,7 +818,6 @@ async def get_entities_by_ids(entity_ids: list[str], scope_keys: list[str]) -> l
         return []
 
     from gsuid_core.ai_core.rag.base import client as qdrant_client
-    from gsuid_core.ai_core.memory.vector.collections import MEMORY_ENTITIES_COLLECTION
 
     if qdrant_client is None:
         return []

@@ -56,7 +56,9 @@ gsuid_core/ai_core/
 ├── gs_agent.py          # GsCoreAIAgent：工具装配、Agent.iter 环、输出闸接线、收尾重写
 ├── output_gate.py       # pre_send_gate：发送前统一编排（尖括号 → OOC）；GateBag 状态
 ├── angle_bracket_guard.py  # 非法 <> 检测/文案/sanitize（<br> 非法；协议仅 SILENCE/meme/report）
-├── register.py          # @ai_tools 装饰器 + _TOOL_REGISTRY 工具注册表 + visible_when + ai_alias/ai_entity
+├── register.py          # @ai_tools 装饰器 + execute_guarded_tool 脊柱 + _TOOL_REGISTRY + ai_alias/ai_entity
+├── background_tools.py  # 长耗时工具后台宽限执行器（短宽限同步 → 转后台 → 完成回灌 / 去重 / 热重载与关机取消）
+├── async_delivery.py    # 异步回灌公共内核（干净 Event 构造 / live Bot&Session 解析 / 降级清洗 / 续聊窗），kanban 与 background_tools 共用
 ├── entity_index.py      # 实体身份索引 surface(正式名/别名)→插件，供 L0 实体路由确定性定插件（见 [§7.3b](./07-tool-registry-and-agent.md)）
 ├── models.py            # ToolContext / ToolBase / 数据模型（含 dynamic_tool_names）
 ├── trigger_bridge.py    # 触发器→AI 工具桥接（MockBot / ai_return / send_message_by_ai）

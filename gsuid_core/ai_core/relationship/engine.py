@@ -18,6 +18,7 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.ai_core.relationship.view import RelationshipView, view_from_score
 from gsuid_core.ai_core.relationship.zones import Zone, zone_of, is_at_least
+from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 from gsuid_core.ai_core.relationship.signals import (
     NEG_WEIGHTS,
     POS_WEIGHTS,
@@ -173,7 +174,7 @@ async def settle_turn(
         meaningful_min_len=FAVOR_MEANINGFUL_MIN_LEN,
     )
 
-    if not engine_enabled():
+    if not engine_enabled() or is_persona_frozen(persona_name):
         view = await _read_view(user_id, bot_id, persona_name, is_master)
         return SettleOutcome(0, REASON_NO_SIGNAL, view.score, view.score, view, signals, wrote=False)
 
@@ -296,6 +297,9 @@ async def apply_admin_set(
     """
     from gsuid_core.ai_core.database.models import UserFavorability
 
+    if is_persona_frozen(persona_name):
+        view = await _read_view(user_id, bot_id, persona_name, is_master_target)
+        return SettleOutcome(0, REASON_NO_SIGNAL, view.score, view.score, view, None, wrote=False)
     record = await UserFavorability.get_or_create_user_favorability(user_id, bot_id, persona_name, user_name)
     before = record.favorability
     new_score = _clamp(value)
@@ -355,7 +359,7 @@ async def settle_semantic(
     clean_uid = user_id.strip()
     clean_bot = bot_id.strip()
     clean_persona = persona_name.strip()
-    if not clean_uid or not clean_bot or not clean_persona or not engine_enabled():
+    if not clean_uid or not clean_bot or not clean_persona or not engine_enabled() or is_persona_frozen(clean_persona):
         view = await _read_view(clean_uid, clean_bot, clean_persona, False)
         return SettleOutcome(0, REASON_NO_SIGNAL, view.score, view.score, view, None, wrote=False)
 

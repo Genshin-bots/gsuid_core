@@ -9,7 +9,7 @@ import importlib
 import subprocess
 import importlib.util
 from types import ModuleType
-from typing import Any, Set, Dict, List, Tuple, Union, Literal, TypeVar, Callable, Optional, overload
+from typing import Any, Set, Dict, List, Tuple, Union, TypeVar, Callable, Optional, overload
 from pathlib import Path
 from importlib import metadata
 from itertools import groupby
@@ -38,6 +38,12 @@ from gsuid_core.i18n import t, discover_and_register_plugin_locales
 from gsuid_core.config import core_config, plugin_config_store
 from gsuid_core.logger import logger, hl_plugin
 from gsuid_core.gs_logger import GsLogger
+from gsuid_core.plugin_registry import (
+    PluginKindMeta,
+    plugin_registry,
+    scan_disk_plugins,
+    read_meta_plugin_info,
+)
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -60,61 +66,6 @@ BUILDIN_PLUGIN_PATH = Path(__file__).parent / "buildin_plugins"
 
 if not PLUGIN_PATH.exists():
     PLUGIN_PATH.mkdir(parents=True, exist_ok=True)
-
-
-@dataclass(frozen=True)
-class PluginKindMeta:
-    """发现期读到的基础设施插件元数据（早于 import，不能靠 Plugins()）。"""
-
-    kind: Literal["meta"]
-    provides: str
-    plugin_name: str
-
-
-def _read_pyproject_table(pyproject: Path) -> Optional[dict]:
-    """读插件 pyproject。读失败返回 None，由调用方决定是否仍当 meta。"""
-    try:
-        with open(pyproject, "r", encoding="utf-8") as fh:
-            raw: object = toml.loads(fh.read())
-    except (OSError, UnicodeDecodeError, toml.TomlDecodeError) as e:
-        logger.error(t("log.server.pyproject_parse_fail", pyproject=pyproject, error=e))
-        return None
-    if not isinstance(raw, dict):
-        logger.error(t("log.server.pyproject_parse_fail", pyproject=pyproject, error="root is not a table"))
-        return None
-    return raw
-
-
-def read_meta_plugin_info(plugin: Path) -> Optional[PluginKindMeta]:
-    """目录是 meta plugin 则返回元数据，否则 None。
-
-    识别：根目录 ``__meta_plugin__.py``，或 ``pyproject.toml`` 的
-    ``[tool.gsuid] kind = "meta"``。``provides`` 缺省为目录名。
-    """
-    if not plugin.is_dir():
-        return None
-
-    is_meta = (plugin / "__meta_plugin__.py").is_file()
-    provides = plugin.stem
-    pyproject = plugin / "pyproject.toml"
-    if pyproject.is_file():
-        toml_data = _read_pyproject_table(pyproject)
-        if toml_data is None:
-            if not is_meta:
-                return None
-        else:
-            tool = toml_data["tool"] if "tool" in toml_data and isinstance(toml_data["tool"], dict) else {}
-            gsuid = tool["gsuid"] if "gsuid" in tool and isinstance(tool["gsuid"], dict) else {}
-            kind = gsuid["kind"] if "kind" in gsuid else None
-            if kind == "meta":
-                is_meta = True
-            raw_provides = gsuid["provides"] if "provides" in gsuid else None
-            if isinstance(raw_provides, str) and raw_provides.strip():
-                provides = raw_provides.strip()
-
-    if not is_meta:
-        return None
-    return PluginKindMeta(kind="meta", provides=provides, plugin_name=plugin.stem)
 
 
 def should_load_plugin(plugin: Path, dev_mode: bool) -> bool:
@@ -531,11 +482,22 @@ class GsServer:
         return module
 
     def _import_module_list(self, modules: List[Tuple[str, Path, str]]) -> None:
+        owner_errors: Dict[str, str] = {}
+        owners_seen: Set[str] = set()
         for module_name, filepath, _type in modules:
+            owner = _plugin_owner_name(module_name, filepath, _type)
+            owners_seen.add(owner)
             try:
                 self.cached_import(module_name, filepath, _type)
             except Exception as e:
+                if owner not in owner_errors:
+                    owner_errors[owner] = str(e)
                 logger.exception(t("log.server.plugin_import_fail", stem=filepath.stem, error=e))
+        for owner in owners_seen:
+            if owner in owner_errors:
+                plugin_registry.mark_load_result(owner, "failed", owner_errors[owner])
+            else:
+                plugin_registry.mark_load_result(owner, "loaded")
 
     def bind_loaded_meta_plugin(self, info: PluginKindMeta, modules: List[Tuple[str, Path, str]]) -> None:
         """import 完一个 meta plugin 后挂 ``<目录名>.api`` 别名。"""
@@ -571,6 +533,9 @@ class GsServer:
         if root_path not in sys.path:
             sys.path.append(root_path)
 
+        # 预填磁盘插件初始快照，后续导入成败即时写回 load_status
+        plugin_registry.seed_sync(scan_disk_plugins(include_buildin=True, include_core=True))
+
         plug_path_list = [
             p
             for p in list(BUILDIN_PLUGIN_PATH.iterdir()) + list(PLUGIN_PATH.iterdir())
@@ -588,6 +553,9 @@ class GsServer:
             # 只有目录名带 -dev 才改模块名前缀，避免 meta 与 <name>-dev 抢同一 sys.modules 键
             d = self.load_plugin(plugin, dev_mode and plugin.name.endswith("-dev"))
             if isinstance(d, str):
+                if d.lstrip().startswith("❌"):
+                    plugin_key = plugin.stem if plugin.is_file() else plugin.name
+                    plugin_registry.mark_load_result(plugin_key, "failed", d)
                 continue
             info = read_meta_plugin_info(plugin)
             if info is not None:

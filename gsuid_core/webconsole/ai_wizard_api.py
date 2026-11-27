@@ -12,7 +12,9 @@ from fastapi import Depends
 from gsuid_core.webconsole.app_app import app
 from gsuid_core.webconsole.web_api import require_auth
 from gsuid_core.ai_core.configs.models import (
+    provider_config_exists,
     parse_provider_config_name,
+    normalize_provider_config_name,
 )
 from gsuid_core.ai_core.configs.ai_config import (
     ai_config,
@@ -348,11 +350,11 @@ def _check_persona_and_enable_range() -> Dict[str, Any]:
         - user_ai_range: 全局用户级别的AI启用范围（白名单/黑名单）
     """
     try:
-        from gsuid_core.ai_core.persona.config import (
+        from gsuid_core.ai_core.persona.config import persona_config_manager
+        from gsuid_core.ai_core.persona.config_rules import (
             read_target_list,
             derive_legacy_scope,
             read_channel_scopes,
-            persona_config_manager,
         )
 
         all_personas = persona_config_manager.get_all_configs()
@@ -671,14 +673,15 @@ async def get_ai_wizard_status(_: Dict[str, Any] = Depends(require_auth)) -> Dic
     low_level_model: Dict[str, Any] = {"configured": False}
 
     # 解析高级模型配置
-    if high_level_full_name and "++" in high_level_full_name:
-        provider, config_name = parse_provider_config_name(high_level_full_name)
+    norm_high = normalize_provider_config_name(high_level_full_name) if isinstance(high_level_full_name, str) else ""
+    if norm_high and provider_config_exists(norm_high):
+        provider, config_name = parse_provider_config_name(norm_high)
         high_level_model = {
             "configured": True,
             "provider": provider,
             "config_name": config_name,
             "model_name": "",
-            "full_name": high_level_full_name,
+            "full_name": norm_high,
         }
         try:
             from gsuid_core.ai_core.configs.provider_config_manager import get_provider_config
@@ -690,14 +693,15 @@ async def get_ai_wizard_status(_: Dict[str, Any] = Depends(require_auth)) -> Dic
             pass
 
     # 解析低级模型配置
-    if low_level_full_name and "++" in low_level_full_name:
-        provider, config_name = parse_provider_config_name(low_level_full_name)
+    norm_low = normalize_provider_config_name(low_level_full_name) if isinstance(low_level_full_name, str) else ""
+    if norm_low and provider_config_exists(norm_low):
+        provider, config_name = parse_provider_config_name(norm_low)
         low_level_model = {
             "configured": True,
             "provider": provider,
             "config_name": config_name,
             "model_name": "",
-            "full_name": low_level_full_name,
+            "full_name": norm_low,
         }
         try:
             from gsuid_core.ai_core.configs.provider_config_manager import get_provider_config

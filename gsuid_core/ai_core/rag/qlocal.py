@@ -190,35 +190,6 @@ def _with_names(value: bool | Sequence[str]) -> bool | list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-class _PointLike(Protocol):
-    id: object
-    version: object
-    score: object
-    payload: object
-    vector: object
-
-
-class _VectorObj(Protocol):
-    size: object
-    distance: object
-    on_disk: object
-
-
-class _ParamsObj(Protocol):
-    vectors: object
-    sparse_vectors: object
-    on_disk_payload: object
-
-
-class _ConfigObj(Protocol):
-    params: _ParamsObj
-
-
-class _InfoObj(Protocol):
-    config: _ConfigObj
-    payload_schema: object
-
-
 @runtime_checkable
 class _SchemaObj(Protocol):
     data_type: object

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import asyncio
 import inspect
 from typing import (
@@ -169,6 +170,7 @@ async def execute_guarded_tool(
     ctx: RunContext[ToolContext],
     call: Callable[[], Awaitable[object]],
     *,
+    call_with_ctx: Optional[Callable[[RunContext[ToolContext]], Awaitable[object]]] = None,
     check_func: Optional[CheckFunc] = None,
     check_kwargs: Optional[Dict[str, object]] = None,
     timeout: Optional[float] = 60.0,
@@ -176,8 +178,12 @@ async def execute_guarded_tool(
     approval_args_repr: str = "",
     track_health: bool = True,
     raw_passthrough: bool = False,
+    background: bool = False,
+    background_grace: float = 5.0,
+    background_label: str = "",
+    background_args_key: str = "",
 ) -> Union[str, bytes, "ToolReturn"]:
-    """统一工具执行脊柱：check_func → 熔断门 → 审批闸 → 超时控制 → 健康度与结果归一化。"""
+    """统一工具执行脊柱：check_func → 熔断门 → 审批闸 → 超时/后台宽限 → 健康度与结果归一化。"""
     from pydantic_ai import ToolReturn
 
     from gsuid_core.ai_core.delivery import handle_tool_result
@@ -195,65 +201,161 @@ async def execute_guarded_tool(
         need = ctx.deps.ev.raw_text or "" if ctx.deps.ev is not None else ""
         return await frozen_tool_reply(name, ctx.deps.extra, need)
 
-    if approval in ("user", "master"):
-        from gsuid_core.ai_core.approval import tool_call_gate
+    async def _execute_post_approval(
+        run_ctx: RunContext[ToolContext],
+        *,
+        from_approval: bool = False,
+    ) -> Union[str, bytes, ToolReturn]:
+        async def _invoke() -> object:
+            if call_with_ctx is not None:
+                return await call_with_ctx(run_ctx)
+            return await call()
 
-        gate_msg = await tool_call_gate(ctx.deps.ev, name, approval, approval_args_repr, call)
+        bg_grace = max(0.0, background_grace)
+        if from_approval:
+            bg_grace = min(bg_grace, 0.5)
+        ran_in_bg_grace = False
+        raw_result: object = None
+        if background and (timeout is None or timeout > bg_grace):
+            from gsuid_core.ai_core.background_tools import (
+                should_detach_background,
+                run_with_background_grace,
+            )
+
+            if should_detach_background(run_ctx.deps):
+                try:
+                    finished, bg_result = await run_with_background_grace(
+                        name=name,
+                        label=background_label or name,
+                        ctx=run_ctx,
+                        call=_invoke,
+                        timeout=timeout,
+                        grace_seconds=bg_grace,
+                        track_health=track_health,
+                        raw_passthrough=raw_passthrough,
+                        args_key=background_args_key or approval_args_repr,
+                    )
+                except asyncio.TimeoutError as inner_exc:
+                    _mark_evidence_error()
+                    if track_health:
+                        record_tool_failure(name, "timeout")
+                    logger.warning(t("log.register.tool_inner_timeout", p0=name, e=inner_exc))
+                    return (
+                        f"⚠️ 工具 {name} 内部超时/失败（{type(inner_exc).__name__}: {inner_exc}），请稍后重试或换个方式"
+                    )
+                if not finished:
+                    ack = bg_result if isinstance(bg_result, str) else str(bg_result)
+                    if from_approval:
+                        from gsuid_core.ai_core.approval.models import APPROVAL_HOLD_MARK
+
+                        return f"{APPROVAL_HOLD_MARK}{ack}"
+                    return ack
+                raw_result = bg_result
+                ran_in_bg_grace = True
+
+        if not ran_in_bg_grace:
+            if timeout is None:
+                raw_result = await _invoke()
+            else:
+
+                async def _run_call() -> object:
+                    return await _invoke()
+
+                _task = asyncio.create_task(_run_call())
+                try:
+                    raw_result = await asyncio.wait_for(_task, timeout=timeout)
+                except asyncio.TimeoutError:
+                    _mark_evidence_error()
+                    _drop_running_task(_task)
+                    timeout_sec = int(timeout)
+                    if track_health:
+                        record_tool_failure(name, "timeout")
+                    if _task.done() and not _task.cancelled():
+                        inner_exc = _task.exception()
+                        logger.warning(t("log.register.tool_inner_timeout", p0=name, e=inner_exc))
+                        err_type = type(inner_exc).__name__ if inner_exc else "TimeoutError"
+                        return f"⚠️ 工具 {name} 内部超时/失败（{err_type}: {inner_exc}），请稍后重试或换个方式"
+                    logger.warning(t("log.register.timeout_sec_aborted", p0=name, timeout_sec=timeout_sec))
+                    return f"⚠️ 工具 {name} 执行超时（超过 {timeout_sec} 秒），请稍后重试或换个方式"
+                except asyncio.CancelledError:
+                    _drop_running_task(_task)
+                    raise
+
+        if raw_result is None:
+            if track_health:
+                record_tool_success(name)
+            return "（工具已执行，无文本返回）"
+        if isinstance(raw_result, ToolReturn):
+            if track_health:
+                record_tool_success(name)
+            return raw_result
+
+        out: Union[str, bytes] = (
+            raw_result
+            if (raw_passthrough and isinstance(raw_result, (str, bytes)))
+            else (str(raw_result) if raw_passthrough else await handle_tool_result(run_ctx.deps.bot, raw_result))
+        )
+        if track_health:
+            if isinstance(out, str) and out.lstrip().startswith("❌"):
+                _mark_evidence_error()
+                record_tool_failure(name, out)
+                hint = _param_error_hint(name, out)
+                if hint:
+                    out = f"{out}\n{hint}"
+            else:
+                record_tool_success(name)
+        elif isinstance(out, str) and out.lstrip().startswith("❌"):
+            _mark_evidence_error()
+        return out
+
+    if approval in ("user", "master"):
+        from dataclasses import replace as _dc_replace
+
+        from gsuid_core.ai_core.approval import tool_call_gate
+        from gsuid_core.ai_core.async_delivery import resolve_live_bot
+        from gsuid_core.ai_core.agent_run.opening_line import (
+            OPENING_LOCK_KEY,
+            OPENING_SLOT_KEY,
+            OPENING_TIMER_KEY,
+            OPENING_RESULT_KEY,
+        )
+
+        _stale_keys = frozenset(
+            {
+                OPENING_SLOT_KEY,
+                OPENING_RESULT_KEY,
+                OPENING_TIMER_KEY,
+                OPENING_LOCK_KEY,
+                "run_sent_texts",
+                "run_sent_order",
+            }
+        )
+
+        async def _run_approved_body() -> Union[str, bytes, ToolReturn]:
+            clean_extra = {k: v for k, v in ctx.deps.extra.items() if k not in _stale_keys}
+            live_bot = (
+                resolve_live_bot(ctx.deps.ev.WS_BOT_ID or "", ctx.deps.ev, ctx.deps.bot)
+                if ctx.deps.ev is not None
+                else ctx.deps.bot
+            )
+            clean_deps = _dc_replace(
+                ctx.deps,
+                bot=live_bot if live_bot is not None else ctx.deps.bot,
+                extra=clean_extra,
+            )
+            return await _execute_post_approval(_dc_replace(ctx, deps=clean_deps), from_approval=True)
+
+        gate_msg = await tool_call_gate(
+            ctx.deps.ev,
+            name,
+            approval,
+            approval_args_repr,
+            _run_approved_body,
+        )
         if gate_msg is not None:
             return gate_msg
 
-    if timeout is None:
-        raw_result = await call()
-    else:
-
-        async def _run_call() -> object:
-            return await call()
-
-        _task = asyncio.create_task(_run_call())
-        try:
-            raw_result = await asyncio.wait_for(_task, timeout=timeout)
-        except asyncio.TimeoutError:
-            _mark_evidence_error()
-            _drop_running_task(_task)
-            timeout_sec = int(timeout)
-            record_tool_failure(name, "timeout")
-            if _task.done() and not _task.cancelled():
-                inner_exc = _task.exception()
-                logger.warning(t("log.register.tool_inner_timeout", p0=name, e=inner_exc))
-                err_type = type(inner_exc).__name__ if inner_exc else "TimeoutError"
-                return f"⚠️ 工具 {name} 内部超时/失败（{err_type}: {inner_exc}），请稍后重试或换个方式"
-            logger.warning(t("log.register.timeout_sec_aborted", p0=name, timeout_sec=timeout_sec))
-            return f"⚠️ 工具 {name} 执行超时（超过 {timeout_sec} 秒），请稍后重试或换个方式"
-        except asyncio.CancelledError:
-            _drop_running_task(_task)
-            raise
-
-    if raw_result is None:
-        if track_health:
-            record_tool_success(name)
-        return "（工具已执行，无文本返回）"
-    if isinstance(raw_result, ToolReturn):
-        if track_health:
-            record_tool_success(name)
-        return raw_result
-
-    out: Union[str, bytes] = (
-        raw_result
-        if (raw_passthrough and isinstance(raw_result, (str, bytes)))
-        else (str(raw_result) if raw_passthrough else await handle_tool_result(ctx.deps.bot, raw_result))
-    )
-    if track_health:
-        if isinstance(out, str) and out.lstrip().startswith("❌"):
-            _mark_evidence_error()
-            record_tool_failure(name, out)
-            hint = _param_error_hint(name, out)
-            if hint:
-                out = f"{out}\n{hint}"
-        else:
-            record_tool_success(name)
-    elif isinstance(out, str) and out.lstrip().startswith("❌"):
-        _mark_evidence_error()
-    return out
+    return await _execute_post_approval(ctx)
 
 
 @overload
@@ -276,6 +378,8 @@ def ai_tools(
     aliases: Optional[List[str]] = None,
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 60.0,
+    background: bool = False,
+    background_grace: float = 5.0,
     approval: Optional[str] = None,
     brief: str = "",
     code_callable: bool = True,
@@ -298,6 +402,8 @@ def ai_tools(
     aliases: Optional[List[str]] = None,
     visible_when: Optional[Callable[..., Union[bool, Awaitable[bool]]]] = None,
     timeout: Optional[float] = 60.0,
+    background: bool = False,
+    background_grace: float = 5.0,
     approval: Optional[str] = None,
     brief: str = "",
     code_callable: bool = True,
@@ -339,6 +445,11 @@ def ai_tools(
             超时后工具返回错误字符串，agent 可继续而不会永久挂起。
             设为 None 表示不限制超时。
             需长时间等待的工具（如 ask_user / 长命令 / 子代理）应显式声明更大值或 None。
+        background: 长耗时工具是否支持超宽限自动转后台执行并在完成后回灌主会话。
+            默认 False；开启后在交互主会话中等待 ``background_grace`` 秒，未结束即转后台
+            释放主会话锁，同时自动将 ``code_callable`` 置为 False。
+        background_grace: ``background=True`` 时的同步宽限秒数，默认 5.0 秒。
+            宽限内完成（如参数/凭据校验报错或快速返回）直接同步返回，不走后台回灌。
         approval: 可选的强制审批级别（"user" / "master"）。声明后每次调用先过
             统一审批中心策略门：user 级可被「完全访问」豁免（照常留审计记录）、
             master 级永不可豁免。无放行时提交审批并结束本轮；批准后执行这一次
@@ -386,24 +497,27 @@ def ai_tools(
 
         # 3. 构造实际被 PydanticAI 调用的 wrapper（共享统一执行脊柱）
         async def wrapped_tool(ctx: RunContext[ToolContext], *args, **kwargs):
-            call_kwargs = dict(kwargs)
-            for param_name, inject_type in injected_params.items():
-                if inject_type == "Event":
-                    call_kwargs[param_name] = ctx.deps.ev
-                elif inject_type == "Bot":
-                    call_kwargs[param_name] = ctx.deps.bot
+            async def _call_with_ctx(run_ctx: RunContext[ToolContext]) -> Union[str, Message, bytes, ToolReturn]:
+                call_kwargs = dict(kwargs)
+                for param_name, inject_type in injected_params.items():
+                    if inject_type == "Event":
+                        call_kwargs[param_name] = run_ctx.deps.ev
+                    elif inject_type == "Bot":
+                        call_kwargs[param_name] = run_ctx.deps.bot
+                if func_takes_run_context:
+                    return await fn(run_ctx, *args, **call_kwargs)
+                if func_takes_tool_context:
+                    return await fn(run_ctx.deps, *args, **call_kwargs)
+                return await fn(*args, **call_kwargs)
 
             async def _call() -> Union[str, Message, bytes, ToolReturn]:
-                if func_takes_run_context:
-                    return await fn(ctx, *args, **call_kwargs)
-                if func_takes_tool_context:
-                    return await fn(ctx.deps, *args, **call_kwargs)
-                return await fn(*args, **call_kwargs)
+                return await _call_with_ctx(ctx)
 
             return await execute_guarded_tool(
                 fn.__name__,
                 ctx,
                 _call,
+                call_with_ctx=_call_with_ctx,
                 check_func=check_func,
                 check_kwargs=check_kwargs,
                 timeout=timeout,
@@ -411,6 +525,9 @@ def ai_tools(
                 approval_args_repr=str(kwargs)[:2000],
                 track_health=track_health,
                 raw_passthrough=raw_passthrough,
+                background=background,
+                background_grace=background_grace,
+                background_args_key=repr((args, sorted(kwargs.items()))) if (args or kwargs) else "",
             )
 
         # 4. 手动复制核心元数据 (必须包含 __module__ 和 __annotations__)
@@ -551,7 +668,7 @@ def ai_tools(
             schema_brief=schema_brief,
             category=reg_category,
             hide_from_main=resolved_hide_from_main,
-            code_callable=code_callable,
+            code_callable=False if background else code_callable,
             check_in_wrapper=True,
         )
 
@@ -602,13 +719,17 @@ def unregister_tool(tool_name: str) -> bool:
 
 
 def unregister_tools_of_plugin(plugin_name: str) -> int:
-    """按插件名批量卸工具（热重载）。返回卸掉的数量。"""
+    """按插件名批量卸工具（热重载），同步取消该插件在途后台工具。返回卸掉的数量。"""
     victims = [
         name
         for category_tools in _TOOL_REGISTRY.values()
         for name, tb in category_tools.items()
         if tb.plugin == plugin_name
     ]
+    if victims and "gsuid_core.ai_core.background_tools" in sys.modules:
+        from gsuid_core.ai_core.background_tools import cancel_background_tools_for_names
+
+        cancel_background_tools_for_names(victims)
     for name in victims:
         unregister_tool(name)
     return len(victims)

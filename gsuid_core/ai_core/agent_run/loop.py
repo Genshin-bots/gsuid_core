@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import asyncio
 from typing import Any, Sequence
 
 from pydantic_graph import End
@@ -55,12 +56,17 @@ from gsuid_core.ai_core.agent_run.support import (
     turn_reply_metadata,
     wall_clock_budget_action,
     absorb_run_image_delivered,
+    prune_stale_capability_images,
     fold_stale_capability_tool_returns,
 )
 from gsuid_core.ai_core.agent_run.opening_line import (
     arm_opening_line,
     disarm_opening_line,
+    arm_soft_latency_ack,
+    cancel_opening_timer,
     turn_expects_opening,
+    has_armed_opening_text,
+    wait_inflight_opening_line,
 )
 from gsuid_core.ai_core.agent_run.speech_policy import (
     SpeechContext,
@@ -68,6 +74,10 @@ from gsuid_core.ai_core.agent_run.speech_policy import (
     is_status_tool_name,
     evaluate_speech_policy,
     normalize_speech_policy,
+)
+from gsuid_core.ai_core.configs.provider_router import (
+    provider_router,
+    priority_for_create_by,
 )
 
 
@@ -100,9 +110,11 @@ class LoopPhase:
 
         _inject_iter_wrap_if_due(self, st, node)
         _enforce_wall_clock_budget(self, st, node)
-        # §1.7 显式豁免：仅 CapabilityAgent 单次长跑、且旧段可折叠总量超 120k 才成批折叠
+        # §1.7 显式豁免：仅 CapabilityAgent 单次长跑、且旧段可折叠总量超 120k 才成批折叠；
+        # 连续视觉截图同理，内联图按注入分组超 3 组时整组成批剪枝，保最初 1 组与最近 1 组。
         if self.create_by == "CapabilityAgent":
             fold_stale_capability_tool_returns(agent_run.ctx.state.message_history)
+            prune_stale_capability_images(agent_run.ctx.state.message_history)
         DeliveryGuard.track_post_final_request(st)
 
         from gsuid_core.ai_core.mcp.pii import apply_context_mask
@@ -127,7 +139,13 @@ class LoopPhase:
             session_logger=self._session_logger,
             emit_trace=self._emit_trace,
         )
-        DeliveryGuard.absorb_opening_line(st, session_logger=self._session_logger)
+        opening_extra = _require_context(st).extra
+        await wait_inflight_opening_line(opening_extra)
+        DeliveryGuard.absorb_opening_line(
+            st,
+            session_logger=self._session_logger,
+            run_history=agent_run.ctx.state.message_history,
+        )
         ToolCircuitBreaker.inject_post_return_nudges(
             st,
             node.request,
@@ -140,7 +158,6 @@ class LoopPhase:
         logger.debug(i18n_t("log.agent.sending_request_waiting_think_send"))
         # 工具回执先落盘，再标下一轮对话。否则瀑布把回执画进后一轮。
         self._session_logger.log_node_transition("ModelRequestNode")
-        st.req_start = time.perf_counter()
         st.first_event_at = None
         st.last_event_at = None
         st.thinking_streamed = False
@@ -153,27 +170,35 @@ class LoopPhase:
         splitter = ThinkTagSplitter(tags[0], tags[1])
         with effort_capture() as effort_slot:
             try:
-                async with node.stream(agent_run.ctx) as request_stream:
-                    _log_captured_thinking_effort(self, effort_slot)
-                    try:
-                        async for event in request_stream:
-                            if st.cancel_ev is not None and st.cancel_ev.is_set():
-                                st.generation_cancelled = True
-                                logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
-                                break
-                            st.last_event_at = time.perf_counter()
-                            if st.first_event_at is None:
-                                st.first_event_at = st.last_event_at
-                            await _handle_stream_event(self, st, event, text_starts=text_starts, splitter=splitter)
-                    finally:
-                        vis, th = splitter.flush()
-                        if th:
-                            st.thinking_streamed = True
-                            self._emit_trace("thinking_delta", th)
-                        if vis:
-                            await _push_stream_text_delta(self, st, vis, None)
-                        if bot is not None:
-                            await bot.flush_text_delta()
+                slot_cfg = self._active_config_name or ""
+                slot_priority = priority_for_create_by(self.create_by, is_subagent=self.is_subagent)
+                async with provider_router.request_slot(slot_cfg, priority=slot_priority):
+                    if st.cancel_ev is not None and st.cancel_ev.is_set():
+                        st.generation_cancelled = True
+                        logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                        return
+                    st.req_start = time.perf_counter()
+                    async with node.stream(agent_run.ctx) as request_stream:
+                        _log_captured_thinking_effort(self, effort_slot)
+                        try:
+                            async for event in request_stream:
+                                if st.cancel_ev is not None and st.cancel_ev.is_set():
+                                    st.generation_cancelled = True
+                                    logger.info(i18n_t("log.agent.generation_cancelled_supersede"))
+                                    break
+                                st.last_event_at = time.perf_counter()
+                                if st.first_event_at is None:
+                                    st.first_event_at = st.last_event_at
+                                await _handle_stream_event(self, st, event, text_starts=text_starts, splitter=splitter)
+                        finally:
+                            vis, th = splitter.flush()
+                            if th:
+                                st.thinking_streamed = True
+                                self._emit_trace("thinking_delta", th)
+                            if vis:
+                                await _push_stream_text_delta(self, st, vis, None)
+                            if bot is not None:
+                                await bot.flush_text_delta()
             finally:
                 _log_captured_thinking_effort(self, effort_slot)
 
@@ -189,8 +214,12 @@ class LoopPhase:
 
         ToolCircuitBreaker.sanitize_and_cap_response(st, node.model_response, create_by=self.create_by)
         DeliveryGuard.prescan_render_delegation(st, node.model_response.parts)
-
+        opening_extra = _require_context(st).extra
         saw_tool_call_this_turn = _response_has_function_tool_call(node.model_response.parts)
+        if not saw_tool_call_this_turn:
+            disarm_opening_line(opening_extra)
+        await wait_inflight_opening_line(opening_extra)
+        ack_to_restore = DeliveryGuard.absorb_opening_line(st, session_logger=self._session_logger)
         resp_unsent: list[str] = []
         output_gate.begin_response_batch(_require_context(st).extra)
         ab_attempt_counted = False
@@ -288,8 +317,6 @@ class LoopPhase:
                 if thinking and not st.thinking_streamed:
                     self._emit_trace("thinking", thinking)
 
-        opening_extra = _require_context(st).extra
-        disarm_opening_line(opening_extra)
         if (
             saw_tool_call_this_turn
             and st.main_channel_sends == 0
@@ -302,11 +329,20 @@ class LoopPhase:
                 is_status_inquiry=st.status_inquiry,
             )
         ):
-            arm_opening_line(
-                opening_extra,
-                text=resp_unsent[0] if resp_unsent else "",
-                deliver=st.bot is not None and st.return_mode in ("always", "by_bot"),
-            )
+            deliver_flag = st.bot is not None and st.return_mode in ("always", "by_bot")
+            if resp_unsent:
+                disarm_opening_line(opening_extra)
+                arm_opening_line(opening_extra, text=resp_unsent[0], deliver=deliver_flag)
+                if deliver_flag:
+                    arm_soft_latency_ack(
+                        _require_context(st),
+                        cancel_ev=st.cancel_ev if isinstance(st.cancel_ev, asyncio.Event) else None,
+                    )
+            elif not has_armed_opening_text(opening_extra):
+                disarm_opening_line(opening_extra)
+                arm_opening_line(opening_extra, text="", deliver=deliver_flag)
+        else:
+            disarm_opening_line(opening_extra)
 
         if resp_unsent:
             st.unsent_texts.extend(resp_unsent)
@@ -318,6 +354,10 @@ class LoopPhase:
                     continue
                 kept_parts.append(p)
             node.model_response.parts = kept_parts
+        if ack_to_restore and not any(
+            isinstance(p, TextPart) and p.content.strip() == ack_to_restore.strip() for p in node.model_response.parts
+        ):
+            node.model_response.parts = [TextPart(content=ack_to_restore), *node.model_response.parts]
 
         ToolCircuitBreaker.record_response_thrash(st, resp_tool_calls)
         _record_call_tools_metrics(self, st, node, statistics_manager)
@@ -359,6 +399,14 @@ class LoopPhase:
                     elif isinstance(node, CallToolsNode):
                         await self._run_once_on_call_tools(st, node, statistics_manager)
                     elif isinstance(node, End):
+                        if st.context is not None:
+                            disarm_opening_line(st.context.extra)
+                            await wait_inflight_opening_line(st.context.extra)
+                            DeliveryGuard.absorb_opening_line(
+                                st,
+                                session_logger=self._session_logger,
+                                run_history=agent_run.ctx.state.message_history,
+                            )
                         logger.debug(i18n_t("log.agent.node_trigger_end"))
                         logger.debug(i18n_t("log.agent.run_ended_final_result_generated"))
                         self._session_logger.log_node_transition("End")
@@ -373,6 +421,11 @@ class LoopPhase:
 
             return await self._run_once_settle_result(st, agent_run, statistics_manager)
         finally:
+            if st.context is not None:
+                disarm_opening_line(st.context.extra)
+            from gsuid_core.ai_core.planning.kanban_executor import release_inline_claimed_roots
+
+            release_inline_claimed_roots(st.run_extra)
             self._history_iter_active = False
 
 
@@ -396,6 +449,8 @@ async def _push_stream_text_delta(
         return
     bot = st.bot if st.outbound_stream else None
     if bot is not None:
+        if st.context is not None and visible.strip():
+            cancel_opening_timer(st.context.extra)
         bot.enqueue_text_delta(visible)
 
 
@@ -617,7 +672,7 @@ def _build_speech_context(host: RunOnceHost, st: RunOnceState, *, hard: int) -> 
     )
     return SpeechContext(
         policy=normalize_speech_policy(st.speech_policy),
-        pending_async=st.pending_async_delivery,
+        pending_async=st.blocks_user_speech,
         image_sent=st.image_sent_this_run,
         has_status_tool=st.has_status_tool_call,
         tool_calls_so_far=st.tool_call_list,
@@ -685,7 +740,7 @@ def _record_call_tools_metrics(
 
 
 def _model_request_is_approval_halt(node: ModelRequestNode[Any]) -> bool:
-    from gsuid_core.ai_core.approval.halt import text_is_approval_halt
+    from gsuid_core.ai_core.approval.models import text_is_approval_halt
 
     for part in node.request.parts:
         if type(part) is not ToolReturnPart:

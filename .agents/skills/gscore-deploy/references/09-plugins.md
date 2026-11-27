@@ -173,10 +173,9 @@ applife lifespan
 
 ## 9.9 插件版本管理
 
-- 每个插件是独立 git 仓库，commit 信息通过 `git_get_current_commit()` 记录在
-  [`plugin_commit_versions`](../../../gsuid_core/utils/plugins_update/_plugins.py) 中
-- 仅运行时持有，不持久化
-- WebConsole「插件管理」页签可看到 commit hash
+- 每个插件的磁盘元信息与 Git commit 统一由 [`plugin_registry`](../../../gsuid_core/plugin_registry/registry.py) 在启动阶段两阶段非阻塞扫描维护（`get_plugin_commit()` 走实时内存快照）
+- commit 信息仅运行时持有，不持久化；商店上游索引轻量缓存在 `data/plugin_store_index.json`
+- WebConsole「插件管理」与「Git 更新」页签可查看 commit hash 与仓库来源归属
 
 ## 9.10 常见错误
 

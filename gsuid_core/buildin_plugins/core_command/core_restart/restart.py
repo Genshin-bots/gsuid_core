@@ -76,17 +76,6 @@ def filter_restart_timestamps(
     return [ts for ts in timestamps if ts > cutoff]
 
 
-def can_spawn_restart(
-    timestamps: Sequence[float],
-    now: float,
-    *,
-    window_seconds: float = RESTART_GUARD_WINDOW_SECONDS,
-    max_in_window: int = RESTART_GUARD_MAX_IN_WINDOW,
-) -> bool:
-    recent = filter_restart_timestamps(timestamps, now, window_seconds)
-    return len(recent) < max_in_window
-
-
 def restart_guard_path() -> Path:
     return get_res_path() / "core_restart_guard.json"
 

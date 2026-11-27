@@ -207,6 +207,7 @@ POST /api/meme/upload
 | `file` | file | 是 | - | 图片文件 |
 | `folder` | string | 否 | `common` | 目标文件夹 |
 | `auto_tag` | bool | 否 | `true` | 是否自动触发 VLM 打标 |
+| `pack_id` | string | 否 | - | 目标表情包 ID（可选）。人格市场仓库管理的表情包不允许上传；图片已存在且未被拒绝时直接加入该表情包，`data.linked` 表示本次是否新加入 |
 
 **响应**:
 

@@ -22,6 +22,7 @@ from gsuid_core.ai_core.register import _ENTITIES
 from gsuid_core.ai_core.rag.qmodels import (
     Filter,
     Vector,
+    PointId,
     Distance,
     MatchAny,
     Modifier,
@@ -32,11 +33,13 @@ from gsuid_core.ai_core.rag.qmodels import (
     PointIdsList,
     SparseVector,
     VectorParams,
+    QdrantSession,
     FieldCondition,
     SparseVectorParams,
 )
 from gsuid_core.ai_core.rag.chunking import (
     DEFAULT_CHUNK_OVERLAP,
+    EmbedPiece,
     chunker_stamp,
     document_bodies,
     pieces_for_embed,
@@ -75,16 +78,39 @@ _knowledge_collection_init_lock = asyncio.Lock()
 _knowledge_sync_lock = asyncio.Lock()
 # 同一进程里切法章相同则复用片数。后到的调用仍滚动印章并核对。
 _piece_count_by_stamp: dict[str, int] = {}
+
+
+def _source_filter(source: str) -> Filter:
+    return Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))])
+
+
+def _build_list_filter(source_filter: str, plugin: Optional[str]) -> Optional[Filter]:
+    must_conditions: List[Condition] = []
+    if source_filter != "all":
+        must_conditions.append(FieldCondition(key="source", match=MatchValue(value=source_filter)))
+    if plugin:
+        must_conditions.append(FieldCondition(key="plugin", match=MatchValue(value=plugin)))
+    return Filter(must=must_conditions) if must_conditions else None
+
+
 _PLUGIN_STAMP_FIELDS: list[str] = ["source", "id", "doc_id", "_hash"]
-_PLUGIN_SOURCE_FILTER = Filter(must=[FieldCondition(key="source", match=MatchValue(value="plugin"))])
+_PLUGIN_SOURCE_FILTER = _source_filter("plugin")
+_RECONCILE_COUNT_KEYS: tuple[str, ...] = (
+    "sql_total",
+    "qdrant_total",
+    "backfilled",
+    "reembedded_missing",
+    "reembedded_mismatch",
+    "reembedded_written",
+)
 
 
-def _knowledge_vectors_config(dimension: int) -> dict:
+def _knowledge_vectors_config(dimension: int) -> dict[str, VectorParams]:
     """知识库 dense 命名向量配置。"""
     return {KNOWLEDGE_DENSE_VECTOR: VectorParams(size=dimension, distance=Distance.COSINE, on_disk=True)}
 
 
-def _knowledge_sparse_config() -> dict:
+def _knowledge_sparse_config() -> dict[str, SparseVectorParams]:
     """知识库 BM25 稀疏向量配置（IDF 服务端加权，与 memory 一致）。"""
     return {"sparse": SparseVectorParams(modifier=Modifier.IDF)}
 
@@ -98,24 +124,76 @@ async def _sparse_embed_batch_async(texts: List[str]) -> List[Optional[SparseVec
     return await sparse_embed_batch_async(texts)
 
 
+async def _embed_dense_and_sparse(
+    texts: Sequence[str],
+) -> tuple[list[Sequence[float] | None], list[Optional[SparseVector]]]:
+    """批量算 dense（413 退避）+ BM25 sparse 向量。"""
+    from gsuid_core.ai_core.rag.base import embedding_model
+
+    if not texts or embedding_model is None:
+        return [], []
+
+    async def _embed(batch: Sequence[str]) -> list[list[float]]:
+        return list(await embedding_model.aembed(list(batch)))
+
+    dense_vectors = await embed_texts_with_backoff(list(texts), _embed, log_tag="Knowledge")
+    sparse_vectors = await _sparse_embed_batch_async(list(texts))
+    return dense_vectors, sparse_vectors
+
+
+async def _embed_query_vectors(query: str) -> tuple[list[float] | None, Optional[SparseVector]]:
+    """为单条查询算 dense + sparse 向量；dense 为空时返回 (None, None)。"""
+    from gsuid_core.ai_core.rag.base import embedding_model
+
+    if embedding_model is None:
+        return None, None
+    query_dense = await embedding_model.aembed_query(query)
+    if not query_dense:
+        return None, None
+    return list(query_dense), (await _sparse_embed_batch_async([query]))[0]
+
+
+async def _iter_qdrant_scroll(
+    qdrant_client: QdrantSession,
+    *,
+    scroll_filter: Optional[Filter] = None,
+    with_payload: bool | Sequence[str] = True,
+    limit: int = 256,
+) -> AsyncIterator[list[ScoredPoint]]:
+    """按游标分批 scroll 知识库集合。"""
+    next_offset: PointId | None = None
+    while True:
+        records, next_offset = await qdrant_client.scroll(
+            collection_name=KNOWLEDGE_COLLECTION_NAME,
+            limit=limit,
+            offset=next_offset,
+            with_payload=with_payload,
+            with_vectors=False,
+            scroll_filter=scroll_filter,
+        )
+        if not records:
+            break
+        yield records
+        if next_offset is None:
+            break
+
+
 def _build_named_point(
     point_id: Union[int, str],
     dense: List[float],
     sparse: Optional[SparseVector],
-    payload: Dict[str, Any],
+    payload: Dict[str, object],
 ) -> PointStruct:
-    """构造命名向量 point：dense 必有，sparse 不可用时省略（查询端自动降级纯 dense）。
-
-    ``vector`` 精确标注为命名向量映射（dense=list / sparse=SparseVector），对齐 Qdrant
-    ``VectorStruct`` 的命名向量分支，无需 type:ignore。
-    """
+    """构造命名向量 point：dense 必有，sparse 不可用时省略（查询端自动降级纯 dense）。"""
     vector: Dict[str, Vector] = {KNOWLEDGE_DENSE_VECTOR: dense}
     if sparse is not None:
         vector["sparse"] = sparse
     return PointStruct(id=point_id, vector=vector, payload=payload)
 
 
-async def _compute_knowledge_points(items: List[tuple]) -> List[PointStruct]:
+async def _compute_knowledge_points(
+    items: Sequence[tuple[Union[int, str], Dict[str, object], str]],
+) -> List[PointStruct]:
     """把 (point_id, payload, text_to_embed) 列表算成 dense+sparse 命名向量 points。
 
     dense 走 413 退避批量嵌入；被限流跳过（dense=None）的条目不产出 point。
@@ -126,14 +204,7 @@ async def _compute_knowledge_points(items: List[tuple]) -> List[PointStruct]:
     if not items or client is None or embedding_model is None:
         return []
 
-    texts = [str(it[2]) for it in items]
-
-    async def _embed(batch: Sequence[str]) -> list[list[float]]:
-        return list(await embedding_model.aembed(list(batch)))
-
-    dense_vectors = await embed_texts_with_backoff(texts, _embed, log_tag="Knowledge")
-    sparse_vectors = await _sparse_embed_batch_async(texts)
-
+    dense_vectors, sparse_vectors = await _embed_dense_and_sparse([str(it[2]) for it in items])
     points: List[PointStruct] = []
     for i, (point_id, payload, _) in enumerate(items):
         dv = dense_vectors[i]
@@ -173,8 +244,7 @@ async def _init_knowledge_collection_impl():
         # 传 vector_name="dense" 覆盖嵌入模型维度变化与旧库无名单向量向双向量的结构迁移。
         if await collection_vector_mismatched(KNOWLEDGE_COLLECTION_NAME, dimension, vector_name=KNOWLEDGE_DENSE_VECTOR):
             payload_backup = await scroll_all_payloads(KNOWLEDGE_COLLECTION_NAME)
-            # 上次迁移可能在“已清空集合但未完成重嵌入”时中断（集合为空但维度仍不匹配），
-            # 此时实时 scroll 到的 payload 比历史备份少甚至为空，优先用更完整的历史备份恢复，避免丢数据。
+            # 上次迁移中断时实时 scroll 可能少于历史备份，优先恢复更完整的历史备份。
             if latest_backup_path is not None:
                 prior_backup = load_payload_backup(latest_backup_path, KNOWLEDGE_COLLECTION_NAME)
                 if len(prior_backup) > len(payload_backup):
@@ -213,9 +283,7 @@ async def _init_knowledge_collection_impl():
                         p0=len(backup_payloads),
                     )
                 )
-            else:
-                await ensure_vector_on_disk(KNOWLEDGE_COLLECTION_NAME, KNOWLEDGE_DENSE_VECTOR)
-        else:
+        if not need_recreate:
             await ensure_vector_on_disk(KNOWLEDGE_COLLECTION_NAME, KNOWLEDGE_DENSE_VECTOR)
     elif latest_backup_path is not None:
         payload_backup = load_payload_backup(latest_backup_path, KNOWLEDGE_COLLECTION_NAME)
@@ -248,13 +316,7 @@ async def _init_knowledge_collection_impl():
         try:
             await _reindex_knowledge_payloads(payload_backup)
         except Exception as e:
-            logger.error(
-                i18n_t(
-                    "log.rag.kb_dimension_migration_embedding_fail",
-                    backup_path=backup_path,
-                    e=e,
-                )
-            )
+            logger.error(i18n_t("log.rag.kb_dimension_migration_embedding_fail", backup_path=backup_path, e=e))
             raise
         remove_payload_backup(backup_path, KNOWLEDGE_COLLECTION_NAME)
 
@@ -326,6 +388,30 @@ def _stamp_reindex_payload(
     return cloned
 
 
+def _build_reindex_piece_rows(
+    base_payload: dict[str, object],
+    *,
+    split_parent: str,
+    article_id: str,
+    pieces: Sequence[EmbedPiece],
+    src: str,
+    stamped: str,
+) -> list[tuple[str, dict[str, object], str]]:
+    rows: list[tuple[str, dict[str, object], str]] = []
+    for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(split_parent, len(pieces)), pieces)):
+        cloned = _stamp_reindex_payload(
+            base_payload,
+            logical=logical,
+            article_id=article_id,
+            idx=idx,
+            body=piece.body,
+            src=src,
+            stamped=stamped,
+        )
+        rows.append((get_point_id(logical), cloned, piece.embed_text))
+    return rows
+
+
 def _reindex_embed_rows(point_id: str, payload: dict[str, object]) -> list[tuple[str, dict[str, object], str]]:
     """单点按当前切法展开。已是某篇的一片时，超预算套在这一片自己的 id 上。"""
     if "path" not in payload and "content" not in payload and "title" not in payload:
@@ -340,26 +426,19 @@ def _reindex_embed_rows(point_id: str, payload: dict[str, object]) -> list[tuple
     own_id = _payload_text(payload, "id") or point_id
     doc_id = _payload_text(payload, "doc_id")
     if doc_id and own_id != doc_id:
-        split_parent = own_id
-        article_id = doc_id
+        split_parent, article_id = own_id, doc_id
     else:
-        split_parent = doc_id or own_id
-        article_id = split_parent
+        split_parent = article_id = doc_id or own_id
     src = _payload_text(payload, "_src") or _payload_text(payload, "_hash")
     stamped = chunk_method_hash(src) if src else ""
-    rows: list[tuple[str, dict[str, object], str]] = []
-    for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(split_parent, len(pieces)), pieces)):
-        cloned = _stamp_reindex_payload(
-            payload,
-            logical=logical,
-            article_id=article_id,
-            idx=idx,
-            body=piece.body,
-            src=src,
-            stamped=stamped,
-        )
-        rows.append((get_point_id(logical), cloned, piece.embed_text))
-    return rows
+    return _build_reindex_piece_rows(
+        payload,
+        split_parent=split_parent,
+        article_id=article_id,
+        pieces=pieces,
+        src=src,
+        stamped=stamped,
+    )
 
 
 def _reindex_article_rows(
@@ -375,12 +454,7 @@ def _reindex_article_rows(
         return _reindex_embed_rows(ordered[0][0], ordered[0][1])
     head = ordered[0][1]
     title = _strip_piece_title(_payload_text(head, "title"))
-    body_parts: list[str] = []
-    for _pid, payload in ordered:
-        text = _payload_text(payload, "content")
-        if text:
-            body_parts.append(text)
-    body = "\n".join(body_parts)
+    body = "\n".join(text for _pid, payload in ordered if (text := _payload_text(payload, "content")))
     pieces = pieces_for_embed(body, title=title, tags=_payload_tag_list(head))
     if not pieces or not pieces[0].embed_text.strip():
         return []
@@ -398,19 +472,9 @@ def _reindex_article_rows(
             stamped=stamped,
         )
         return [(point_id, cloned, pieces[0].embed_text)]
-    rows: list[tuple[str, dict[str, object], str]] = []
-    for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(parent, len(pieces)), pieces)):
-        cloned = _stamp_reindex_payload(
-            head,
-            logical=logical,
-            article_id=parent,
-            idx=idx,
-            body=piece.body,
-            src=src,
-            stamped=stamped,
-        )
-        rows.append((get_point_id(logical), cloned, piece.embed_text))
-    return rows
+    return _build_reindex_piece_rows(
+        head, split_parent=parent, article_id=parent, pieces=pieces, src=src, stamped=stamped
+    )
 
 
 def _prepare_knowledge_reindex(
@@ -511,27 +575,13 @@ async def _upsert_knowledge_points(points: list[PointStruct], batch_size: Option
 
 
 def build_knowledge_text(kp: KnowledgeBase | ManualKnowledgeBase) -> str:
-    """构建用于向量化的文本表示
-
-    将知识点的标题、标签和内容组合成一段文本，
-    以提高向量检索的准确性。
-
-    Args:
-        kp: 知识库条目
-
-    Returns:
-        组合后的文本字符串
-    """
-    parts = []
-
-    if kp.get("title"):
+    """构建用于向量化的文本表示（标题 + 标签 + 内容）。"""
+    parts: list[str] = []
+    if "title" in kp and kp["title"]:
         parts.append(f"标题：{kp['title']}")
-
-    if kp.get("tags"):
+    if "tags" in kp and kp["tags"]:
         parts.append(f"标签：{' '.join(kp['tags'])}")
-
-    parts.append(kp.get("content", ""))
-
+    parts.append(kp["content"] if "content" in kp else "")
     return "\n".join(parts)
 
 
@@ -604,14 +654,14 @@ def _expand_knowledge_row(row: AIKnowledgeChunk) -> list[AIKnowledgeChunk]:
     return expanded
 
 
-def _opt_field(data: Mapping[str, object], key: str) -> Any:
-    """取外部 dict（Qdrant payload / 导入记录 / API 入参）的字段值，键不存在返回 None。
-
-    替代 ``dict.get`` 兜底语法：这些 dict 的键确实可能缺失（外部数据），用显式 ``in`` 判定
-    表达"键可有可无"，而非用 ``.get`` 掩盖类型不确定。调用方再按需 ``str()/int()/isinstance``
-    收窄。
-    """
+def _opt_field(data: Mapping[str, object], key: str) -> object:
+    """取外部 dict（Qdrant payload / 导入记录 / API 入参）的字段值，键不存在返回 None。"""
     return data[key] if key in data else None
+
+
+def _opt_str(data: Mapping[str, object], key: str, default: str = "") -> str:
+    raw = data[key] if key in data else None
+    return str(raw) if raw else default
 
 
 def _chunk_payload(row: AIKnowledgeChunk) -> Dict[str, Any]:
@@ -631,24 +681,25 @@ def _chunk_payload(row: AIKnowledgeChunk) -> Dict[str, Any]:
 
 def _row_from_payload(payload: Mapping[str, object]) -> AIKnowledgeChunk:
     """由 Qdrant payload / 导入记录构造一个 AIKnowledgeChunk（缺失字段给安全默认值）。"""
-    pid = str(_opt_field(payload, "id") or "").strip() or str(uuid.uuid4())
-    tags = _opt_field(payload, "tags") or []
-    if not isinstance(tags, list):
-        tags = []
-    content = str(_opt_field(payload, "content") or "")
-    title = str(_opt_field(payload, "title") or "")
-    content_hash = str(_opt_field(payload, "_hash") or "")
-    if not content_hash:
-        content_hash = calculate_hash({"id": pid, "title": title, "content": content, "tags": tags})
+    pid = _opt_str(payload, "id").strip() or str(uuid.uuid4())
+    raw_tags = _opt_field(payload, "tags")
+    tags = raw_tags if isinstance(raw_tags, list) else []
+    content = _opt_str(payload, "content")
+    title = _opt_str(payload, "title")
+    content_hash = _opt_str(payload, "_hash") or calculate_hash(
+        {"id": pid, "title": title, "content": content, "tags": tags}
+    )
+    raw_idx = _opt_field(payload, "chunk_index")
+    chunk_index = int(raw_idx) if isinstance(raw_idx, (int, str)) and raw_idx else 0
     return AIKnowledgeChunk(
         id=pid,
-        doc_id=str(_opt_field(payload, "doc_id") or pid),
-        chunk_index=int(_opt_field(payload, "chunk_index") or 0),
+        doc_id=_opt_str(payload, "doc_id", pid),
+        chunk_index=chunk_index,
         title=title,
         content=content,
         tags=json.dumps(tags, ensure_ascii=False),
-        source=str(_opt_field(payload, "source") or "manual"),
-        plugin=str(_opt_field(payload, "plugin") or "manual"),
+        source=_opt_str(payload, "source", "manual"),
+        plugin=_opt_str(payload, "plugin", "manual"),
         qdrant_id=get_point_id(pid),
         content_hash=content_hash,
     )
@@ -761,7 +812,7 @@ async def add_knowledge_document(
         for item in items:
             if not isinstance(item, dict):
                 continue
-            text = str(_opt_field(item, "content") or "").strip()
+            text = _opt_str(item, "content").strip()
             if text:
                 section_texts.append(text)
     chosen_budget = embed_char_budget() if chunk_size <= 0 else chunk_size
@@ -880,24 +931,11 @@ async def iter_export_manual_knowledge() -> AsyncIterator[str]:
 
 async def import_manual_knowledge(records: List[dict]) -> Dict[str, Any]:
     """从导出件（JSONL 解析后的 dict 列表）恢复手动知识：SQL 真值源 + 重嵌入。"""
-    rows: List[AIKnowledgeChunk] = []
-    for rec in records:
-        if not isinstance(rec, dict):
-            continue
-        if not str(_opt_field(rec, "content") or "").strip():
-            continue
-        rows.append(_row_from_payload(rec))
+    rows = [_row_from_payload(rec) for rec in records if isinstance(rec, dict) and _opt_str(rec, "content").strip()]
     if not rows:
         return {"total": 0, "written": 0, "skipped": 0}
     written, skipped = await _embed_and_upsert_chunks(rows)
-    logger.info(
-        i18n_t(
-            "log.rag.kb_import_manual_knowledge_total",
-            p0=len(rows),
-            written=written,
-            skipped=skipped,
-        )
-    )
+    logger.info(i18n_t("log.rag.kb_import_manual_knowledge_total", p0=len(rows), written=written, skipped=skipped))
     from gsuid_core.ai_core.cognition.hub import mount_one_manual_document
 
     seen_docs: set[str] = set()
@@ -911,7 +949,7 @@ async def import_manual_knowledge(records: List[dict]) -> Dict[str, Any]:
     return {"total": len(rows), "written": written, "skipped": skipped}
 
 
-async def _backfill_qdrant_source_to_sql(sql_ids: set, source: str) -> int:
+async def _backfill_qdrant_source_to_sql(sql_ids: set[str], source: str) -> int:
     """把仅存在于 Qdrant 的旧知识点回填到 SQL 真值源（不重嵌，向量已在）。"""
     from gsuid_core.ai_core.rag.base import client
 
@@ -919,34 +957,18 @@ async def _backfill_qdrant_source_to_sql(sql_ids: set, source: str) -> int:
         return 0
 
     backfilled: List[AIKnowledgeChunk] = []
-    next_offset = None
-    while True:
-        records, next_offset = await client.scroll(
-            collection_name=KNOWLEDGE_COLLECTION_NAME,
-            limit=256,
-            with_payload=True,
-            with_vectors=False,
-            offset=next_offset,
-            scroll_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))]),
-        )
+    async for records in _iter_qdrant_scroll(client, scroll_filter=_source_filter(source), limit=256):
         for rec in records:
             if rec.payload is None:
                 continue
-            pid = str(_opt_field(rec.payload, "id") or "")
-            if not pid or pid in sql_ids:
-                continue
-            backfilled.append(_row_from_payload(dict(rec.payload)))
-        if next_offset is None:
-            break
+            pid = _opt_str(rec.payload, "id")
+            if pid and pid not in sql_ids:
+                backfilled.append(_row_from_payload(dict(rec.payload)))
 
     if backfilled:
         await AIKnowledgeChunk.upsert_many(backfilled)
         logger.info(i18n_t("log.rag.kb_backfilling_manual_knowledge", p0=len(backfilled)))
     return len(backfilled)
-
-
-async def _backfill_qdrant_manual_to_sql(sql_ids: set) -> int:
-    return await _backfill_qdrant_source_to_sql(sql_ids, "manual")
 
 
 async def _reembed_missing_sql_chunks_for(source: str) -> int:
@@ -983,19 +1005,9 @@ async def _reembed_missing_sql_chunks_for(source: str) -> int:
 
     if missing:
         written, skipped = await _embed_and_upsert_chunks(missing)
-        logger.info(
-            i18n_t(
-                "log.rag.kb_embedding_missing_chunks_sql",
-                written=written,
-                skipped=skipped,
-            )
-        )
+        logger.info(i18n_t("log.rag.kb_embedding_missing_chunks_sql", written=written, skipped=skipped))
         return written
     return 0
-
-
-async def _reembed_missing_sql_chunks() -> int:
-    return await _reembed_missing_sql_chunks_for("manual")
 
 
 async def _reconcile_sql_source(source: str) -> None:
@@ -1005,10 +1017,7 @@ async def _reconcile_sql_source(source: str) -> None:
         return
     try:
         q_count = (
-            await client.count(
-                collection_name=KNOWLEDGE_COLLECTION_NAME,
-                count_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))]),
-            )
+            await client.count(collection_name=KNOWLEDGE_COLLECTION_NAME, count_filter=_source_filter(source))
         ).count
     except Exception as e:
         logger.debug(i18n_t("log.rag.kb_qdrant_manual_knowledge_fail", e=e))
@@ -1037,6 +1046,7 @@ async def _rechunk_sql_docs(source: str) -> None:
     rows = await AIKnowledgeChunk.iter_all(source=source)
     if not rows:
         return
+    cur_stamp = chunker_stamp()
     for doc_id, group in _rows_by_doc(rows).items():
         origin = ""
         stamped = ""
@@ -1045,30 +1055,20 @@ async def _rechunk_sql_docs(source: str) -> None:
                 origin = row.origin
             if row.chunker_id and not stamped:
                 stamped = row.chunker_id
-        head = group[0]
-        if origin and stamped != chunker_stamp():
+        rechunk_text: str | None = None
+        if origin and stamped != cur_stamp:
+            rechunk_text = origin
+        elif any(
+            len(pieces_for_embed(row.content, title=_strip_piece_title(row.title), tags=row.tags_list())) > 1
+            for row in group
+        ):
+            rechunk_text = "\n".join(item.content for item in group if item.content)
+        if rechunk_text is not None:
+            head = group[0]
             await add_knowledge_document(
                 doc_id=doc_id,
                 title=_strip_piece_title(head.title) or doc_id,
-                full_text=origin,
-                tags=head.tags_list(),
-                plugin=head.plugin,
-                source=head.source or source,
-                replace=True,
-            )
-            continue
-        oversize = False
-        for row in group:
-            pack_title = _strip_piece_title(row.title)
-            if len(pieces_for_embed(row.content, title=pack_title, tags=row.tags_list())) > 1:
-                oversize = True
-                break
-        if oversize:
-            full_text = "\n".join(item.content for item in group if item.content)
-            await add_knowledge_document(
-                doc_id=doc_id,
-                title=_strip_piece_title(head.title) or doc_id,
-                full_text=full_text,
+                full_text=rechunk_text,
                 tags=head.tags_list(),
                 plugin=head.plugin,
                 source=head.source or source,
@@ -1105,29 +1105,15 @@ async def _deep_reconcile_one_source(source: str) -> Dict[str, Any]:
     if client is None or embedding_model is None:
         return {"error": "RAG 未初始化（Qdrant / Embedding 不可用）"}
 
-    sql_rows = await AIKnowledgeChunk.iter_all(source=source)
-    sql_by_id: Dict[str, AIKnowledgeChunk] = {r.id: r for r in sql_rows}
-
+    sql_by_id: Dict[str, AIKnowledgeChunk] = {r.id: r for r in await AIKnowledgeChunk.iter_all(source=source)}
     qdrant_hash_by_id: Dict[str, str] = {}
-    next_offset = None
-    while True:
-        records, next_offset = await client.scroll(
-            collection_name=KNOWLEDGE_COLLECTION_NAME,
-            limit=256,
-            with_payload=True,
-            with_vectors=False,
-            offset=next_offset,
-            scroll_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))]),
-        )
+    async for records in _iter_qdrant_scroll(client, scroll_filter=_source_filter(source), limit=256):
         for rec in records:
             if rec.payload is None:
                 continue
             pid = str(rec.payload["id"]) if "id" in rec.payload else ""
-            if not pid:
-                continue
-            qdrant_hash_by_id[pid] = str(rec.payload["_hash"]) if "_hash" in rec.payload else ""
-        if next_offset is None:
-            break
+            if pid:
+                qdrant_hash_by_id[pid] = str(rec.payload["_hash"]) if "_hash" in rec.payload else ""
 
     sql_ids = set(sql_by_id.keys())
     qdrant_ids = set(qdrant_hash_by_id.keys())
@@ -1174,26 +1160,16 @@ async def deep_reconcile_manual_knowledge() -> Dict[str, Any]:
         return {"error": "RAG 未初始化（Qdrant / Embedding 不可用）"}
 
     await AIKnowledgeChunk.ensure_table()
-    totals: Dict[str, Any] = {
-        "sql_total": 0,
-        "qdrant_total": 0,
-        "backfilled": 0,
-        "reembedded_missing": 0,
-        "reembedded_mismatch": 0,
-        "reembedded_written": 0,
-        "consistent": True,
-    }
+    counts: dict[str, int] = {k: 0 for k in _RECONCILE_COUNT_KEYS}
+    consistent = True
     for source in ("manual", "agent"):
         part = await _deep_reconcile_one_source(source)
         if "error" in part:
             return part
-        totals["sql_total"] += int(part["sql_total"])
-        totals["qdrant_total"] += int(part["qdrant_total"])
-        totals["backfilled"] += int(part["backfilled"])
-        totals["reembedded_missing"] += int(part["reembedded_missing"])
-        totals["reembedded_mismatch"] += int(part["reembedded_mismatch"])
-        totals["reembedded_written"] += int(part["reembedded_written"])
-        totals["consistent"] = bool(totals["consistent"]) and bool(part["consistent"])
+        for key in _RECONCILE_COUNT_KEYS:
+            counts[key] += int(part[key])
+        consistent = consistent and bool(part["consistent"])
+    totals: Dict[str, object] = {**counts, "consistent": consistent}
     logger.info(i18n_t("log.rag.kb_deep_reconciliation_report", report=totals))
     return totals
 
@@ -1233,6 +1209,32 @@ async def sync_knowledge() -> None:
         await _sync_knowledge_impl()
 
 
+async def _scan_plugin_stamps(qdrant_client: QdrantSession) -> tuple[Dict[str, List[_StoredSlice]], List[str]]:
+    """只拉插件点印章（正文留在注册表）；有 doc_id 按文档归组，否则用 payload id。"""
+    groups: Dict[str, List[_StoredSlice]] = {}
+    scanned_point_ids: List[str] = []
+    async for records in _iter_qdrant_scroll(
+        qdrant_client,
+        scroll_filter=_PLUGIN_SOURCE_FILTER,
+        with_payload=_PLUGIN_STAMP_FIELDS,
+        limit=512,
+    ):
+        for record in records:
+            payload = record.payload
+            if payload is None or _payload_text(payload, "source") != "plugin":
+                continue
+            logical = _payload_text(payload, "id")
+            if not logical:
+                continue
+            parent = _payload_text(payload, "doc_id") or logical
+            point_id = str(record.id)
+            scanned_point_ids.append(point_id)
+            if parent not in groups:
+                groups[parent] = []
+            groups[parent].append(_StoredSlice(point_id, _payload_text(payload, "_hash")))
+    return groups, scanned_point_ids
+
+
 async def _sync_knowledge_impl() -> None:
     import gsuid_core.ai_core.rag.base as rag_base
     from gsuid_core.ai_core.configs.ai_config import ai_config
@@ -1249,48 +1251,13 @@ async def _sync_knowledge_impl() -> None:
 
     logger.info(i18n_t("log.rag.kb_knowledge_base_sync"))
 
-    # 1. 只收插件点。有 doc_id 时按文档归组，否则用 payload id（旧的一片一点）。
-    groups: Dict[str, List[_StoredSlice]] = {}
-    scanned_point_ids: List[str] = []
-    next_page_offset = None
-
-    # 只取印章。正文留在插件注册表，避免每次启动把全文拉回来。
-    while True:
-        records, next_page_offset = await client.scroll(
-            collection_name=KNOWLEDGE_COLLECTION_NAME,
-            scroll_filter=_PLUGIN_SOURCE_FILTER,
-            limit=512,
-            with_payload=_PLUGIN_STAMP_FIELDS,
-            with_vectors=False,
-            offset=next_page_offset,
-        )
-        for record in records:
-            payload = record.payload
-            if payload is None:
-                continue
-            source = payload["source"] if "source" in payload else ""
-            if source != "plugin":
-                continue
-            logical = payload["id"] if "id" in payload else ""
-            if not isinstance(logical, str) or not logical:
-                continue
-            doc_raw = payload["doc_id"] if "doc_id" in payload else ""
-            parent = doc_raw if isinstance(doc_raw, str) and doc_raw else logical
-            hash_raw = payload["_hash"] if "_hash" in payload else ""
-            stored_hash = hash_raw if isinstance(hash_raw, str) else ""
-            point_id = str(record.id)
-            scanned_point_ids.append(point_id)
-            if parent not in groups:
-                groups[parent] = []
-            groups[parent].append(_StoredSlice(point_id, stored_hash))
-
-        if next_page_offset is None:
-            break
+    # 1. 只收插件点印章
+    groups, scanned_point_ids = await _scan_plugin_stamps(client)
 
     # 2. 内存里切一遍。哈希和片数都没变才跳过嵌入，避免每次启动重嵌短文。
     points_to_upsert: List[PointStruct] = []
     kept_point_ids: set[str] = set()
-    pending_items: list[tuple[str, dict, str, str, str, str, bool]] = []
+    pending_items: list[tuple[str, dict[str, object], str, str, str, str, bool]] = []
 
     logger.info(i18n_t("log.rag.kb_number_knowledge_registered_register", p0=len(_ENTITIES)))
     last_scan_progress_log = time.monotonic()
@@ -1310,55 +1277,42 @@ async def _sync_knowledge_impl() -> None:
         stored_count = len(group)
         cached_count = _piece_count_by_stamp[stamped] if stamped in _piece_count_by_stamp else -1
         if stored_hash == stamped and stored_count >= 1 and cached_count == stored_count:
-            for item in group:
-                kept_point_ids.add(item.point_id)
+            kept_point_ids.update(item.point_id for item in group)
             continue
         if "title" in knowledge:
-            pieces = pieces_for_embed(
-                knowledge["content"],
-                title=knowledge["title"],
-                tags=list(knowledge["tags"]),
-            )
-            log_prefix = "Knowledge"
-            log_name = knowledge["title"] or id_str
+            pieces = pieces_for_embed(knowledge["content"], title=knowledge["title"], tags=list(knowledge["tags"]))
+            log_prefix, log_name = "Knowledge", knowledge["title"] or id_str
         else:
             pieces = pieces_for_embed(knowledge["content"], tags=list(knowledge["tags"]))
-            log_prefix = "ImageRAG"
-            log_name = id_str
+            log_prefix, log_name = "ImageRAG", id_str
         _piece_count_by_stamp[stamped] = len(pieces)
         if should_skip_rebuild(stored_hash, stored_count, content_hash, len(pieces)):
-            for item in group:
-                kept_point_ids.add(item.point_id)
+            kept_point_ids.update(item.point_id for item in group)
             continue
         if not pieces:
             continue
         is_new = id_str not in groups
         for idx, (logical, piece) in enumerate(zip(logical_chunk_ids(id_str, len(pieces)), pieces)):
-            chunk_payload = dict(knowledge)
-            chunk_payload["id"] = logical
-            chunk_payload["doc_id"] = id_str
-            chunk_payload["chunk_index"] = idx
-            chunk_payload["content"] = piece.body
-            chunk_payload["_hash"] = stamped
-            chunk_payload["_src"] = content_hash
-            chunk_payload["source"] = "plugin"
-            point_id = get_point_id(logical)
-            pending_items.append((point_id, chunk_payload, piece.embed_text, log_prefix, log_name, id_str, is_new))
+            chunk_payload: dict[str, object] = {
+                **dict(knowledge),
+                "id": logical,
+                "doc_id": id_str,
+                "chunk_index": idx,
+                "content": piece.body,
+                "_hash": stamped,
+                "_src": content_hash,
+                "source": "plugin",
+            }
+            pending_items.append(
+                (get_point_id(logical), chunk_payload, piece.embed_text, log_prefix, log_name, id_str, is_new)
+            )
 
     if pending_items:
         logger.info(i18n_t("log.rag.kb_start_update_need_add_items", p0=len(pending_items)))
     else:
         logger.info(i18n_t("log.rag.kb_sync_skip_embed"))
 
-    async def _embed_pending(texts: Sequence[str]) -> list[list[float]]:
-        return list(await embedding_model.aembed(list(texts)))
-
-    vectors = await embed_texts_with_backoff(
-        [item[2] for item in pending_items],
-        _embed_pending,
-        log_tag="Knowledge",
-    )
-    sparse_vectors = await _sparse_embed_batch_async([item[2] for item in pending_items])
+    vectors, sparse_vectors = await _embed_dense_and_sparse([item[2] for item in pending_items])
     parent_indexes: dict[str, list[int]] = {}
     for i, item in enumerate(pending_items):
         parent = item[5]
@@ -1371,12 +1325,7 @@ async def _sync_knowledge_impl() -> None:
         parent_vectors: list[Sequence[float] | None] = [vectors[i] if i < len(vectors) else None for i in indexes]
         old_ids = [item.point_id for item in groups[parent]] if parent in groups else []
         new_ids = [pending_items[i][0] for i in indexes]
-        if not keep_ids_after_rebuild(
-            kept_point_ids,
-            old_ids=old_ids,
-            new_ids=new_ids,
-            vectors=parent_vectors,
-        ):
+        if not keep_ids_after_rebuild(kept_point_ids, old_ids=old_ids, new_ids=new_ids, vectors=parent_vectors):
             continue
         for i, vector in zip(indexes, parent_vectors):
             point_id, payload, _, log_prefix, log_name, _, is_new = pending_items[i]
@@ -1384,12 +1333,11 @@ async def _sync_knowledge_impl() -> None:
                 continue
             if parent not in announced:
                 announced.add(parent)
-                plugin_name = payload["plugin"] if "plugin" in payload else ""
                 logger.info(
                     i18n_t(
                         "log.rag.log_prefix_action_str_knowledge",
                         log_prefix=log_prefix,
-                        p0=plugin_name,
+                        p0=_payload_text(payload, "plugin"),
                         action_str="新增" if is_new else "更新",
                         log_name=log_name,
                     )
@@ -1404,9 +1352,7 @@ async def _sync_knowledge_impl() -> None:
 
     # 4. 注册表为空时不删，避免插件没加载成功把库清掉。
     if _ENTITIES:
-        ids_to_delete: list[int | str | uuid.UUID] = [
-            point_id for point_id in scanned_point_ids if point_id not in kept_point_ids
-        ]
+        ids_to_delete: list[PointId] = [pid for pid in scanned_point_ids if pid not in kept_point_ids]
         if ids_to_delete:
             logger.info(i18n_t("log.rag.kb_deleting_removed_plugin_delete", p0=len(ids_to_delete)))
             await client.delete(
@@ -1492,19 +1438,18 @@ async def query_knowledge(
         return []
 
     # 生成查询向量（dense 必有，sparse 可选）
-    query_dense = await embedding_model.aembed_query(query)
+    query_dense, query_sparse = await _embed_query_vectors(query)
     if not query_dense:
         logger.warning(i18n_t("log.rag.kb_embedding_empty_result_unable"))
         return []
-    query_sparse = (await _sparse_embed_batch_async([query]))[0]
 
     # 构建过滤条件（服务端下推）：plugin 任一命中 + category 精确匹配 + exclude_plugins 排除
-    must_conditions: list = []
+    must_conditions: list[Condition] = []
     if plugin_filter:
         must_conditions.append(FieldCondition(key="plugin", match=MatchAny(any=list(plugin_filter))))
     if category_filter:
         must_conditions.append(FieldCondition(key="category", match=MatchValue(value=category_filter)))
-    must_not_conditions: list = []
+    must_not_conditions: list[Condition] = []
     if exclude_plugins:
         must_not_conditions.append(FieldCondition(key="plugin", match=MatchAny(any=list(exclude_plugins))))
     if exclude_sources:
@@ -1542,9 +1487,7 @@ async def query_knowledge(
             if r.payload is not None:
                 statistics_manager.record_rag_hit(
                     document_id=str(r.id),
-                    document_name=(
-                        r.payload["title"] if "title" in r.payload and isinstance(r.payload["title"], str) else ""
-                    ),
+                    document_name=_payload_text(r.payload, "title"),
                 )
     else:
         statistics_manager.record_rag_miss()
@@ -1564,12 +1507,12 @@ async def add_manual_knowledge_to_db(knowledge: Dict[str, Any]) -> bool:
         bool: 是否成功添加（嵌入被 413 跳过或 RAG 未就绪时返回 False）
     """
     id_str = str(knowledge["id"])
-    tags_raw = _opt_field(knowledge, "tags") or []
+    tags_raw = _opt_field(knowledge, "tags")
     tags = [str(tag) for tag in tags_raw] if isinstance(tags_raw, list) else []
-    title = str(_opt_field(knowledge, "title") or "")
-    content = str(_opt_field(knowledge, "content") or "")
-    plugin = str(_opt_field(knowledge, "plugin") or "manual")
-    doc_id = str(_opt_field(knowledge, "doc_id") or id_str)
+    title = _opt_str(knowledge, "title")
+    content = _opt_str(knowledge, "content")
+    plugin = _opt_str(knowledge, "plugin", "manual")
+    doc_id = _opt_str(knowledge, "doc_id", id_str)
     pieces = pieces_for_embed(content, title=title, tags=tags)
     if len(pieces) > 1:
         result = await add_knowledge_document(
@@ -1712,7 +1655,7 @@ async def list_knowledge_plugins() -> List[str]:
     for entity in _ENTITIES:
         if not isinstance(entity, dict) or "path" in entity:
             continue
-        plugin = str(entity.get("plugin") or "").strip()
+        plugin = _opt_str(entity, "plugin").strip()
         if plugin and plugin != "manual":
             names.add(plugin)
 
@@ -1722,27 +1665,13 @@ async def list_knowledge_plugins() -> List[str]:
         return sorted(names)
 
     try:
-        current_offset = None
-        scroll_filter = Filter(must=[FieldCondition(key="source", match=MatchValue(value="plugin"))])
-        while True:
-            records, next_offset = await client.scroll(
-                collection_name=KNOWLEDGE_COLLECTION_NAME,
-                limit=200,
-                offset=current_offset,
-                with_payload=True,
-                with_vectors=False,
-                scroll_filter=scroll_filter,
-            )
-            if not records:
-                break
+        async for records in _iter_qdrant_scroll(client, scroll_filter=_PLUGIN_SOURCE_FILTER, limit=200):
             for record in records:
-                payload = record.payload or {}
-                plugin = str(payload.get("plugin") or "").strip()
+                if record.payload is None:
+                    continue
+                plugin = _opt_str(record.payload, "plugin").strip()
                 if plugin and plugin != "manual":
                     names.add(plugin)
-            if next_offset is None:
-                break
-            current_offset = next_offset
     except Exception as e:
         logger.debug(i18n_t("log.rag.kb_list_plugins_fail", e=e))
 
@@ -1756,22 +1685,9 @@ async def get_manual_knowledge_list(
     doc_id: Optional[str] = None,
     plugin: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """获取知识列表（分页）
+    """获取知识列表（分页）。
 
-    Args:
-        offset: 起始偏移
-        limit: 每页数量
-        source_filter: 来源过滤，默认 "all" 表示所有知识，"manual" 只看手动添加的
-        doc_id: 可选，仅列出某篇文档的分片（仅对 manual 生效）
-        plugin: 可选，按 payload.plugin 精确过滤（通常配合 source=plugin）
-
-    Returns:
-        包含知识列表和总数的字典
-
-    Note:
-        ``source_filter="manual"`` 走 **SQL 真值源**的原生 offset/limit 分页（治 P5：
-        Qdrant local 不支持 offset，旧实现每页都从头 scroll，大库越翻越慢）。
-        ``plugin`` / ``all`` 仍走 Qdrant scroll（插件知识真值在代码/注册表，不入 SQL）。
+    ``source_filter="manual"`` 走 SQL 原生 O(1) offset 分页；``plugin`` / ``all`` 走 Qdrant scroll。
     """
     # manual：SQL 原生分页，O(1) offset
     if source_filter == "manual":
@@ -1791,73 +1707,37 @@ async def get_manual_knowledge_list(
         logger.warning(i18n_t("log.rag.kb_ai_feature_enabled_unable_3"))
         return {"list": [], "total": 0}
 
-    must_conditions: List[Condition] = []
-    if source_filter != "all":
-        must_conditions.append(FieldCondition(key="source", match=MatchValue(value=source_filter)))
-    if plugin:
-        must_conditions.append(FieldCondition(key="plugin", match=MatchValue(value=plugin)))
-    count_filter = Filter(must=must_conditions) if must_conditions else None
-    scroll_filter = count_filter
-
-    # 获取总数
-    total = await client.count(
-        collection_name=KNOWLEDGE_COLLECTION_NAME,
-        count_filter=count_filter,
-    )
+    list_filter = _build_list_filter(source_filter, plugin)
+    total = await client.count(collection_name=KNOWLEDGE_COLLECTION_NAME, count_filter=list_filter)
 
     # 本地 Qdrant scroll 不支持 offset 分页，需分批迭代后在内存切片。
-    batch_size = 100
-    all_records = []
-    current_offset = None
-
-    while len(all_records) < offset + limit:
-        records, next_offset = await client.scroll(
-            collection_name=KNOWLEDGE_COLLECTION_NAME,
-            limit=batch_size,
-            offset=current_offset,
-            with_payload=True,
-            with_vectors=False,
-            scroll_filter=scroll_filter,
-        )
-
-        if not records:
-            break
-
-        for record in records:
-            if record.payload:
-                all_records.append(record.payload)
-
-        if next_offset is None:
-            break
-
-        current_offset = next_offset
-
-    # 计算下一页的 offset
-    start_idx = offset
+    all_records: list[Mapping[str, object]] = []
     end_idx = offset + limit
-    page_records = all_records[start_idx:end_idx]
+    stopped_early = False
+    if end_idx > 0:
+        async for records in _iter_qdrant_scroll(client, scroll_filter=list_filter, limit=100):
+            for record in records:
+                if record.payload:
+                    all_records.append(record.payload)
+            if len(all_records) >= end_idx:
+                stopped_early = True
+                break
 
-    # 计算 next_offset（下一个批次开始的偏移量）
-    next_page_offset = end_idx if end_idx < len(all_records) else None
-
+    page_records = all_records[offset:end_idx]
+    has_more = end_idx < len(all_records) or (
+        stopped_early and limit > 0 and len(page_records) == limit and end_idx < total.count
+    )
     return {
         "list": page_records,
         "total": total.count,
         "offset": offset,
         "limit": limit,
-        "next_offset": next_page_offset,
+        "next_offset": end_idx if has_more else None,
     }
 
 
 async def get_manual_knowledge_detail(entity_id: str) -> Mapping[str, object] | None:
-    """获取手动添加的知识详情
-
-    Args:
-        entity_id: 知识库 ID
-
-    Returns:
-        知识详情字典，如果不存在则返回 None
-    """
+    """获取手动添加的知识详情，不存在则返回 None。"""
     from gsuid_core.ai_core.rag.base import client
 
     if client is None:
@@ -1871,10 +1751,7 @@ async def get_manual_knowledge_detail(entity_id: str) -> Mapping[str, object] | 
         with_vectors=False,
         scroll_filter=Filter(must=[FieldCondition(key="id", match=MatchValue(value=entity_id))]),
     )
-
-    if records and records[0].payload:
-        return records[0].payload
-    return None
+    return records[0].payload if records and records[0].payload else None
 
 
 async def search_manual_knowledge(
@@ -1883,49 +1760,23 @@ async def search_manual_knowledge(
     source_filter: str = "all",
     plugin: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """搜索知识
-
-    Args:
-        query: 查询文本
-        limit: 返回数量限制
-        source_filter: 来源过滤，"all"表示所有知识，"plugin"只搜插件添加的，"manual"只搜手动添加的
-        plugin: 可选，按 payload.plugin 精确过滤
-
-    Returns:
-        匹配的知识列表
-    """
+    """搜索知识（Dense + BM25 稀疏混合检索）。"""
     from gsuid_core.ai_core.rag.base import client, embedding_model
 
     if client is None or embedding_model is None:
         logger.warning(i18n_t("log.rag.kb_ai_feature_enabled_unable_4"))
         return []
 
-    # 生成查询向量（dense + 可选 sparse）
-    query_dense = await embedding_model.aembed_query(query)
+    query_dense, query_sparse = await _embed_query_vectors(query)
     if not query_dense:
         return []
-    query_sparse = (await _sparse_embed_batch_async([query]))[0]
 
-    must_conditions: List[Condition] = []
-    if source_filter != "all":
-        must_conditions.append(FieldCondition(key="source", match=MatchValue(value=source_filter)))
-    if plugin:
-        must_conditions.append(FieldCondition(key="plugin", match=MatchValue(value=plugin)))
-    search_filter = Filter(must=must_conditions) if must_conditions else None
-
-    # 混合检索（Dense + Sparse RRF，稀疏不可用自动降级纯 dense，结构异常降级空结果）
     search_points = await hybrid_query(
         KNOWLEDGE_COLLECTION_NAME,
         query_dense,
         query_sparse,
         limit=limit,
         dense_using=KNOWLEDGE_DENSE_VECTOR,
-        query_filter=search_filter,
+        query_filter=_build_list_filter(source_filter, plugin),
     )
-
-    results = []
-    for point in search_points:
-        if point.payload:
-            results.append(point.payload)
-
-    return results
+    return [dict(point.payload) for point in search_points if point.payload]
