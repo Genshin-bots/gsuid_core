@@ -161,6 +161,20 @@ class TestInstallFromZip:
         assert "内置插件" in result
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_name", ["__cached", ".hidden", "core_command"])
+    async def test_registry_invalid_name_is_refused(self, plugin_dirs: tuple[Path, Path], bad_name: str) -> None:
+        """plugin_registry 判为非法的目录名，装上也不会出现在列表，应提前拒绝。"""
+        plugins, buildin = plugin_dirs
+        with _stub_runtime():
+            result = await install_plugin_from_zip(
+                _plugin_zip(name=bad_name, register=bad_name),
+                plugins_path=plugins,
+                buildin_path=buildin,
+            )
+        assert result.startswith("❌")
+        assert list(plugins.iterdir()) == []
+
+    @pytest.mark.asyncio
     async def test_reload_failure_keeps_installed_dir(self, plugin_dirs: tuple[Path, Path]) -> None:
         """对齐 install_plugins：加载失败保留目录，提示重启而不是重新上传。"""
         plugins, buildin = plugin_dirs

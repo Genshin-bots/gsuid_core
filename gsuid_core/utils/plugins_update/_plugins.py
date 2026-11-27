@@ -1116,6 +1116,9 @@ async def install_plugin_from_zip(
                 return f"❌ 插件注册名 {plugin_name} 非法"
             if plugin_name != root.name:
                 return f"❌ 插件注册名 {plugin_name} 与压缩包目录名 {root.name} 不一致，请重新打包"
+            # 装上后 registry 会判为非法插件
+            if plugin_name.startswith((".", "__")) or plugin_name.lower() == "core_command":
+                return f"❌ 插件注册名 {plugin_name} 不能以 . 或 __ 开头，也不能占用内置插件名"
 
             target = target_root / plugin_name
             if await asyncio.to_thread((buildin_root / plugin_name).exists):
