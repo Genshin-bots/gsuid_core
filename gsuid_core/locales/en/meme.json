@@ -97,5 +97,14 @@
   "log.meme.pack_migrate_sql": "[Meme] Meme pack migration: snapshot {snapshot}, inserted during migration {inserted}",
   "log.meme.persona_resolve_fail": "[Meme] Failed to resolve the current persona: {e}",
   "log.meme.drop_missing_files": "[Meme] Removed {count} memes whose files are gone",
-  "log.meme.bundle_vector_sync_fail": "[Meme] Failed to write vector for bundle-imported meme {meme_id}: {e}"
+  "log.meme.bundle_vector_sync_fail": "[Meme] Failed to write vector for bundle-imported meme {meme_id}: {e}",
+  "log.meme.store_catalog_fetch_fail": "[Meme] Failed to fetch meme store catalog: {e}",
+  "log.meme.store_catalog_entry_drop": "[Meme] Skipped untrusted meme store entry {store_id} (repo: {repo})",
+  "log.meme.store_asset_fetch_fail": "[Meme] Failed to fetch meme store preview asset ({store_id}): {e}",
+  "log.meme.store_detail_fetch_fail": "[Meme] Failed to fetch meme store pack detail ({store_id}): {e}",
+  "log.meme.store_vector_sync_fail": "[Meme] Failed to sync vector for store-imported meme {meme_id}: {e}",
+  "log.meme.store_bind_after_install_fail": "[Meme] Failed to bind personas after installing store pack {store_id}: {e}",
+  "log.meme.store_installed": "[Meme] Installed meme store pack {store_id} -> '{pack_name}' (imported={imported}, linked={linked})",
+  "log.meme.store_updated": "[Meme] Updated meme store pack {store_id} ('{pack_name}', added={added}, removed={removed})",
+  "log.meme.store_uninstalled": "[Meme] Uninstalled meme store pack {store_id} ('{pack_name}', cleaned_orphans={deleted})"
 }

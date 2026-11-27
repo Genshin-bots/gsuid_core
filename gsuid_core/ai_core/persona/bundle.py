@@ -66,6 +66,7 @@ class BundleMemeTags:
     scene_tags: list[str] = field(default_factory=list)
     custom_tags: list[str] = field(default_factory=list)
     usage_hint: str = ""
+    nsfw_score: float = 0.0
 
 
 def _opt_str(item: dict[str, object], key: str, max_len: int) -> str:

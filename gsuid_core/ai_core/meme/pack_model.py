@@ -10,7 +10,7 @@ import asyncio
 import hashlib
 from typing import Sequence
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 
 from sqlmodel import Field, SQLModel, col, func, delete, select
 from sqlalchemy import UniqueConstraint
@@ -150,6 +150,8 @@ class MemePackSummary:
 class PackDeleteResult:
     lost_personas: list[str]
     meme_ids: list[str]
+    # 删除前 pending_pack_id 指向本包、但还不是成员的记录，供调用方做归属清理
+    pending_meme_ids: list[str] = field(default_factory=list)
 
 
 def _now() -> datetime:
@@ -654,7 +656,8 @@ class PackStore:
             record.pending_pack_id = ""
             record.updated_at = _now()
             session.add(record)
-        return PackDeleteResult(lost_personas=lost, meme_ids=touched)
+        pending_ids = [record.meme_id for record in pending_rows]
+        return PackDeleteResult(lost_personas=lost, meme_ids=touched, pending_meme_ids=pending_ids)
 
 
 async def mount_default_pack(persona_name: str) -> None:

@@ -97,5 +97,14 @@
   "log.meme.pack_migrate_sql": "[Meme] パック移行: スナップショット {snapshot} 件、移行中の新規 {inserted} 件",
   "log.meme.persona_resolve_fail": "[Meme] 現在のペルソナを解決できません: {e}",
   "log.meme.drop_missing_files": "[Meme] ファイルが無い表情を {count} 件削除した",
-  "log.meme.bundle_vector_sync_fail": "[Meme] バンドルインポート表情 {meme_id} のベクトル書き込みに失敗: {e}"
+  "log.meme.bundle_vector_sync_fail": "[Meme] バンドルインポート表情 {meme_id} のベクトル書き込みに失敗: {e}",
+  "log.meme.store_catalog_fetch_fail": "[Meme] スタンプストア一覧の取得に失敗: {e}",
+  "log.meme.store_catalog_entry_drop": "[Meme] 信頼できないストア項目 {store_id} をスキップ（repo: {repo}）",
+  "log.meme.store_asset_fetch_fail": "[Meme] スタンプストアのプレビュー取得に失敗 ({store_id}): {e}",
+  "log.meme.store_detail_fetch_fail": "[Meme] スタンプストア詳細の取得に失敗 ({store_id}): {e}",
+  "log.meme.store_vector_sync_fail": "[Meme] ストア導入スタンプ {meme_id} のベクトル同期に失敗: {e}",
+  "log.meme.store_bind_after_install_fail": "[Meme] ストア導入後のペルソナ紐付けに失敗 ({store_id}): {e}",
+  "log.meme.store_installed": "[Meme] ストアからスタンプパック導入 {store_id} -> 「{pack_name}」（新規 {imported} 件、関連 {linked} 件）",
+  "log.meme.store_updated": "[Meme] ストアスタンプパック更新 {store_id}（「{pack_name}」、追加 {added} 件、削除 {removed} 件）",
+  "log.meme.store_uninstalled": "[Meme] ストアスタンプパック削除 {store_id}（「{pack_name}」、孤立画像 {deleted} 件削除）"
 }

@@ -97,5 +97,14 @@
   "log.meme.pack_migrate_sql": "[Meme] 表情包迁移：快照 {snapshot} 张，期间新插入 {inserted} 张",
   "log.meme.persona_resolve_fail": "[Meme] 解析当前人格失败: {e}",
   "log.meme.drop_missing_files": "[Meme] 删掉 {count} 条文件已经不在的表情",
-  "log.meme.bundle_vector_sync_fail": "[Meme] 整包导入表情 {meme_id} 向量补写失败: {e}"
+  "log.meme.bundle_vector_sync_fail": "[Meme] 整包导入表情 {meme_id} 向量补写失败: {e}",
+  "log.meme.store_catalog_fetch_fail": "[Meme] 获取表情包市场目录失败: {e}",
+  "log.meme.store_catalog_entry_drop": "[Meme] 跳过不可信的市场条目 {store_id}（repo: {repo}）",
+  "log.meme.store_asset_fetch_fail": "[Meme] 获取表情包市场预览图失败 ({store_id}): {e}",
+  "log.meme.store_detail_fetch_fail": "[Meme] 获取表情包市场详情失败 ({store_id}): {e}",
+  "log.meme.store_vector_sync_fail": "[Meme] 市场导入表情 {meme_id} 向量同步失败: {e}",
+  "log.meme.store_bind_after_install_fail": "[Meme] 市场表情包 {store_id} 安装后挂载人格失败: {e}",
+  "log.meme.store_installed": "[Meme] 已从市场安装表情包 {store_id} -> 「{pack_name}」（新入库 {imported} 张，关联 {linked} 张）",
+  "log.meme.store_updated": "[Meme] 已更新市场表情包 {store_id}（「{pack_name}」，新增 {added} 张，移除 {removed} 张）",
+  "log.meme.store_uninstalled": "[Meme] 已卸载市场表情包 {store_id}（「{pack_name}」，清理孤儿图 {deleted} 张）"
 }

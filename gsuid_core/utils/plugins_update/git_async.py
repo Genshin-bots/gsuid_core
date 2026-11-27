@@ -168,6 +168,7 @@ async def git_clone(
     branch: Optional[str] = None,
     depth: int = 1,
     timeout: int = GIT_CLONE_TIMEOUT,
+    single_branch: bool = False,
 ) -> tuple[bool, str]:
     """
     异步克隆 git 仓库。
@@ -184,6 +185,7 @@ async def git_clone(
         branch: 指定分支（可选）
         depth: 克隆深度，默认 1
         timeout: 超时时间（秒），默认 120 秒
+        single_branch: 是否仅克隆单个分支（配合孤儿分支按需拉取）
 
     Returns:
         (success, message)
@@ -199,6 +201,8 @@ async def git_clone(
         "--depth",
         str(depth),
     ]
+    if single_branch:
+        args.append("--single-branch")
     if branch:
         args.extend(["--branch", branch])
     args.extend([url, str(target_path)])

@@ -2874,3 +2874,365 @@ def test_persona_reset_backup_restore_and_vector_resume_e2e(tmp_path: Path, monk
         asyncio.run(_run())
     finally:
         clear_journal_caches()
+
+
+def test_meme_store_lifecycle_and_persona_mounts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """表情包市场端到端：白名单安全护栏、单分支安装、多个人格挂载、更新对齐与卸载清理。"""
+    import subprocess
+
+    from PIL import Image
+
+    from gsuid_core.ai_core.meme import store as meme_store, library as meme_lib
+    from gsuid_core.ai_core.meme.pack_model import PackStore
+    from gsuid_core.ai_core.meme.database_model import AiMemeRecord
+
+    def _make_png(path: Path, color: tuple[int, int, int]) -> None:
+        img = Image.new("RGB", (64, 64), color)
+        img.save(path, format="PNG")
+
+    def _git(cwd: Path, *args: str) -> str:
+        res = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        return res.stdout.strip()
+
+    # 构造带孤儿分支 pack/demo-pack 的本地测试仓库
+    remote_repo = tmp_path / "remote_meme_repo"
+    remote_repo.mkdir()
+    _git(remote_repo, "init", "-b", "main")
+    _git(remote_repo, "config", "user.name", "TestBot")
+    _git(remote_repo, "config", "user.email", "test@example.com")
+    pack_src = remote_repo / "packs" / "demo-pack"
+    pack_src.mkdir(parents=True)
+    _make_png(pack_src / "001.png", (220, 40, 40))
+    _make_png(pack_src / "002.png", (40, 180, 60))
+    (pack_src / "manifest.json").write_text(
+        json.dumps({"format": "gsuid-meme-pack", "version": "1.0", "id": "demo-pack", "name": "测试表情包"}),
+        encoding="utf-8",
+    )
+    (pack_src / "tags.json").write_text(
+        json.dumps(
+            [
+                {
+                    "file": "001.png",
+                    "title": "开心大笑",
+                    "description": "眯眼大笑挥手",
+                    "ocr_text": "",
+                    "emotion_tags": ["开心"],
+                    "custom_tags": ["大笑"],
+                    "usage_hint": "适合群里开心互动时使用",
+                },
+                {
+                    "file": "002.png",
+                    "title": "无语盯视",
+                    "description": "半睁眼平视前方",
+                    "ocr_text": "",
+                    "emotion_tags": ["无语"],
+                    "custom_tags": ["盯"],
+                    "usage_hint": "适合吐槽时使用",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    _git(remote_repo, "add", "-A")
+    _git(remote_repo, "commit", "-m", "init")
+    tree_v1 = _git(remote_repo, "rev-parse", "HEAD:packs/demo-pack")
+    commit_v1 = _git(remote_repo, "commit-tree", tree_v1, "-m", "pack v1")
+    _git(remote_repo, "update-ref", "refs/heads/pack/demo-pack", commit_v1)
+
+    persona_root = tmp_path / "personas"
+    _patch_persona_path(persona_root, monkeypatch)
+    for pname in ("alpha", "beta", "repo_managed"):
+        pdir = persona_root / pname
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "persona.md").write_text(f"# {pname}\n", encoding="utf-8")
+    persona_store.write_source("repo_managed", _make_source())
+
+    memes_root = tmp_path / "memes"
+    store_root = tmp_path / "meme_store"
+    monkeypatch.setattr(meme_lib, "get_memes_base_path", lambda: memes_root)
+    monkeypatch.setattr(meme_store, "MEME_STORE_DIR", store_root)
+    monkeypatch.setattr(meme_store, "MEME_STORE_REGISTRY_PATH", store_root / "installed.json")
+    monkeypatch.setattr(meme_store, "MEME_STORE_TMP_DIR", store_root / "tmp")
+    monkeypatch.setattr(meme_store, "MEME_STORE_CACHE_DIR", store_root / "cache")
+
+    def _fake_clone_url(url: str) -> str:
+        # cnb 市场仓库映射到本地测试仓库；本地路径（自定义 URL 安装）原样透传
+        if "cnb.cool" in url:
+            return str(remote_repo)
+        return url
+
+    monkeypatch.setattr(meme_store, "_git_clone_url", _fake_clone_url)
+
+    class _FixedCfg:
+        data = 0.6
+
+    # 阈值隔离：不读本机 data/ 下的真实 meme_config.json
+    monkeypatch.setattr(
+        meme_store, "meme_config", type("_Cfg", (), {"get_config": staticmethod(lambda _k: _FixedCfg())})
+    )
+
+    async def _noop_sync(_record: AiMemeRecord) -> None:
+        return None
+
+    async def _noop_payload(_ids: Sequence[str] | None = None, *, strict: bool = False) -> None:
+        return None
+
+    monkeypatch.setattr(meme_lib.MemeLibrary, "sync_to_qdrant", staticmethod(_noop_sync))
+    monkeypatch.setattr(meme_store, "write_member_payloads", _noop_payload)
+
+    catalog_entry = meme_store.CatalogPackEntry(
+        id="demo-pack",
+        name="测试表情包",
+        series="测试系列",
+        tags=["测试系列", "测试表情包"],
+        alias=["demo"],
+        count=2,
+        size_kb=10,
+        repo="https://cnb.cool/gscore-meme/gscore-meme",
+        branch="pack/demo-pack",
+        commit=commit_v1[:7],
+        cover="https://cnb.cool/gscore-meme/gscore-meme/-/git/raw/main/covers/demo-pack.webp",
+        sheet="https://cnb.cool/gscore-meme/gscore-meme/-/git/raw/main/sheets/demo-pack.webp",
+        cover_path="covers/demo-pack.webp",
+        sheet_path="sheets/demo-pack.webp",
+        has_tags=True,
+    )
+
+    async def _fake_catalog(*, force_refresh: bool = False) -> list[meme_store.CatalogPackEntry]:
+        return [catalog_entry]
+
+    monkeypatch.setattr(meme_store, "fetch_catalog", _fake_catalog)
+
+    async def _run() -> None:
+        async with isolated_sqlite_db(tmp_path, monkeypatch, db_name="meme_store.db"):
+            # 1. 安全护栏：路径穿越与未知条目被拒绝
+            _, _, err_bad_id = await meme_store.fetch_preview_asset("cover", "../escape")
+            assert err_bad_id is not None
+            _, _, err_bad_file = await meme_store.fetch_preview_asset("item", "demo-pack", "../secret.txt")
+            assert err_bad_file is not None
+
+            # 2. 单分支安装 + 预打标入库 + 同步挂载到两个人格
+            res, err = await meme_store.install_pack_from_store("demo-pack", persona_names=["alpha", "beta"])
+            assert err is None and res is not None
+            assert res["imported"] == 2 and res["linked"] == 2 and res["untagged"] == 0
+            assert sorted(res["bound_personas"]) == ["alpha", "beta"]
+            assert not list((store_root / "tmp").glob("*"))
+            pack_id = res["pack_id"]
+
+            members = await PackStore.member_meme_ids(pack_id)
+            assert len(members) == 2
+            first_rec = await AiMemeRecord.get_by_meme_id(members[0])
+            assert first_rec is not None and first_rec.status == "manual" and first_rec.title != ""
+
+            # 3. 修改挂载：拒绝对 git 托管人格挂载，允许自由调整普通人格挂载
+            _, err_managed = await meme_store.set_pack_personas(pack_id, ["repo_managed"])
+            assert err_managed is not None
+            bind_res, bind_err = await meme_store.set_pack_personas(pack_id, ["beta"])
+            assert bind_err is None and bind_res is not None and bind_res["bound_personas"] == ["beta"]
+            assert pack_id not in await PackStore.pack_ids_for_persona("alpha")
+            assert pack_id in await PackStore.pack_ids_for_persona("beta")
+
+            # 4. 上游更新：删 002.png、新增 003.png 与一张 NSFW 高分的 004.png
+            pre_members = await PackStore.member_meme_ids(pack_id)
+            pre_titles = {}
+            for mid in pre_members:
+                pre_rec = await AiMemeRecord.get_by_meme_id(mid)
+                if pre_rec is not None:
+                    pre_titles[pre_rec.title] = mid
+            id002 = pre_titles["无语盯视"]
+
+            (pack_src / "002.png").unlink()
+            _make_png(pack_src / "003.png", (40, 80, 220))
+            _make_png(pack_src / "004.png", (200, 200, 30))
+            (pack_src / "tags.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "file": "001.png",
+                            "title": "开心大笑",
+                            "description": "眯眼大笑挥手",
+                            "ocr_text": "",
+                            "emotion_tags": ["开心"],
+                            "custom_tags": ["大笑"],
+                            "usage_hint": "适合群里开心互动时使用",
+                        },
+                        {
+                            "file": "003.png",
+                            "title": "震惊呆住",
+                            "description": "瞪大双眼愣住",
+                            "ocr_text": "",
+                            "emotion_tags": ["震惊"],
+                            "custom_tags": ["呆住"],
+                            "usage_hint": "适合看到离谱消息时使用",
+                        },
+                        {
+                            "file": "004.png",
+                            "title": "深夜福利",
+                            "description": "擦边内容",
+                            "ocr_text": "",
+                            "emotion_tags": ["暧昧"],
+                            "custom_tags": ["深夜"],
+                            "usage_hint": "深夜使用",
+                            "nsfw_score": 0.95,
+                        },
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            _git(remote_repo, "add", "-A")
+            _git(remote_repo, "commit", "-m", "v2")
+            tree_v2 = _git(remote_repo, "rev-parse", "HEAD:packs/demo-pack")
+            commit_v2 = _git(remote_repo, "commit-tree", tree_v2, "-m", "pack v2")
+            _git(remote_repo, "update-ref", "refs/heads/pack/demo-pack", commit_v2)
+
+            upd, upd_err = await meme_store.update_store_pack("demo-pack")
+            assert upd_err is None and upd is not None
+            assert upd["added"] == 1 and upd["removed"] == 1 and upd["total"] == 3
+            assert pack_id in await PackStore.pack_ids_for_persona("beta")
+
+            # 4b. 上游删除的 002 必须被彻底清理（记录 + 文件），不再是永久孤儿
+            assert await AiMemeRecord.get_by_meme_id(id002) is None
+            assert not list((memes_root / "common").glob(f"{id002}.*"))
+
+            # 4c. NSFW 高分图按 rejected 入库：不进包、不可检索、分数落库
+            cur_members = await PackStore.member_meme_ids(pack_id)
+            assert len(cur_members) == 2
+            all_records = await AiMemeRecord.get_all_records_no_page()
+            rejected_recs = [r for r in all_records if r.title == "深夜福利"]
+            assert len(rejected_recs) == 1
+            rec004 = rejected_recs[0]
+            assert rec004.status == "rejected" and rec004.nsfw_score == 0.95
+            assert rec004.folder == "rejected" and rec004.meme_id not in cur_members
+
+            # 5. 卸载：把其中 1 张也加入手工包，卸载后手工包中的图保留、纯市场孤儿图（含 rejected）清理
+            keep_pack = await PackStore.create_pack("自留收藏")
+            await PackStore.add_member(keep_pack.pack_id, cur_members[0])
+
+            uninst, uninst_err = await meme_store.uninstall_store_pack("demo-pack")
+            assert uninst_err is None and uninst is not None
+            assert uninst["deleted_memes"] == 2
+            assert await PackStore.get_pack(pack_id) is None
+            assert await AiMemeRecord.get_by_meme_id(cur_members[0]) is not None
+            assert await AiMemeRecord.get_by_meme_id(cur_members[1]) is None
+            assert await AiMemeRecord.get_by_meme_id(rec004.meme_id) is None
+            assert not list((memes_root / "rejected").glob(f"{rec004.meme_id}.*"))
+            assert "demo-pack" not in await meme_store.reconcile_installed()
+
+            # 6. 目录信任边界：非白名单仓库与非法分支的条目在解析期被丢弃
+            parsed = meme_store._parse_catalog_payload(
+                {
+                    "packs": [
+                        {"id": "evil", "repo": "http://127.0.0.1:8765/x", "branch": "pack/evil"},
+                        {"id": "badref", "branch": "../../escape"},
+                        {"id": "badpath", "cover_path": "../../secret.webp"},
+                        {
+                            "id": "ok",
+                            "repo": "https://cnb.cool/gscore-meme/gscore-meme",
+                            "branch": "pack/ok",
+                        },
+                    ]
+                }
+            )
+            assert [e["id"] for e in parsed] == ["ok"]
+
+            # 6b. 详情单张预览 URL 必须转义文件名中的 URL 特殊字符
+            preview_items = meme_store._parse_tags_preview_list([{"file": "a#b c.png", "title": "x"}], "demo")
+            assert preview_items[0]["image_url"].endswith("/a%23b%20c.png")
+
+            # 7. 自定义 URL：默认分支为 master 的仓库，含损坏图片时整体拒绝且零残留
+            monkeypatch.setattr(meme_store, "validate_install_source_url", lambda _url: None)
+            master_repo = tmp_path / "master_repo"
+            master_repo.mkdir()
+            _git(master_repo, "init", "-b", "master")
+            _git(master_repo, "config", "user.name", "TestBot")
+            _git(master_repo, "config", "user.email", "test@example.com")
+            _make_png(master_repo / "101.png", (90, 90, 200))
+            (master_repo / "bad.png").write_bytes(b"not a real png")
+            (master_repo / "manifest.json").write_text(
+                json.dumps({"format": "gsuid-meme-pack", "version": "1.0", "name": "主分支测试包"}),
+                encoding="utf-8",
+            )
+            (master_repo / "tags.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "file": "101.png",
+                            "title": "托腮思考",
+                            "description": "托腮歪头",
+                            "ocr_text": "",
+                            "emotion_tags": ["思考"],
+                            "custom_tags": ["托腮"],
+                            "usage_hint": "适合思考问题中使用",
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            _git(master_repo, "add", "-A")
+            _git(master_repo, "commit", "-m", "init")
+
+            bad_res, bad_err = await meme_store.install_pack_from_url(master_repo.as_posix())
+            assert bad_res is None and bad_err is not None and "无法解码" in bad_err
+            assert await PackStore.get_by_name("主分支测试包") is None
+            assert not [k for k in await meme_store.reconcile_installed() if k.startswith("custom-")]
+
+            # 7b. 上游移除损坏图后，登记写入失败会触发回滚：包、记录、文件全部清掉
+            (master_repo / "bad.png").unlink()
+            _git(master_repo, "add", "-A")
+            _git(master_repo, "commit", "-m", "drop bad image")
+
+            async def _boom_save(_entry: meme_store.InstalledMemePack) -> None:
+                raise RuntimeError("disk full")
+
+            original_save = meme_store._save_installed_entry
+            monkeypatch.setattr(meme_store, "_save_installed_entry", _boom_save)
+            raised = False
+            try:
+                await meme_store.install_pack_from_url(master_repo.as_posix())
+            except RuntimeError:
+                raised = True
+            assert raised
+            assert await PackStore.get_by_name("主分支测试包") is None
+            leftovers = [r for r in await AiMemeRecord.get_all_records_no_page() if r.title == "托腮思考"]
+            assert not leftovers
+            monkeypatch.setattr(meme_store, "_save_installed_entry", original_save)
+
+            # 7c. 正常安装：登记真实分支 master，store_id 带 URL 哈希，更新走 master 不失败
+            url_res, url_err = await meme_store.install_pack_from_url(master_repo.as_posix())
+            assert url_err is None and url_res is not None
+            registry = await meme_store.reconcile_installed()
+            custom_keys = [k for k in registry if k.startswith("custom-")]
+            assert len(custom_keys) == 1
+            custom_id = custom_keys[0]
+            assert registry[custom_id]["branch"] == "master"
+            assert len(custom_id) <= 64
+
+            upd2, upd2_err = await meme_store.update_store_pack(custom_id)
+            assert upd2_err is None and upd2 is not None
+            assert upd2["added"] == 0 and upd2["removed"] == 0
+
+            # 8. 市场外直接删包：reconcile 摘除登记前兜底清理纯市场孤儿图
+            pack2 = await PackStore.get_pack(registry[custom_id]["pack_id"])
+            assert pack2 is not None
+            member2 = await PackStore.member_meme_ids(pack2.pack_id)
+            assert member2
+            await PackStore.delete_pack(pack2.pack_id)
+            reconciled = await meme_store.reconcile_installed()
+            assert custom_id not in reconciled
+            assert await AiMemeRecord.get_by_meme_id(member2[0]) is None
+
+    asyncio.run(_run())

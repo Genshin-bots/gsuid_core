@@ -77,6 +77,8 @@ def _import_webconsole_apis() -> None:
         mcp_config_api,
         # MCP 广场（ModelScope 市场 + logo 本地代理）
         mcp_market_api,
+        # CNB 表情包市场（目录浏览 / 预览代理 / 单分支安装 / 人格挂载）
+        meme_store_api,
         agent_debug_api,
         state_store_api,
         prompt_group_api,
