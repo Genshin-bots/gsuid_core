@@ -1140,7 +1140,7 @@ def _looks_like_plugin(root: Path) -> bool:
 
 
 def _entry_name_conflict(parent: Path, plugin_name: str) -> bool:
-    """ ``plugin_registry`` 按小写 key 去重，避免两个目录会塌成一个。"""
+    """``plugin_registry`` 按小写 key 去重，避免两个目录会塌成一个。"""
     if not parent.is_dir():
         return False
     lowered = plugin_name.lower()
