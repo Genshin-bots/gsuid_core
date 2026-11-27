@@ -287,6 +287,63 @@ POST /api/plugin-store/install-url
 
 ---
 
+## 43.3.3 通过 ZIP 压缩包上传安装（离线 / 本地插件）
+
+管理员可直接上传本地 `.zip` 插件包，流式落盘并校验后安装到 `plugins/` 目录，随后自动刷新 `plugin_registry` 快照并热加载。
+
+```
+POST /api/plugin-store/install-upload
+Content-Type: multipart/form-data
+```
+
+**表单字段**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `file` | file | ✅ | 插件 `.zip` 包（流式接收，上限 1.5GB） |
+
+**校验与安全约束**：
+- 插件入口 `__init__.py` 必须通过 `Plugins(name="...")` 声明唯一的插件注册名，且目录布局与 `GsServer.load_plugin` 兼容（支持单顶层目录、GitHub Download ZIP 与扁平包）；
+- 自动跳过 `__MACOSX/`、`.DS_Store`、`.git/`、`__pycache__/`；拒绝路径穿越、符号链接、加密包、损坏包及超限 Zip Bomb；
+- 拒绝以 `.` / `_` 开头或占用内置/核心保留名；已安装同名插件或内置插件不做覆盖。
+
+**响应**（成功）：
+```json
+{
+    "status": 0,
+    "msg": "ok",
+    "data": {
+        "plugin_name": "MyPlugin",
+        "msg": "✅ 插件MyPlugin安装并加载成功!",
+        "installed_on_disk": true
+    }
+}
+```
+
+**错误响应**（校验失败未落盘）：
+```json
+{
+    "status": 1,
+    "msg": "❌ 该插件已经安装过了!",
+    "data": null
+}
+```
+
+**错误响应**（已落盘但热加载失败）：
+```json
+{
+    "status": 1,
+    "msg": "❌ 插件MyPlugin已安装, 但加载失败, 可尝试[core重启]:\n❌ ...",
+    "data": {
+        "plugin_name": "MyPlugin",
+        "msg": "❌ 插件MyPlugin已安装, 但加载失败, 可尝试[core重启]:\n❌ ...",
+        "installed_on_disk": true
+    }
+}
+```
+
+---
+
 ## 43.4 更新已安装插件
 
 ```

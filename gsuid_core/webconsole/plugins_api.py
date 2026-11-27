@@ -8,11 +8,12 @@ import hashlib
 from typing import Any, Dict, Optional, TypedDict
 from pathlib import Path
 
-from fastapi import Body, Query, Depends, Request
+from fastapi import Body, File, Query, Depends, Request, UploadFile
 from pydantic import BaseModel
 
 from gsuid_core.sv import SL
 from gsuid_core.i18n import t
+from gsuid_core.logger import logger
 from gsuid_core.meta_plugins import provides_of
 from gsuid_core.plugin_registry import (
     SSH_PREFIX,
@@ -1654,6 +1655,61 @@ async def install_plugin_from_url_api(
         return {"status": 0, "msg": result}
     except Exception as e:
         return {"status": 1, "msg": f"安装失败: {str(e)}"}
+
+
+class _InstallUploadData(TypedDict):
+    plugin_name: str
+    msg: str
+    installed_on_disk: bool
+
+
+class _InstallUploadResp(TypedDict):
+    status: int
+    msg: str
+    data: _InstallUploadData | None
+
+
+@app.post("/api/plugin-store/install-upload", summary="从 zip 文件安装插件", tags=PLUGINS)
+async def install_plugin_from_upload_api(
+    file: UploadFile = File(..., description="插件 zip 包"),
+    _user: SessionRecord = Depends(require_admin),
+) -> _InstallUploadResp:
+    """
+    从上传的 zip 流式安装插件（不经 git、不走插件商店白名单）。
+
+    插件包必须在入口 ``__init__.py`` 中声明唯一的 ``Plugins(name="...")``。
+    支持带外层目录（含 GitHub Download ZIP）与扁平压缩包，解压与校验全部在
+    同分区临时目录内完成，失败不留残留；已安装同名插件或内置插件一律拒绝覆盖。
+    """
+    from gsuid_core.utils.plugins_update._plugins import install_plugin_from_zip
+
+    try:
+        result = await install_plugin_from_zip(file)
+        if not result.ok:
+            data: _InstallUploadData | None = (
+                {
+                    "plugin_name": result.plugin_name,
+                    "msg": result.msg,
+                    "installed_on_disk": True,
+                }
+                if result.installed_on_disk
+                else None
+            )
+            return {"status": 1, "msg": result.msg, "data": data}
+        return {
+            "status": 0,
+            "msg": "ok",
+            "data": {
+                "plugin_name": result.plugin_name,
+                "msg": result.msg,
+                "installed_on_disk": True,
+            },
+        }
+    except Exception as e:
+        logger.exception(t("log.webconsole.plugin_install_upload_fail", error=e))
+        return {"status": 1, "msg": f"安装失败: {str(e)}", "data": None}
+    finally:
+        await file.close()
 
 
 @app.post("/api/plugin-store/update/{plugin_id}", summary="更新已安装插件", tags=PLUGINS)

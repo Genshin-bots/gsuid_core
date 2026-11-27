@@ -110,6 +110,7 @@
   "log.webconsole.memory_reconcile_vectors_fail": "[Memory] Index reconciliation vector repair failed: {e}",
   "log.webconsole.mime_type_file_path": "[WebConsole] MIME type of file {file_path} is {mime_type}",
   "log.webconsole.plugin_store_fail": "Failed to fetch plugin store list: {error}",
+  "log.webconsole.plugin_install_upload_fail": "Failed to install plugin from zip: {error}",
   "log.webconsole.received_request_app_path": "[WebConsole] Received request: /app/{path}",
   "log.webconsole.register_authentication_key_rotation_fail": "[WebConsole] Failed to register the authentication key rotation task (authentication unaffected): {e}",
   "log.webconsole.scope_ip_client_fail": "[WebConsole] Failed to decrypt {scope} payload: IP={client_ip}, {e}",

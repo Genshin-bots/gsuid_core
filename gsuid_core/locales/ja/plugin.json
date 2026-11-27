@@ -123,5 +123,7 @@
   "log.plugin.update_name_running_git": "[更新][{plugin_name}] git reset --hard を実行中",
   "log.plugin.update_preparing_name": "[更新] [{plugin_name}] の更新を準備中、更新レベル: {level}",
   "log.plugin.update_you_seconds_interrupt": "[更新] この操作を中断できる猶予は 2 秒です...",
-  "log.plugin.url_name_branch": "[URL 安装插件] URL={url} → 派生插件名={plugin_name}, branch={p0}"
+  "log.plugin.url_name_branch": "[URL 安装插件] URL={url} → 派生插件名={plugin_name}, branch={p0}",
+  "log.plugin.zip_install_extracted": "[ZIP プラグイン導入] プラグイン {plugin_name} を展開しました。リロードを開始します",
+  "log.plugin.zip_staging_cleanup_fail": "[ZIP プラグイン導入] 一時ディレクトリ {path} の削除に失敗: {error}"
 }

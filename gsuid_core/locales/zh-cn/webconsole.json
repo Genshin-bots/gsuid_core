@@ -110,6 +110,7 @@
   "log.webconsole.memory_reconcile_vectors_fail": "[Memory] 索引对账向量补偿失败: {e}",
   "log.webconsole.mime_type_file_path": "[WebConsole] 文件 {file_path} 的 MIME 类型为 {mime_type}",
   "log.webconsole.plugin_store_fail": "获取插件商店列表失败: {error}",
+  "log.webconsole.plugin_install_upload_fail": "从 zip 安装插件失败: {error}",
   "log.webconsole.received_request_app_path": "[网页控制台] 收到请求: /app/{path}",
   "log.webconsole.register_authentication_key_rotation_fail": "[网页控制台] 认证密钥轮换任务注册失败（不影响认证）: {e}",
   "log.webconsole.scope_ip_client_fail": "[网页控制台] {scope} 报文解密失败: IP={client_ip}, {e}",
