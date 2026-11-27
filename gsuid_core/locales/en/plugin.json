@@ -123,5 +123,7 @@
   "log.plugin.update_name_running_git": "[Update][{plugin_name}] Running git reset --hard",
   "log.plugin.update_preparing_name": "[Update] Preparing to update [{plugin_name}], update level: {level}",
   "log.plugin.update_you_seconds_interrupt": "[Update] You have 2 seconds to interrupt this operation...",
-  "log.plugin.url_name_branch": "[URL 安装插件] URL={url} → 派生插件名={plugin_name}, branch={p0}"
+  "log.plugin.url_name_branch": "[URL 安装插件] URL={url} → 派生插件名={plugin_name}, branch={p0}",
+  "log.plugin.zip_install_extracted": "[ZIP Plugin Install] Extracted plugin {plugin_name} to disk, preparing reload",
+  "log.plugin.zip_staging_cleanup_fail": "[ZIP Plugin Install] Failed to clean staging directory {path}: {error}"
 }

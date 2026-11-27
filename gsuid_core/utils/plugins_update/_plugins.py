@@ -1,18 +1,29 @@
 import os
-import re
 import ast
+import time
 import uuid
 import shutil
 import asyncio
 import subprocess
 from typing import Dict, List, Union, Optional
 from pathlib import Path
+from weakref import WeakKeyDictionary
+from dataclasses import dataclass
 
 import aiohttp
 
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.server import _DefHook, core_start_def, core_shutdown_def
+from gsuid_core.utils.zip_safe import (
+    MAX_UPLOAD_BYTES,
+    AsyncChunkReader,
+    UnsafeArchiveError,
+    remove_tree,
+    single_root,
+    stream_to_file,
+    extract_zip_safe,
+)
 from gsuid_core.plugin_registry import (
     SSH_PREFIX,
     GITHUB_HOST,
@@ -21,10 +32,14 @@ from gsuid_core.plugin_registry import (
     plugin_registry,
     close_probe_client,
     classify_git_source,
+    detect_plugin_layout,
     is_valid_plugin_entry,
+    is_loadable_plugin_dir,
     resolve_plugin_on_disk,
+    resolve_plugin_path_sync,
     resolve_target_mirror_mode,
     validate_mirror_prefix_async,
+    validate_installable_plugin_name,
 )
 from gsuid_core.utils.plugins_config.gs_config import core_plugins_config
 
@@ -505,7 +520,10 @@ async def load_installed_plugin(plugin_name: str) -> str:
     """插件目录已落地后，热加载它并返回统一结果文案。"""
     # 安装完成后直接调用 reload_plugin_async 完成首次加载并触发启动钩子。
     retcode = await reload_plugin_async(plugin_name)
-    if retcode.lstrip().startswith("❌"):
+    if not retcode.lstrip().startswith("✨"):
+        cached = plugin_registry.get(plugin_name)
+        if cached is not None and cached.load_status != "failed":
+            plugin_registry.mark_load_result(plugin_name, "failed", retcode)
         return f"❌ 插件{plugin_name}已安装, 但加载失败, 可尝试[core重启]:\n{retcode}"
     return f"✅ 插件{plugin_name}安装并加载成功!"
 
@@ -988,22 +1006,47 @@ class PluginInstallError(ValueError):
     """从 zip 安装插件时的可预期失败，文案可直接展示给用户。"""
 
 
-_PLUGINS_CALL = re.compile(r"""Plugins\(\s*(?:name\s*=\s*)?["']([^"']*)["']""")
-_PLUGINS_KEYWORD = re.compile(r"""Plugins\(\s*name\s*=\s*["']([^"']*)["']""")
-_PLUGINS_POSITIONAL = re.compile(r"""Plugins\(\s*["']([^"']*)["']""")
-_NAME_ENTRY_DEPTH = 3
+@dataclass(frozen=True)
+class ZipInstallResult:
+    """从 zip 安装插件的结构化结果。"""
 
-_zip_install_lock = asyncio.Lock()
+    ok: bool
+    msg: str
+    plugin_name: str = ""
+    installed_on_disk: bool = False
 
 
-def _plugins_name_from_source(source: str) -> set[str]:
-    """从单个文件的源码里收集 ``Plugins(name=...)`` 的取值。"""
-    found: set[str] = set()
+_NAME_ENTRY_DEPTH = 2
+_SKIP_SCAN_DIRS: frozenset[str] = frozenset(
+    {
+        "__pycache__",
+        "node_modules",
+        "tests",
+        "test",
+        ".venv",
+        "venv",
+        ".git",
+        "docs",
+        "examples",
+    }
+)
+_zip_install_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = WeakKeyDictionary()
+
+
+def _get_zip_install_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if loop not in _zip_install_locks:
+        _zip_install_locks[loop] = asyncio.Lock()
+    return _zip_install_locks[loop]
+
+
+def _plugins_name_from_source(source: str, rel_path: str) -> set[str]:
+    """从单个入口文件 AST 中收集 ``Plugins(name=...)`` 的字符串字面量。"""
     try:
         tree = ast.parse(source)
-    except SyntaxError:
-        found.update(_PLUGINS_CALL.findall(source))
-        return found
+    except SyntaxError as exc:
+        raise PluginInstallError(f"插件入口文件 {rel_path} 存在语法错误，无法解析注册名") from exc
+    found: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -1014,135 +1057,164 @@ def _plugins_name_from_source(source: str) -> set[str]:
         keyword = next((kw for kw in node.keywords if kw.arg == "name"), None)
         arg = keyword.value if keyword is not None else (node.args[0] if node.args else None)
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-            found.add(arg.value)
+            cleaned = arg.value.strip()
+            if cleaned:
+                found.add(cleaned)
     return found
 
 
 def _candidate_init_files(root: Path) -> list[Path]:
-    """内层同名包优先，其次外层，最后浅层递归。"""
+    """浅层遍历候选 ``__init__.py``，原地裁剪虚拟环境与测试目录。"""
     candidates: list[Path] = []
-    inner = root / root.name / "__init__.py"
-    if inner.is_file():
-        candidates.append(inner)
-    outer = root / "__init__.py"
-    if outer.is_file():
-        candidates.append(outer)
-    for path in sorted(root.rglob("__init__.py")):
-        if path in candidates:
-            continue
-        relative = path.relative_to(root)
-        if len(relative.parts) - 1 > _NAME_ENTRY_DEPTH:
-            continue
-        if any(part in {"__pycache__", "node_modules", "tests"} for part in relative.parts):
-            continue
-        candidates.append(path)
+    root_resolved = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(root_resolved):
+        current = Path(dirpath)
+        rel = current.relative_to(root_resolved)
+        depth = 0 if rel == Path(".") else len(rel.parts)
+        if depth >= _NAME_ENTRY_DEPTH:
+            dirnames[:] = []
+        else:
+            dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_SCAN_DIRS and not d.startswith("."))
+        if "__init__.py" in filenames:
+            candidates.append(current / "__init__.py")
     return candidates
 
 
 def resolve_plugin_register_name(root: Path) -> str:
-    """解析插件根内声明的 ``Plugins(name=...)``。
-
-    解析不到或为空一律抛 ``PluginInstallError``：从文件安装不接受回退猜测，
-    因为 zip 的顶层目录名是用户随手打的，用它当插件名不可控。
-    """
+    """解析插件根内声明的唯一 ``Plugins(name=...)``，缺失或多值一律抛 ``PluginInstallError``。"""
+    root_resolved = root.resolve()
     names: set[str] = set()
-    for init_file in _candidate_init_files(root):
+    for init_file in _candidate_init_files(root_resolved):
         try:
             source = init_file.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        names.update(_plugins_name_from_source(source))
+        rel_path = init_file.relative_to(root_resolved).as_posix()
+        names.update(_plugins_name_from_source(source, rel_path))
         if len(names) > 1:
             break
 
     if not names:
-        raise PluginInstallError("插件注册名不能为空")
+        raise PluginInstallError("插件注册名不能为空（未在 __init__.py 中找到 Plugins(name=...) 声明）")
     if len(names) > 1:
         raise PluginInstallError(f"压缩包内注册了多个插件名（{', '.join(sorted(names))}），请每个插件单独打包")
-    name = names.pop().strip()
-    if not name:
-        raise PluginInstallError("插件注册名不能为空")
-    return name
+    return names.pop()
+
+
+def _rename_into_place(src: Path, dst: Path) -> None:
+    """同分区原子移入 plugins/；兼容 Windows 杀软短时占用重试。"""
+    for attempt in range(3):
+        try:
+            os.rename(src, dst)
+            return
+        except PermissionError:
+            if attempt == 2:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 async def install_plugin_from_zip(
-    zip_bytes: bytes,
+    source: AsyncChunkReader | Path,
     *,
-    plugins_path: Optional[Path] = None,
-    buildin_path: Optional[Path] = None,
-) -> str:
-    """把上传的 zip 安装为插件目录并热加载。
+    max_upload_bytes: int = MAX_UPLOAD_BYTES,
+) -> ZipInstallResult:
+    """流式接收并校验 zip，落地到 ``plugin_registry.plugins_path`` 后刷新快照并热加载。
 
-    校验全部在临时目录内完成，失败时 ``plugins/`` 下一个字节都不会变。
-    ``plugins_path`` / ``buildin_path`` 仅供测试注入，生产留空走真实目录。
+    全部解压与结构校验在同分区的 ``__staging-*`` 临时目录完成，失败不留残留；
+    使用双下划线前缀确保即使进程异常退出也会被 ``GsServer`` 与 ``plugin_registry`` 忽略。
     """
-    from gsuid_core.server import BUILDIN_PLUGIN_PATH
-    from gsuid_core.utils.zip_safe import (
-        UnsafeArchiveError,
-        remove_tree,
-        single_root,
-        extract_zip_safe,
-    )
-    from gsuid_core.utils.path_safety import is_safe_filename
+    target_root = plugin_registry.plugins_path
+    buildin_root = plugin_registry.buildin_path
+    core_root = plugin_registry.core_path
+    lock = _get_zip_install_lock()
 
-    target_root = plugins_path if plugins_path is not None else PLUGINS_PATH
-    buildin_root = buildin_path if buildin_path is not None else BUILDIN_PLUGIN_PATH
+    if lock.locked():
+        return ZipInstallResult(ok=False, msg="❌ 正在安装其它插件，请稍后再试")
 
-    if _zip_install_lock.locked():
-        return "❌ 正在安装其它插件，请稍后再试"
-
-    async with _zip_install_lock:
-        staging = target_root / f".staging-{uuid.uuid4().hex}"
+    async with lock:
+        staging = target_root / f"__staging-{uuid.uuid4().hex}"
         try:
             await asyncio.to_thread(staging.mkdir, parents=True, exist_ok=True)
-            archive_path = staging / "upload.zip"
-            await asyncio.to_thread(archive_path.write_bytes, zip_bytes)
+            if isinstance(source, Path):
+                archive_path = source
+            else:
+                archive_path = staging / "upload.zip"
+                try:
+                    written = await stream_to_file(source, archive_path, max_bytes=max_upload_bytes)
+                except UnsafeArchiveError as exc:
+                    return ZipInstallResult(ok=False, msg=f"❌ {exc}")
+                if written <= 0:
+                    return ZipInstallResult(ok=False, msg="❌ 上传的文件为空")
 
             extracted = staging / "extracted"
             try:
                 await asyncio.to_thread(extract_zip_safe, archive_path, extracted)
-            except UnsafeArchiveError as e:
-                return f"❌ {e}"
+            except UnsafeArchiveError as exc:
+                return ZipInstallResult(ok=False, msg=f"❌ {exc}")
 
             root = await asyncio.to_thread(single_root, extracted)
-            if not await asyncio.to_thread(_looks_like_plugin, root):
-                return "❌ 压缩包内没有找到 GsCore 插件（缺少 __init__.py / __full__.py / __nest__.py）"
-
             try:
                 plugin_name = await asyncio.to_thread(resolve_plugin_register_name, root)
-            except PluginInstallError as e:
-                return f"❌ {e}"
+            except PluginInstallError as exc:
+                return ZipInstallResult(ok=False, msg=f"❌ {exc}")
 
-            if not is_safe_filename(plugin_name):
-                return f"❌ 插件注册名 {plugin_name} 非法"
-            if plugin_name != root.name:
-                return f"❌ 插件注册名 {plugin_name} 与压缩包目录名 {root.name} 不一致，请重新打包"
-            # 装上后 registry 会判为非法插件
-            if plugin_name.startswith((".", "__")) or plugin_name.lower() == "core_command":
-                return f"❌ 插件注册名 {plugin_name} 不能以 . 或 __ 开头，也不能占用内置插件名"
+            name_err = validate_installable_plugin_name(plugin_name)
+            if name_err is not None:
+                return ZipInstallResult(ok=False, msg=f"❌ {name_err}", plugin_name=plugin_name)
+
+            if not await asyncio.to_thread(is_loadable_plugin_dir, root, plugin_name=plugin_name):
+                layout = await asyncio.to_thread(detect_plugin_layout, root, plugin_name=plugin_name)
+                if layout == "nested":
+                    return ZipInstallResult(
+                        ok=False,
+                        msg=(
+                            f"❌ 嵌套插件目录结构不匹配：注册名为 {plugin_name}，"
+                            f"但压缩包内缺少可加载的内层目录 {plugin_name}/__init__.py"
+                        ),
+                        plugin_name=plugin_name,
+                    )
+                return ZipInstallResult(
+                    ok=False,
+                    msg="❌ 压缩包内没有找到可加载的 GsCore 插件（缺少 __init__.py / __full__.py / __nest__.py）",
+                    plugin_name=plugin_name,
+                )
+
+            conflict = await asyncio.to_thread(
+                resolve_plugin_path_sync,
+                plugin_name,
+                include_core=False,
+                include_buildin=True,
+                plugins_path=target_root,
+                buildin_path=buildin_root,
+                core_path=core_root,
+            )
+            if conflict is not None:
+                _conflict_path, conflict_scope = conflict
+                if conflict_scope == "buildin":
+                    return ZipInstallResult(
+                        ok=False,
+                        msg=f"❌ {plugin_name} 是内置插件，不能覆盖",
+                        plugin_name=plugin_name,
+                    )
+                return ZipInstallResult(ok=False, msg="❌ 该插件已经安装过了!", plugin_name=plugin_name)
 
             target = target_root / plugin_name
-            if await asyncio.to_thread(_entry_name_conflict, buildin_root, plugin_name):
-                return f"❌ {plugin_name} 是内置插件，不能覆盖"
-            if await asyncio.to_thread(_entry_name_conflict, target_root, plugin_name):
-                return "❌ 该插件已经安装过了!"
+            if await asyncio.to_thread(target.exists):
+                return ZipInstallResult(ok=False, msg="❌ 该插件已经安装过了!", plugin_name=plugin_name)
 
-            await asyncio.to_thread(os.rename, str(root), str(target))
+            try:
+                await asyncio.to_thread(_rename_into_place, root, target)
+            except FileExistsError:
+                return ZipInstallResult(ok=False, msg="❌ 该插件已经安装过了!", plugin_name=plugin_name)
 
-            # 与 install_plugins 行为一致：
-            return await load_installed_plugin(plugin_name)
-            # 备份/回滚留待后续迭代。
+            await plugin_registry.refresh_one(plugin_name, with_commit=False)
+            logger.info(t("log.plugin.zip_install_extracted", plugin_name=plugin_name))
+            msg = await load_installed_plugin(plugin_name)
+            return ZipInstallResult(
+                ok=msg.lstrip().startswith("✅"),
+                msg=msg,
+                plugin_name=plugin_name,
+                installed_on_disk=True,
+            )
         finally:
             await asyncio.to_thread(remove_tree, staging)
-
-
-def _looks_like_plugin(root: Path) -> bool:
-    return any((root / name).is_file() for name in ("__init__.py", "__full__.py", "__nest__.py"))
-
-
-def _entry_name_conflict(parent: Path, plugin_name: str) -> bool:
-    """``plugin_registry`` 按小写 key 去重，避免两个目录会塌成一个。"""
-    if not parent.is_dir():
-        return False
-    lowered = plugin_name.lower()
-    return any(entry.name.lower() == lowered for entry in parent.iterdir())

@@ -61,13 +61,16 @@ from .registry import (
     plugin_registry,
     probe_plugin_disk,
     scan_disk_plugins,
+    detect_plugin_layout,
     is_valid_plugin_entry,
     read_meta_plugin_info,
+    is_loadable_plugin_dir,
     resolve_plugin_on_disk,
     load_cached_store_links,
     save_cached_store_links,
     scan_disk_plugins_async,
     resolve_plugin_path_sync,
+    validate_installable_plugin_name,
 )
 
 __all__ = [
@@ -110,8 +113,10 @@ __all__ = [
     "build_store_catalog",
     "classify_git_source",
     "close_probe_client",
+    "detect_plugin_layout",
     "detect_provider",
     "is_builtin_mirror_or_proxy",
+    "is_loadable_plugin_dir",
     "is_probe_fresh",
     "is_valid_plugin_entry",
     "load_cached_store_links",
@@ -132,6 +137,7 @@ __all__ = [
     "scan_disk_plugins",
     "scan_disk_plugins_async",
     "strip_url_credentials",
+    "validate_installable_plugin_name",
     "validate_mirror_prefix",
     "validate_mirror_prefix_async",
 ]

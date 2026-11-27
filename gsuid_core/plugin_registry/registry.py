@@ -169,19 +169,51 @@ def is_valid_plugin_entry(entry: Path, *, scope: PluginScope) -> bool:
     return entry.is_file() and entry.suffix == ".py"
 
 
-def _detect_layout(entry: Path) -> PluginLayout:
+def validate_installable_plugin_name(name: str) -> str | None:
+    """校验拟安装的插件目录名是否合法且可加载；合法返回 None，否则返回错误文案。"""
+    if not name or not is_safe_filename(name):
+        return f"插件注册名 {name} 非法"
+    if name.startswith((".", "_")):
+        return f"插件注册名 {name} 不能以 . 或 _ 开头"
+    if name.lower() in {"core_command", CORE_PLUGIN_NAME, "gscore"}:
+        return f"插件注册名 {name} 不能占用内置或核心保留名"
+    return None
+
+
+def detect_plugin_layout(entry: Path, *, plugin_name: str | None = None) -> PluginLayout:
+    """识别插件布局，与 GsServer.load_plugin 保持同一判定口径。"""
     if entry.is_file() and entry.suffix == ".py":
         return "single"
     if not entry.is_dir():
         return "unknown"
     if (entry / "__full__.py").is_file():
         return "full"
-    inner_name = entry.name.removesuffix("-dev")
+    inner_name = (plugin_name if plugin_name is not None else entry.name).removesuffix("-dev")
     if (entry / "__nest__.py").is_file() or (entry / inner_name).is_dir():
         return "nested"
     if (entry / "__init__.py").is_file():
         return "package"
     return "unknown"
+
+
+def is_loadable_plugin_dir(entry: Path, *, plugin_name: str | None = None) -> bool:
+    """判断目录落地为 plugin_name 后能否被 GsServer.load_plugin 发现可导入模块。"""
+    if not entry.is_dir():
+        return False
+    layout = detect_plugin_layout(entry, plugin_name=plugin_name)
+    if layout == "full":
+        return (entry / "__init__.py").is_file() or any(
+            child.is_dir() and (child / "__init__.py").is_file() for child in entry.iterdir()
+        )
+    if layout == "nested":
+        inner_name = (plugin_name if plugin_name is not None else entry.name).removesuffix("-dev")
+        inner = entry / inner_name
+        if not inner.is_dir():
+            return False
+        return (inner / "__init__.py").is_file() or any(
+            child.is_dir() and (child / "__init__.py").is_file() for child in inner.iterdir()
+        )
+    return layout == "package"
 
 
 def _resolve_git_dirs(repo_dir: Path) -> tuple[Path, Path] | None:
@@ -294,7 +326,7 @@ def _build_meta_from_disk(
 ) -> LocalPluginMeta:
     resolved = entry_path.resolve()
     name = CORE_PLUGIN_NAME if scope == "core" else (entry_path.stem if entry_path.is_file() else entry_path.name)
-    layout: PluginLayout = "package" if scope == "core" else _detect_layout(entry_path)
+    layout: PluginLayout = "package" if scope == "core" else detect_plugin_layout(entry_path)
     meta_info = None if scope == "core" else read_meta_plugin_info(entry_path)
     has_pyproject = (entry_path / "pyproject.toml").is_file() if entry_path.is_dir() else False
     icon_path: Path | None = None

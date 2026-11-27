@@ -123,5 +123,7 @@
   "log.plugin.update_name_running_git": "[更新][{plugin_name}] 正在执行 git reset --hard",
   "log.plugin.update_preparing_name": "[更新] 准备更新 [{plugin_name}], 更新等级为{level}",
   "log.plugin.update_you_seconds_interrupt": "[更新] 你有 2 秒钟的时间中断该操作...",
-  "log.plugin.url_name_branch": "[URL 安装插件] URL={url} → 派生插件名={plugin_name}, branch={p0}"
+  "log.plugin.url_name_branch": "[URL 安装插件] URL={url} → 派生插件名={plugin_name}, branch={p0}",
+  "log.plugin.zip_install_extracted": "[ZIP 安装插件] 插件 {plugin_name} 已解压落盘，准备热加载",
+  "log.plugin.zip_staging_cleanup_fail": "[ZIP 安装插件] 清理临时目录 {path} 失败: {error}"
 }
