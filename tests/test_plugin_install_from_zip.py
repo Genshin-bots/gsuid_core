@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import os
+import stat
 import zipfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -93,6 +95,23 @@ class TestArchiveSafety:
             _extract(b"not a zip", tmp_path / "bad")
 
 
+class TestRemoveTree:
+    def test_removes_readonly_file(self, tmp_path: Path) -> None:
+        """zip 会还原文件属性；只读文件不能让目录残留。"""
+        target = tmp_path / "tree"
+        target.mkdir()
+        readonly = target / "locked.txt"
+        readonly.write_text("x", encoding="utf-8")
+        os.chmod(readonly, stat.S_IREAD)
+
+        zip_safe.remove_tree(target)
+
+        assert not target.exists()
+
+    def test_missing_path_is_noop(self, tmp_path: Path) -> None:
+        zip_safe.remove_tree(tmp_path / "nope")
+
+
 class TestRegisterName:
     def test_reads_keyword_argument(self, tmp_path: Path) -> None:
         root = _write_plugin(tmp_path, "Demo", 'Plugins(name="Demo")\n')
@@ -136,6 +155,16 @@ class TestInstallFromZip:
             )
         assert "插件注册名不能为空" in result
         assert list(plugins.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_staging_is_cleaned_up_inside_plugins_dir(self, plugin_dirs: tuple[Path, Path]) -> None:
+        """staging 与 plugins/ 同分区（用 os.rename 落地），装完不留临时目录。"""
+        plugins, buildin = plugin_dirs
+        with _stub_runtime():
+            await install_plugin_from_zip(_plugin_zip(), plugins_path=plugins, buildin_path=buildin)
+        names = sorted(p.name for p in plugins.iterdir())
+        assert names == ["Demo"]
+        assert not any(name.startswith(".staging-") for name in names)
 
     @pytest.mark.asyncio
     async def test_name_mismatch_with_directory_is_rejected(self, plugin_dirs: tuple[Path, Path]) -> None:

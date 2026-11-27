@@ -1,9 +1,9 @@
 import os
 import re
 import ast
+import uuid
 import shutil
 import asyncio
-import tempfile
 import subprocess
 from typing import Dict, List, Union, Optional
 from pathlib import Path
@@ -1092,8 +1092,9 @@ async def install_plugin_from_zip(
         return "❌ 正在安装其它插件，请稍后再试"
 
     async with _zip_install_lock:
-        staging = Path(tempfile.mkdtemp(prefix="gscore-plugin-"))
+        staging = target_root / f".staging-{uuid.uuid4().hex}"
         try:
+            await asyncio.to_thread(staging.mkdir, parents=True, exist_ok=True)
             archive_path = staging / "upload.zip"
             await asyncio.to_thread(archive_path.write_bytes, zip_bytes)
 
@@ -1126,7 +1127,7 @@ async def install_plugin_from_zip(
             if await asyncio.to_thread(_entry_name_conflict, target_root, plugin_name):
                 return "❌ 该插件已经安装过了!"
 
-            await asyncio.to_thread(shutil.move, str(root), str(target))
+            await asyncio.to_thread(os.rename, str(root), str(target))
 
             # 与 install_plugins 行为一致：
             return await load_installed_plugin(plugin_name)

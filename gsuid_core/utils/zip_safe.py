@@ -7,9 +7,12 @@
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 import shutil
 import zipfile
+from typing import Any
 from pathlib import Path
 
 _S_IFMT = 0o170000
@@ -95,5 +98,23 @@ def single_root(extracted: Path) -> Path:
 
 
 def remove_tree(path: Path) -> None:
-    """忽略不存在与 Windows 只读文件导致的删除失败。"""
-    shutil.rmtree(path, ignore_errors=True)
+    """删除目录树"""
+
+    def _on_error(func: Any, target: str, exc_info: tuple[type[BaseException], BaseException, Any]) -> None:
+        # rmtree 的 onerror 收到 (type, value, tb)，不是异常实例
+        if issubclass(exc_info[0], PermissionError):
+            try:
+                os.chmod(target, stat.S_IWUSR)
+                func(target)
+                return
+            except OSError:
+                pass
+        raise exc_info[1]
+
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path, onerror=_on_error)
+    except OSError:
+        # 兜底：清理失败不应让安装流程整体失败
+        shutil.rmtree(path, ignore_errors=True)
