@@ -53,6 +53,9 @@ class PassMysApi(BaseMysApi):
         return validate, ch
 
     async def _upass(self, header: Dict, is_bbs: bool = False) -> str:
+        # 未配置打码 API 时直接跳过，避免无意义请求 createVerification 加剧风控
+        if not pass_config.get_config("_pass_API").data:
+            return ""
         logger.info(t("log.mys.upass_starting_processing"))
         if is_bbs:
             raw_data = await self.get_bbs_upass_link(header)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import ssl
 import copy
 import json
@@ -40,6 +41,48 @@ from .tools import (
 
 _DEAD_CODE = [10035, 5003, 10041, 1034]
 ssl_context = ssl.create_default_context(cafile=certifi.where())
+
+# 旧版 generate_fake_fp 写死静态 oaid 导致多账号碰撞的共享指纹
+LEGACY_SHARED_FAKE_FP = "38d7f191c78a0"
+
+_SENSITIVE_DEBUG_KEYS = frozenset(
+    {
+        "stoken",
+        "stoken_v2",
+        "token",
+        "cookie_token",
+        "cookie_token_v2",
+        "ltoken",
+        "ltoken_v2",
+        "ticket",
+        "authkey",
+        "login_ticket",
+        "email",
+        "mobile",
+    }
+)
+_COOKIE_SECRET_RE = re.compile(
+    r"(?i)\b(stoken|stoken_v2|cookie_token|cookie_token_v2|ltoken|ltoken_v2|login_ticket)=([^;\s]+)"
+)
+
+
+def _redact_debug_value(value: object) -> object:
+    """脱敏 DEBUG 日志中的凭据与账号敏感字段。"""
+    if isinstance(value, dict):
+        redacted: Dict[object, object] = {}
+        for k, v in value.items():
+            key_lower = k.lower() if isinstance(k, str) else ""
+            if key_lower in _SENSITIVE_DEBUG_KEYS and isinstance(v, str) and v:
+                redacted[k] = "***"
+            elif key_lower == "cookie" and isinstance(v, str):
+                redacted[k] = _COOKIE_SECRET_RE.sub(r"\1=***", v)
+            else:
+                redacted[k] = _redact_debug_value(v)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_debug_value(item) for item in value]
+    return value
+
 
 # game_name 中不对应 GsUser 游戏 UID 列的值（如米游社账号维度）
 _NON_GAME_UID_NAMES = frozenset({"account"})
@@ -166,9 +209,13 @@ class BaseMysApi:
             "fp",
             game_name,
         )
-        if data is None:
+        need_refresh = data is None
+        if not need_refresh and self.is_legacy_shared_fp(data):
+            dev_info = await GsUser.get_user_attr_by_uid(uid, "device_info", game_name)
+            need_refresh = not dev_info
+        if need_refresh or data is None:
             seed_id, seed_time = self.get_seed()
-            device_id = self.get_device_id()
+            device_id = await self.get_user_device_id(uid, game_name)
             data = await self.generate_fake_fp(device_id, seed_id, seed_time)
             await GsUser.update_data_by_uid_without_bot_id(
                 uid,
@@ -251,15 +298,21 @@ class BaseMysApi:
     def get_seed(self):
         return self.get_device_id(), str(int(time.time() * 1000))
 
+    @staticmethod
+    def is_legacy_shared_fp(fp: Optional[str]) -> bool:
+        return fp == LEGACY_SHARED_FAKE_FP
+
     async def generate_fake_fp(self, device_id: str, seed_id: str, seed_time: str):
+        # 按 device_id 派生独立 oaid，避免全库未绑设备账号撞到同一 device_fp
+        oaid = hashlib.md5(f"oaid:{device_id}".encode()).hexdigest()[:16]
         return await self.generate_fp(
             device_id,
             "PHK110",
             "PHK110",
             "OP5913L1",
             "taro",
-            "1f1971b188c472f0",
-            "OnePlus/PHK110/OP5913L1:13/SKQ1.221119.001/T.1328291_b9_41:user/release-keys",
+            oaid,
+            "OnePlus/PHK110/OP5913L1:14/SKQ1.221119.001/T.1328291_b9_41:user/release-keys",
             seed_id,
             seed_time,
         )
@@ -300,9 +353,9 @@ class BaseMysApi:
         ext_fields = json.dumps(
             {
                 "proxyStatus": 0,
-                "isRoot": 1,
+                "isRoot": 0,
                 "romCapacity": "512",
-                "deviceName": "私人手机",
+                "deviceName": model,
                 "productName": device,
                 "romRemain": "491",
                 "hostname": "dg02-pool06-kvm82",
@@ -342,12 +395,12 @@ class BaseMysApi:
                 "packageName": "com.mihoyo.hyperion",
                 "networkType": "WiFi",
                 "oaid": oaid,
-                "debugStatus": 1,
+                "debugStatus": 0,
                 "ramCapacity": str(random_data),
                 "magnetometer": "27.1084x-48.5804x-24.8758",
                 "display": f"{model}_{sys_version}.0.0.810(CN01)",
                 "appInstallTimeDiff": str(time_diff),
-                "packageVersion": "2.20.2",
+                "packageVersion": self.mysVersion,
                 "gyroscope": "-0.02543317x0.005725792x0.003195791",
                 "batteryStatus": 50,
                 "hasKeyboard": 0,
@@ -661,7 +714,12 @@ class BaseMysApi:
             device_info = data.device_info
         else:
             device_id = data.device_id if data and data.device_id else self.get_device_id()
-            fp = data.fp if data and data.fp else await self.generate_fake_fp(device_id, seed_id, seed_time)
+            has_unique_fp = bool(data and data.fp and not self.is_legacy_shared_fp(data.fp))
+            fp = (
+                data.fp
+                if has_unique_fp and data is not None
+                else await self.generate_fake_fp(device_id, seed_id, seed_time)
+            )
             device_info = "OnePlus/PHK110/OP2020L1"
         if not app_cookie:
             app_cookie = data.stoken if data and data.stoken else await self.get_stoken(uid, game_name)
@@ -698,7 +756,7 @@ class BaseMysApi:
         logger.debug(t("log.mys.baseurl_base_url", base_url=base_url))
         logger.debug(t("log.mys.miyoushe_request_url", url=url))
         logger.debug(t("log.mys.miyoushe_request_params", params=params))
-        logger.debug(t("log.mys.miyoushe_request_data", data=data))
+        logger.debug(t("log.mys.miyoushe_request_data", data=_redact_debug_value(data)))
 
         if not base_url:
             base_url = None
@@ -770,7 +828,7 @@ class BaseMysApi:
                 except asyncio.TimeoutError:
                     logger.warning(t("log.mys.mhy_request_timeout_obtaining_dfp_fail"))
 
-            logger.debug(header)
+            logger.debug(_redact_debug_value(header))
 
             for _ in range(2):
                 try:
@@ -794,7 +852,7 @@ class BaseMysApi:
                     )
                     continue
 
-                logger.debug(raw_data)
+                logger.debug(_redact_debug_value(raw_data))
 
                 # 判断retcode
                 if "retcode" in raw_data:
@@ -836,7 +894,7 @@ class BaseMysApi:
                         else:
                             header["DS"] = get_ds_token(q, data)
 
-                    logger.debug(t("log.mys.miyoushe_request_header", header=header))
+                    logger.debug(t("log.mys.miyoushe_request_header", header=_redact_debug_value(header)))
                 elif retcode != 0:
                     return retcode
                 else:

@@ -26,9 +26,11 @@ from gsuid_core.utils.api.mys.api import (
 )
 from gsuid_core.utils.api.mys_api import mys_api
 from gsuid_core.utils.database.models import GsUID, GsBind, GsUser
+from gsuid_core.utils.api.mys.base_request import LEGACY_SHARED_FAKE_FP, _redact_debug_value
 from gsuid_core.utils.cookie_manager.add_ck import _deal_ck, build_cn_account_cookie
 from gsuid_core.utils.cookie_manager.add_fp import deal_fp
 from gsuid_core.utils.cookie_manager.qrlogin import qrcode_login
+from gsuid_core.utils.plugins_config.gs_config import pass_config
 from gsuid_core.buildin_plugins.core_command.user_login import send_add_device_msg
 
 
@@ -398,7 +400,12 @@ def test_hyp_stoken_upgrade_to_bbs_scope_and_qr_dedup(
             assert "stoken=v2_bbs_scoped_stoken=.CAE=" in req.header["Cookie"]
             return {"retcode": 0, "message": "OK", "data": {}}
         if req.url.endswith("/device-fp/api/getFp"):
-            return {"retcode": 0, "message": "OK", "data": {"code": 200, "device_fp": "test_fp_00001"}}
+            assert req.data is not None and isinstance(req.data["ext_fields"], str)
+            ext = json.loads(req.data["ext_fields"])
+            assert ext["isRoot"] == 0 and ext["debugStatus"] == 0
+            assert ext["packageVersion"] == mys_api.mysVersion
+            assert isinstance(ext["oaid"], str) and ext["oaid"] != "1f1971b188c472f0"
+            return {"retcode": 0, "message": "OK", "data": {"code": 200, "device_fp": f"fp_{ext['oaid'][:8]}"}}
         raise AssertionError(f"unexpected url: {req.url}")
 
     _mock_mys_request(monkeypatch, _respond)
@@ -441,5 +448,36 @@ def test_hyp_stoken_upgrade_to_bbs_scope_and_qr_dedup(
             saved = await GsUser.select_data_by_uid("100000001")
             assert saved is not None and saved.stoken is not None
             assert "stoken=v2_bbs_scoped_stoken=.CAE=" in saved.stoken
+
+            # 不同 device_id 生成不同 oaid/fp，历史碰撞 fp 会在 ck_in_new_device 自动刷新
+            fp_a = await mys_api.generate_fake_fp("dev-aaa", "seed-1", "1000")
+            fp_b = await mys_api.generate_fake_fp("dev-bbb", "seed-2", "1001")
+            assert fp_a != fp_b
+            await GsUser.update_data_by_uid_without_bot_id("100000001", None, fp=LEGACY_SHARED_FAKE_FP)
+            refreshed_fp, _, _, _ = await mys_api.ck_in_new_device(
+                "100000001",
+                saved.stoken,
+                mys_id="20000001",
+            )
+            assert refreshed_fp != LEGACY_SHARED_FAKE_FP
+
+            # 未配置打码 API 时 _upass 直接跳过，不发 createVerification
+            monkeypatch.setattr(pass_config.get_config("_pass_API"), "data", "")
+            assert await mys_api._upass({"Cookie": saved.stoken}, is_bbs=True) == ""
+
+            # DEBUG 日志脱敏覆盖 Cookie 与常见敏感字段，同时保留排障用 retcode/uid
+            masked = _redact_debug_value(
+                {
+                    "retcode": 0,
+                    "Cookie": "stuid=20000001;stoken=v2_secret_tok;mid=test_mid_mhy",
+                    "data": {"ticket": "secret_tk", "token": {"token": "v2_new_tok"}, "user_info": {"email": "a@b.c"}},
+                }
+            )
+            assert isinstance(masked, dict)
+            assert masked["retcode"] == 0
+            assert masked["Cookie"] == "stuid=20000001;stoken=***;mid=test_mid_mhy"
+            assert isinstance(masked["data"], dict) and masked["data"]["ticket"] == "***"
+            assert isinstance(masked["data"]["token"], dict) and masked["data"]["token"]["token"] == "***"
+            assert isinstance(masked["data"]["user_info"], dict) and masked["data"]["user_info"]["email"] == "***"
 
     asyncio.run(scenario())

@@ -274,7 +274,7 @@ class MemeLibrary:
 
         # 检查是否已存在
         if await AiMemeRecord.exists_by_meme_id(meme_id):
-            logger.debug(t("log.meme.skip_image_id_meme", meme_id=meme_id))
+            logger.debug(t("log.meme.image_exists_skipping", meme_id=meme_id))
             return None
 
         ext = ext_for_mime(file_mime)
@@ -417,7 +417,7 @@ class MemeLibrary:
         await PackStore.delete_members_of_meme(meme_id)
         await AiMemeRecord.delete_by_meme_id(meme_id)
         evict_outbound_meme_cache(meme_id)
-        logger.info(t("log.meme.meme_id_delete_2", meme_id=meme_id))
+        logger.info(t("log.meme.meme_id_delete", meme_id=meme_id))
         return True
 
     @staticmethod
@@ -875,7 +875,7 @@ async def _ensure_meme_collection() -> None:
         if await collection_vector_mismatched(MEME_COLLECTION_NAME, dimension, vector_name=MEME_DENSE_VECTOR):
             logger.warning(
                 t(
-                    "log.meme.collection_name_dense_2",
+                    "log.meme.collection_name_dense",
                     MEME_COLLECTION_NAME=MEME_COLLECTION_NAME,
                 )
             )

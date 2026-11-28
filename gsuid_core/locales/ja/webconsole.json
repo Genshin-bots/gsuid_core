@@ -168,7 +168,6 @@
   "msg.webconsole.database_import.too_many_rows": "CSV が {limit} 行を超えています",
   "msg.webconsole.database_import.unknown_columns": "CSV にこのテーブルにない列があります: {columns}",
   "msg.webconsole.tool_output.batch_limit": "一括削除は 500 件までです",
-  "msg.webconsole.tool_output.file_not_found": "ディスク上にファイルがありません",
   "msg.webconsole.tool_output.ids_required": "削除する id リストが必要です",
   "msg.webconsole.tool_output.no_payload": "ダウンロード可能な本文がありません",
   "msg.webconsole.tool_output.not_found": "FileOS レコード {record_id} が見つかりません"

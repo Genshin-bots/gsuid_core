@@ -312,7 +312,7 @@ async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None 
     async def _do_upsert(batch):
         c = client
         if c is None:
-            raise RuntimeError(i18n_t("Qdrant client 不可用"))
+            raise RuntimeError(i18n_t("log.rag.qdrant_client"))
         await c.upsert(collection_name=TOOLS_COLLECTION_NAME, points=batch)
 
     try:
@@ -330,7 +330,7 @@ async def _upsert_tool_points(points: list[PointStruct], batch_size: int | None 
         from gsuid_core.ai_core.rag.base import client as refreshed_client
 
         if refreshed_client is None:
-            raise RuntimeError(i18n_t("Qdrant client 重建后不可用"))
+            raise RuntimeError(i18n_t("log.meme.qdrant_client"))
 
         async def _do_upsert_after_recreate(batch):
             await refreshed_client.upsert(collection_name=TOOLS_COLLECTION_NAME, points=batch)

@@ -1,5 +1,4 @@
 {
-  "log.htmlrender.fontconfig_initialization": "[HTMLRender] renderer initialization failed: {e}",
   "log.htmlrender.fontconfig_initialized": "[HTMLRender] renderer initialized successfully",
   "log.htmlrender.renderer_initialization": "[HTMLRender] renderer initialization failed: {e}",
   "log.htmlrender.renderer_initialized": "[HTMLRender] renderer initialized, fonts: {fonts}",

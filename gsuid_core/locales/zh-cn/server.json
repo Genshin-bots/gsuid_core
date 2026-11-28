@@ -50,7 +50,7 @@
   "log.server.pyproject_parse_fail": "解析 pyproject.toml 失败: {pyproject}, 错误: {error}",
   "log.server.read_installed_fail": "读取已安装包列表失败: {error}",
   "log.server.run_before_hooks": "[GsCore] 执行启动前Hook函数中！",
-  "log.server.run_shutdown_hooks": "[GsCore] 执行启动Hook函数中！",
+  "log.server.run_shutdown_hooks": "[GsCore] 执行关闭Hook函数中！",
   "log.server.run_start_hooks": "[GsCore] 执行启动Hook函数中！",
   "log.server.special_dep_header": "[安装/更新依赖] 特殊依赖列表如下："
 }

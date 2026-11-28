@@ -168,7 +168,6 @@
   "msg.webconsole.database_import.too_many_rows": "CSV 超过 {limit} 行",
   "msg.webconsole.database_import.unknown_columns": "CSV 含有这张表没有的列：{columns}",
   "msg.webconsole.tool_output.batch_limit": "单次批量删除不得超过 500 条",
-  "msg.webconsole.tool_output.file_not_found": "落盘文件不存在",
   "msg.webconsole.tool_output.ids_required": "请提供要删除的 id 列表",
   "msg.webconsole.tool_output.no_payload": "无可下载正文",
   "msg.webconsole.tool_output.not_found": "FileOS 记录 {record_id} 不存在"

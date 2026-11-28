@@ -343,7 +343,7 @@ async def force_update(repo_path: Path) -> tuple[bool, str]:
     else:
         message = "强制更新成功"
 
-    logger.info(t("log.git_update.force_update_result", message=message))
+    logger.info(t("log.git_update.update_result", message=message))
     refresh_name = await asyncio.to_thread(_repo_plugin_name, repo_path)
     await plugin_registry.refresh_one(refresh_name, with_commit=True)
     return True, message

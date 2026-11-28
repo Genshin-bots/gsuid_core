@@ -149,7 +149,7 @@ async def download_tool_output_raw(
         except PathEscapeError:
             return {
                 "status": 1,
-                "msg": t("msg.webconsole.tool_output.file_not_found"),
+                "msg": t("msg.webconsole.artifact.file_not_found"),
                 "data": None,
             }
         if p.exists() and p.is_file():
@@ -160,7 +160,7 @@ async def download_tool_output_raw(
             )
         return {
             "status": 1,
-            "msg": t("msg.webconsole.tool_output.file_not_found"),
+            "msg": t("msg.webconsole.artifact.file_not_found"),
             "data": None,
         }
     if rec.payload_inline is not None:

@@ -1,7 +1,6 @@
 {
-  "log.scheduler.not_found": "[ScheduledTask] 机器人{p0}不存在!",
-  "log.scheduler.not_found_bot_exist": "[ScheduledTask] Bot {p0} は存在しません!",
-  "log.scheduler.ok_task_id_current_exec_max": "[ScheduledTask] 循环任务执行成功: task_id={task_id}, 第 {current_exec}/{max_exec} 次, 下次执行: {next_run}",
+  "log.scheduler.not_found": "[ScheduledTask] Bot {p0} は存在しません!",
+  "log.scheduler.ok_task_id_current_exec_max": "[ScheduledTask] 周期タスクの実行に成功: task_id={task_id}, {current_exec}/{max_exec} 回目, 次回実行: {next_run}",
   "log.scheduler.sched_cleaned_apscheduler_job_ok": "[ScheduledTask] 完了済みタスク {cleaned_count} 件の APScheduler job をクリーンアップした",
   "log.scheduler.sched_cleaning_task_status": "[ScheduledTask] 完了済みタスクをクリーンアップする: {p0}, status={p1}",
   "log.scheduler.sched_master_ai_switch_skipping": "[ScheduledTask] AI マスタースイッチが無効のため、定期タスク終了時のクリーンアップをスキップする",
@@ -18,7 +17,7 @@
   "log.scheduler.sched_task_announcing_sanitized_fail": "[ScheduledTask] タスクの実行に失敗したため、機密情報を除いたメッセージを通知する: task_id={task_id} {r}",
   "log.scheduler.sched_task_determined_silent": "[ScheduledTask] タスクはサイレントと判断されたため、プッシュしない: task_id={task_id}",
   "log.scheduler.sched_task_exist_id": "[ScheduledTask] タスクが存在しない: {task_id}",
-  "log.scheduler.sched_task_id_exec": "[ScheduledTask] 循环任务执行完毕（已达最大次数）: task_id={task_id}, 执行了 {current_exec} 次",
+  "log.scheduler.sched_task_id_exec": "[ScheduledTask] 周期タスクが完了（最大回数に到達）: task_id={task_id}, 実行回数 {current_exec} 回",
   "log.scheduler.sched_task_id_fail": "[ScheduledTask] タスクの実行に失敗した: {task_id}, error={e}",
   "log.scheduler.sched_task_persona_frozen": "[ScheduledTask] 人格のリセット/復元中のため、タスクを延期する: task_id={task_id}, persona={persona}",
   "log.scheduler.sched_task_result_empty_pushed": "[ScheduledTask] タスク結果が空のため、プッシュしない: task_id={task_id}",

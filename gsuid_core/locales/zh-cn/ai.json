@@ -427,7 +427,6 @@
   "log.ai.listavailabletools_get_list": "[ListAvailableTools] 获取工具列表失败: {e}",
   "log.ai.master_notification_id_fail": "{p0} 主人通知发送失败 ({master_id}): {e}",
   "log.ai.meme_file_exist_path": "[Meme] 表情包文件不存在: {file_path}",
-  "log.ai.meme_file_path": "[Meme] 表情包文件不存在: {file_path}",
   "log.ai.meme_mood_scene_persona": "[Meme] 发送表情包: {p0} (mood={mood}, scene={scene}, persona={persona_name})",
   "log.ai.meme_parsed_tags_cleaned": "[Meme] 解析标记: {meme_tags}, 清理后文本: {clean_text}",
   "log.ai.meme_preinject_skip": "[Cognition] 梗预注入跳过: {e}",

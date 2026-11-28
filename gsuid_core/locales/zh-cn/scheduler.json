@@ -1,6 +1,5 @@
 {
   "log.scheduler.not_found": "[ScheduledTask] 机器人{p0}不存在!",
-  "log.scheduler.not_found_bot_exist": "[ScheduledTask] 机器人{p0}不存在!",
   "log.scheduler.ok_task_id_current_exec_max": "[ScheduledTask] 循环任务执行成功: task_id={task_id}, 第 {current_exec}/{max_exec} 次, 下次执行: {next_run}",
   "log.scheduler.sched_cleaned_apscheduler_job_ok": "[ScheduledTask] 共清理 {cleaned_count} 个已完成任务的 APScheduler job",
   "log.scheduler.sched_cleaning_task_status": "[ScheduledTask] 清理已完成任务: {p0}, status={p1}",

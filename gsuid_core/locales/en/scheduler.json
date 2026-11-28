@@ -1,7 +1,6 @@
 {
-  "log.scheduler.not_found": "[ScheduledTask] 机器人{p0}不存在!",
-  "log.scheduler.not_found_bot_exist": "[ScheduledTask] Bot {p0} does not exist!",
-  "log.scheduler.ok_task_id_current_exec_max": "[ScheduledTask] 循环任务执行成功: task_id={task_id}, 第 {current_exec}/{max_exec} 次, 下次执行: {next_run}",
+  "log.scheduler.not_found": "[ScheduledTask] Bot {p0} does not exist!",
+  "log.scheduler.ok_task_id_current_exec_max": "[ScheduledTask] Recurring task run succeeded: task_id={task_id}, run {current_exec}/{max_exec}, next run: {next_run}",
   "log.scheduler.sched_cleaned_apscheduler_job_ok": "[ScheduledTask] Cleaned up APScheduler job entries for {cleaned_count} completed tasks",
   "log.scheduler.sched_cleaning_task_status": "[ScheduledTask] Cleaning up completed task: {p0}, status={p1}",
   "log.scheduler.sched_master_ai_switch_skipping": "[ScheduledTask] Master AI switch is off; skipping scheduled-task shutdown cleanup",
@@ -18,7 +17,7 @@
   "log.scheduler.sched_task_announcing_sanitized_fail": "[ScheduledTask] Task execution failed; announcing sanitized message: task_id={task_id} {r}",
   "log.scheduler.sched_task_determined_silent": "[ScheduledTask] Task determined to be silent; not pushing: task_id={task_id}",
   "log.scheduler.sched_task_exist_id": "[ScheduledTask] Task does not exist: {task_id}",
-  "log.scheduler.sched_task_id_exec": "[ScheduledTask] 循环任务执行完毕（已达最大次数）: task_id={task_id}, 执行了 {current_exec} 次",
+  "log.scheduler.sched_task_id_exec": "[ScheduledTask] Recurring task finished (max runs reached): task_id={task_id}, ran {current_exec} times",
   "log.scheduler.sched_task_id_fail": "[ScheduledTask] Task execution failed: {task_id}, error={e}",
   "log.scheduler.sched_task_persona_frozen": "[ScheduledTask] Persona is resetting/restoring; task deferred: task_id={task_id}, persona={persona}",
   "log.scheduler.sched_task_result_empty_pushed": "[ScheduledTask] Task result is empty; not pushed: task_id={task_id}",
