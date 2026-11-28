@@ -562,6 +562,24 @@ def test_evidence_block_groups_and_credential_invalidation(monkeypatch: pytest.M
     monkeypatch.setattr(providers, "get_state_provider", lambda service: stub if service == svc else None)
 
     async def scenario() -> None:
+        # 普通插件非凭据观测已在时间线带〔依据:…〕，证据块不重复转储
+        store.append(
+            Observation(
+                obs_id="ob_plain01",
+                session_id=sid,
+                tool_name="plain_query",
+                service="PlainPlugin",
+                requested_by="100000001",
+                requested_by_seq=2,
+                credential_owner=None,
+                outcome="data",
+                observed_at=time.time() - 40,
+                summary="普通公开查询",
+                handle="",
+            )
+        )
+        assert await render_evidence_block(sid, bot, target_uids=["100000002"], records=[]) == ""
+
         store.append(
             Observation(
                 obs_id="ob_test01",
@@ -583,7 +601,7 @@ def test_evidence_block_groups_and_credential_invalidation(monkeypatch: pytest.M
         ]
 
         block = await render_evidence_block(sid, bot, target_uids=["100000002"], records=records)
-        assert "（证据）" in block and "替别人查的：" in block and "ob_test01" in block
+        assert "（证据）" in block and "ob_test01" in block and "ob_plain01" not in block
         assert "替测试用户A查" in block and "已绑定" in block and "测试用户B" in block
         assert "缺凭据" in block
 

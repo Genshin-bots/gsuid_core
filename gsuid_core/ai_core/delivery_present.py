@@ -153,7 +153,8 @@ async def _resolve_and_deliver_leaked_handles(
 
                 if has_run_delivered_image(h):
                     continue
-                await bot.send(MessageSegment.image(await RM.get(h)), extra_metadata=extra_metadata)
+                _gid = str(ev.group_id or "") if ev is not None else ""
+                await bot.send(MessageSegment.image(await RM.get(h, group_id=_gid)), extra_metadata=extra_metadata)
                 note_run_image_delivered(h)
                 logger.info(i18n_t("log.ai.send_leaked_handle_was_resolved", h=h))
             # 非图片落盘文件与 to_/sa_/dlg_/note:/kb_*/journal:/aud_/vid_ 仅剥离不补发

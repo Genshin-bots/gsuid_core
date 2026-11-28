@@ -419,43 +419,63 @@ class _Bot:
                 _hist_group_id = target_id
                 _hist_user_id = _hist_bot_self_id or _hist_bot_id or self.bot_id
 
-            # 提取消息内容
+            # 提取消息内容与出站图片句柄（供 WebConsole 回放与 AI read_image 共用）
             content: str = ""
-            metadata: Dict[str, Any] = {}
+            metadata: Dict[str, object] = {}
+            out_images: List[str] = []
+            out_image_ids: List[str] = []
+
+            def _track_outbound_image(raw_img: object) -> bool:
+                from gsuid_core.utils.resource_manager import RM, _IMG_ID_RE
+
+                if isinstance(raw_img, str):
+                    s = raw_img.strip()
+                    if _IMG_ID_RE.match(s) and RM.has(
+                        s, group_id=str(target_id or "") if target_type != "direct" else ""
+                    ):
+                        out_image_ids.append(s)
+                        out_images.append(f"/api/history/resource/{s}")
+                        return True
+                payload: bytes | str | None = None
+                if isinstance(raw_img, (bytes, bytearray)):
+                    payload = bytes(raw_img)
+                elif isinstance(raw_img, str) and raw_img.strip():
+                    payload = raw_img.strip()
+                if payload is None:
+                    return False
+                rid = RM.register(payload)
+                out_image_ids.append(rid)
+                norm = normalize_image_for_history(payload, rid)
+                if norm:
+                    out_images.append(norm)
+                return True
 
             if isinstance(message, str):
-                # 检查是否是 base64 图片
-                if message.startswith("base64://"):
+                if message.startswith(("base64://", "link://")):
+                    _track_outbound_image(message)
                     content = get_outbound_image_label() or "[图片]"
                     metadata["type"] = "base64_image"
                 else:
                     content = message
             elif isinstance(message, bytes):
-                content = "[图片/文件]"
+                _track_outbound_image(message)
+                content = get_outbound_image_label() or "[图片]"
                 metadata["type"] = "bytes"
             elif isinstance(message, list):
-                # 处理消息列表
-                text_parts = []
+                text_parts: List[str] = []
                 image_count = 0
-                out_images = []
-                node_items: List[Dict[str, Any]] = []
+                node_items: List[Dict[str, object]] = []
                 for msg in message:
                     if isinstance(msg, Message):
                         if msg.type == "text":
                             text_parts.append(str(msg.data))
                         elif msg.type == "node":
-                            # 合并转发：子项进 metadata 供控制台展开，正文落摘要而不是 [node]
                             node_items.extend(node_items_to_history(normalize_node_items(msg.data)))
                             text_parts.append(format_node_preview(normalize_node_items(msg.data)))
                         elif msg.type == "image":
                             image_count += 1
-                            if msg.data:
-                                try:
-                                    norm = normalize_image_for_history(msg.data)
-                                    if norm:
-                                        out_images.append(norm)
-                                except Exception:
-                                    pass
+                            if msg.data is not None:
+                                _track_outbound_image(msg.data)
                         elif msg.type == "at":
                             text_parts.append(f"@{msg.data}")
                         elif msg.type == "file":
@@ -463,13 +483,18 @@ class _Bot:
                             text_parts.append(f"[文件 {fname}]" if fname else "[文件]")
                         else:
                             text_parts.append(f"[{msg.type}]")
+                    elif isinstance(msg, (bytes, bytearray)):
+                        image_count += 1
+                        _track_outbound_image(msg)
                     elif isinstance(msg, str):
-                        text_parts.append(msg)
+                        if msg.startswith(("base64://", "link://")):
+                            image_count += 1
+                            _track_outbound_image(msg)
+                        else:
+                            text_parts.append(msg)
                 content = " ".join(text_parts)
                 if node_items:
                     metadata["node"] = node_items
-                if out_images:
-                    metadata["images"] = out_images
                 if image_count > 0:
                     metadata["image_count"] = image_count
                     label = get_outbound_image_label()
@@ -481,25 +506,24 @@ class _Bot:
                 if message.type == "text":
                     content = str(message.data)
                 elif message.type == "node":
-                    # 合并转发：子项进 metadata，正文落摘要
                     metadata["node"] = node_items_to_history(normalize_node_items(message.data))
                     content = format_node_preview(normalize_node_items(message.data))
                 elif message.type == "image":
                     content = get_outbound_image_label() or "[图片]"
                     metadata["type"] = "image"
-                    if message.data:
-                        try:
-                            norm = normalize_image_for_history(message.data)
-                            if norm:
-                                metadata["images"] = [norm]
-                        except Exception:
-                            pass
+                    if message.data is not None:
+                        _track_outbound_image(message.data)
                 elif message.type == "file":
                     fname = message.data.split("|", 1)[0] if isinstance(message.data, str) else ""
                     content = f"[文件 {fname}]" if fname else "[文件]"
                     metadata["type"] = "file"
                 else:
                     content = f"[{message.type}]"
+
+            if out_images:
+                metadata["images"] = out_images
+            if out_image_ids:
+                metadata["image_id_list"] = out_image_ids
 
             # 构造 Event 对象用于记录历史（WS_BOT_ID 即 self.bot_id）
             if content and _hist_user_id:
@@ -572,6 +596,24 @@ class _Bot:
                     metadata=_hist_meta,
                     segments=segments_from_messages(_message),
                 )
+                if (
+                    "speech_channel" in _hist_meta
+                    and _hist_meta["speech_channel"] == "plugin_broadcast"
+                    and _hist_group_id
+                    and out_image_ids
+                ):
+                    from gsuid_core.ai_core.memory.ingestion.multimodal import enqueue_read_image_digest
+
+                    for idx, iid in enumerate(out_image_ids):
+                        uri = out_images[idx] if idx < len(out_images) else ""
+                        enqueue_read_image_digest(
+                            session_id=_hist_ev.session_id,
+                            group_id=_hist_group_id,
+                            speaker_id=str(bot_self_id or bot_id or "AI"),
+                            bot_self_id=str(bot_self_id or ""),
+                            image_id=iid,
+                            image_url=uri,
+                        )
             except Exception as e:
                 logger.debug(t("log.bot.record_history_fail", error=e))
 

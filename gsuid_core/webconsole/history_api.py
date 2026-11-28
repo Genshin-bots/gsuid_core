@@ -568,26 +568,15 @@ async def get_history_resource(resource_id: str):
     except Exception:
         pass
 
-    # 若 RM 中不存在，尝试在 history_manager 内存记录中查找匹配的 metadata.images
     if data is None:
-        try:
-            manager = get_history_manager()
-            for hist in manager._histories.values():
-                for msg in hist:
-                    meta = msg.metadata if isinstance(msg.metadata, dict) else {}
-                    ids = meta.get("image_id_list") or []
-                    if meta.get("image_id"):
-                        ids = list(ids) + [meta.get("image_id")]
-                    if resource_id in ids:
-                        images = meta.get("images") or []
-                        idx = ids.index(resource_id) if resource_id in ids else 0
-                        if idx < len(images):
-                            data = images[idx]
-                            break
-                if data is not None:
-                    break
-        except Exception:
-            pass
+        direct_url, gid = get_history_manager().resolve_resource_fallback(resource_id)
+        if direct_url is not None:
+            data = direct_url
+        elif gid:
+            try:
+                data = await RM.get(resource_id, group_id=gid)
+            except ValueError:
+                data = None
 
     if data is None:
         return Response(status_code=404)

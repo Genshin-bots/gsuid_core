@@ -256,7 +256,7 @@ async def search_cognition(
             else:
                 kind_hi[hit.kind] = n + 1
         capped.append(hit)
-    final = await _drop_stale_handles(capped)
+    final = await _drop_stale_handles(capped, group_id=scope.group_id or "")
     # 群成员人物检索时抑制无关 FileOS 落盘混排（仅默认联邦面且无落盘查询词时）。
     has_member_hit = any(h.id.startswith("member_") for h in final)
     is_artifact_q = bool(re.search(r"落盘|报告|图表|表格|句柄|产物|结果", search_q))
@@ -356,7 +356,7 @@ def _looks_like_resource_handle(text: str) -> bool:
     return any(body.startswith(p) for p in _HANDLE_PREFIXES)
 
 
-async def probe_handle_alive(hid: str) -> bool:
+async def probe_handle_alive(hid: str, *, group_id: str = "") -> bool:
     """本地探活：句柄能 resolve 才算活。"""
     from gsuid_core.ai_core.planning.handle_resolver import resolve_handle
 
@@ -365,19 +365,18 @@ async def probe_handle_alive(hid: str) -> bool:
     if hid.startswith(("img_", "aud_")):
         from gsuid_core.utils.resource_manager import RM
 
-        got = await RM.get(hid)
-        return got is not None
+        return RM.has(hid, group_id=group_id)
     return False
 
 
-async def _drop_stale_handles(hits: List[CognitiveHit]) -> List[CognitiveHit]:
+async def _drop_stale_handles(hits: List[CognitiveHit], *, group_id: str = "") -> List[CognitiveHit]:
     kept: List[CognitiveHit] = []
     for hit in hits:
         hid = (hit.handle or "").strip()
         if not hid or not _looks_like_resource_handle(hid):
             kept.append(hit)
             continue
-        if await probe_handle_alive(hid):
+        if await probe_handle_alive(hid, group_id=group_id):
             kept.append(hit)
     return kept
 

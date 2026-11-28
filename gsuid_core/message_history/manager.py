@@ -1,21 +1,10 @@
-"""
-通用消息历史管理器
-
-管理每个 session（群聊/私聊）最近 12 小时的 Bot 消息输入/输出记录。
-超过 12 小时从队头丢掉。本模块不涉及任何 AI 功能。
-
-群聊场景：整个群共享历史记录（不区分用户）
-私聊场景：单独维护用户历史记录
-
-保留边界是 12 小时，不按日历日截断，也不按 token 提前丢掉。
-Token 估算仍用于统计（1 中文字符 ≈ 2 tokens，1 英文单词 ≈ 1.3 tokens）。
-"""
+"""通用消息历史管理器：按群聊/私聊维护最近 12 小时滚动消息记录（与 AI 开关解耦）。"""
 
 from __future__ import annotations
 
 import re
 import time
-from typing import Any, Dict, List, Tuple, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Literal, Optional
 from itertools import islice
 from threading import Lock
 from collections import deque
@@ -23,6 +12,9 @@ from dataclasses import field, replace, dataclass
 
 from gsuid_core.models import Event, Message
 from gsuid_core.message_history.link import EventLink, current_outbound
+
+if TYPE_CHECKING:
+    from gsuid_core.bot import _Bot
 
 
 def node_items_to_history(items: List[Message], *, register_media: bool = True) -> List[Dict[str, Any]]:
@@ -58,19 +50,7 @@ def node_items_to_history(items: List[Message], *, register_media: bool = True) 
 
 
 def _estimate_tokens(text: str) -> int:
-    """快速估算文本的 Token 数量
-
-    使用字符比例法进行快速估算，不需要加载 tiktoken 库：
-    - 中文字符：约 2 tokens/字符
-    - 英文单词：约 1.3 tokens/单词
-    - 标点符号和数字：约 1 token/字符
-
-    Args:
-        text: 要估算的文本
-
-    Returns:
-        估算的 Token 数量
-    """
+    """按字符比例快速估算文本 Token 数量（无需 tiktoken）。"""
     if not text:
         return 0
 
@@ -349,21 +329,8 @@ class HistoryManager:
             current -= _estimate_tokens(oldest.content)
         self._session_tokens[storage_event] = current if current > 0 else 0
 
-    def get_history(
-        self,
-        event: "Event",
-        limit: Optional[int] = None,
-    ) -> List[MessageRecord]:
-        """
-        获取指定session的历史记录
-
-        Args:
-            event: Event 事件对象
-            limit: 返回的最大消息数，默认返回全部
-
-        Returns:
-            消息记录列表（按时间顺序）
-        """
+    def get_history(self, event: "Event", limit: Optional[int] = None) -> List[MessageRecord]:
+        """获取指定 session 的历史消息列表（时间正序）。"""
         storage_event = self._get_storage_event(event)
         with self._lock:
             history = self._histories.get(storage_event, deque())
@@ -564,6 +531,17 @@ class HistoryManager:
             for k in stale_keys:
                 del self._msg_id_cache[k]
 
+    @staticmethod
+    def _matches_target(ev_key: "Event", target_type: str, target_id: str) -> bool:
+        if target_type == "direct":
+            return ev_key.user_type == "direct" and str(ev_key.user_id or "") == target_id
+        return ev_key.user_type != "direct" and str(ev_key.group_id or "") == target_id
+
+    @staticmethod
+    def _meta_last_access(meta: Dict[str, object]) -> float:
+        raw = meta["last_access"] if "last_access" in meta else 0.0
+        return float(raw) if isinstance(raw, (int, float)) else 0.0
+
     def resolve_session_identity(
         self,
         *,
@@ -575,28 +553,142 @@ class HistoryManager:
         """出站缺少 bot_self_id 时，从活跃会话反查真实 (bot_id, bot_self_id)。"""
         if not target_id:
             return bot_id, ""
-        best_rank = (-1, -1.0)
-        best_pair = (bot_id, "")
+        tid = str(target_id)
+        best_rank, best_pair = (-1, -1.0), (bot_id, "")
         with self._lock:
             for ev_key, meta in self._session_metadata.items():
                 cand_self = str(ev_key.bot_self_id or "").strip()
-                if not cand_self or cand_self == "0":
+                if not cand_self or cand_self == "0" or not self._matches_target(ev_key, target_type, tid):
                     continue
-                if target_type == "direct":
-                    if ev_key.user_type != "direct" or str(ev_key.user_id or "") != str(target_id):
-                        continue
-                else:
-                    if ev_key.user_type == "direct" or str(ev_key.group_id or "") != str(target_id):
-                        continue
-                ws_match = 1 if (ws_bot_id and ev_key.WS_BOT_ID == ws_bot_id) else 0
-                bid_match = 1 if (bot_id and ev_key.bot_id == bot_id) else 0
-                raw_access = meta["last_access"] if "last_access" in meta else 0.0
-                last_access = float(raw_access) if isinstance(raw_access, (int, float)) else 0.0
-                rank = (ws_match * 2 + bid_match, last_access)
+                ws_hit = 1 if (ws_bot_id and ev_key.WS_BOT_ID == ws_bot_id) else 0
+                bid_hit = 1 if (bot_id and ev_key.bot_id == bot_id) else 0
+                rank = (ws_hit * 2 + bid_hit, self._meta_last_access(meta))
                 if rank > best_rank:
-                    best_rank = rank
-                    best_pair = (ev_key.bot_id or bot_id, cand_self)
+                    best_rank, best_pair = rank, (ev_key.bot_id or bot_id, cand_self)
         return best_pair
+
+    def resolve_ws_bot_id(
+        self,
+        *,
+        bot_id: str,
+        bot_self_id: str,
+        target_type: str,
+        target_id: Optional[str],
+        active_ws_ids: Optional[set[str]] = None,
+    ) -> str:
+        """缺少或失效 WS_BOT_ID 时，从活跃会话反查真实适配器连接 WS_BOT_ID。"""
+        if not target_id:
+            return ""
+        tid = str(target_id)
+        best_rank, best_ws = (-1, -1.0), ""
+        with self._lock:
+            for ev_key, meta in self._session_metadata.items():
+                ws_cand = str(ev_key.WS_BOT_ID or "").strip()
+                if not ws_cand or (active_ws_ids is not None and ws_cand not in active_ws_ids):
+                    continue
+                if not self._matches_target(ev_key, target_type, tid):
+                    continue
+                self_hit = 1 if (bot_self_id and str(ev_key.bot_self_id or "") == bot_self_id) else 0
+                bid_hit = 1 if (bot_id and str(ev_key.bot_id or "") == bot_id) else 0
+                rank = (self_hit * 2 + bid_hit, self._meta_last_access(meta))
+                if rank > best_rank:
+                    best_rank, best_ws = rank, ws_cand
+        return best_ws
+
+    def pick_active_ws_bot_id(
+        self,
+        *,
+        ws_bot_id: Optional[str],
+        bot_id: str,
+        bot_self_id: str,
+        target_type: str,
+        target_id: Optional[str],
+        active_bots: Dict[str, "_Bot"],
+    ) -> Tuple[str, bool]:
+        """解析可用 WS_BOT_ID：优先已有连接→会话反查→同平台 bot_id→首个活跃连接。"""
+        if not active_bots:
+            return "", False
+        if ws_bot_id and ws_bot_id in active_bots:
+            return ws_bot_id, True
+        cand = self.resolve_ws_bot_id(
+            bot_id=bot_id,
+            bot_self_id=bot_self_id,
+            target_type=target_type,
+            target_id=target_id,
+            active_ws_ids=set(active_bots.keys()),
+        )
+        if cand and cand in active_bots:
+            return cand, True
+        if bot_id:
+            by_bid = next((wid for wid, b in active_bots.items() if b.bot_id == bot_id), "")
+            if by_bid:
+                return by_bid, True
+        return next(iter(active_bots)), False
+
+    def resolve_resource_fallback(self, resource_id: str) -> Tuple[Optional[str], str]:
+        """线程安全反查淘汰后的资源直链或所属群号（严禁跨群读取）。"""
+        with self._lock:
+            for ev_key, hist in self._histories.items():
+                gid = str(ev_key.group_id or "")
+                for msg in hist:
+                    meta = msg.metadata
+                    raw_ids = meta["image_id_list"] if "image_id_list" in meta else None
+                    ids = list(raw_ids) if isinstance(raw_ids, list) else []
+                    if "image_id" in meta and meta["image_id"]:
+                        ids.append(str(meta["image_id"]))
+                    if resource_id not in ids:
+                        continue
+                    raw_imgs = meta["images"] if "images" in meta else None
+                    idx = ids.index(resource_id)
+                    cand = raw_imgs[idx] if isinstance(raw_imgs, list) and idx < len(raw_imgs) else None
+                    if isinstance(cand, str) and cand.startswith(("http://", "https://")):
+                        return cand, gid
+                    if gid:
+                        return None, gid
+        return None, ""
+
+    def attach_visual_digest(self, session_id: str, image_id: str, digest: str) -> bool:
+        """将视觉摘要写回对应消息记录（单事实源供线程视图与记忆摄入共用）。"""
+        clean_id, clean_digest = image_id.strip(), " ".join(digest.split()).strip()[:80]
+        if not clean_id or not clean_digest:
+            return False
+        matched = False
+        with self._lock:
+            for ev_key, history in self._histories.items():
+                if session_id and ev_key.session_id != session_id:
+                    continue
+                for rec in reversed(history):
+                    meta = rec.metadata
+                    imgs = meta["image_id_list"] if "image_id_list" in meta else None
+                    single = meta["image_id"] if "image_id" in meta else None
+                    if (isinstance(imgs, list) and clean_id in imgs) or single == clean_id:
+                        if "visual_digests" not in meta or not isinstance(meta["visual_digests"], dict):
+                            meta["visual_digests"] = {}
+                        meta["visual_digests"][clean_id] = clean_digest
+                        matched = True
+        return matched
+
+    def lookup_visual_digests(self, *, group_id: Optional[str], user_id: str, image_ids: List[str]) -> Dict[str, str]:
+        """按群/私聊作用域读取指定 image_ids 已落定的视觉摘要。"""
+        wanted = {iid for iid in image_ids if iid}
+        if not wanted:
+            return {}
+        found: Dict[str, str] = {}
+        t_type, t_id = ("group", str(group_id)) if group_id else ("direct", user_id)
+        with self._lock:
+            for ev_key, history in self._histories.items():
+                if not self._matches_target(ev_key, t_type, t_id):
+                    continue
+                for rec in reversed(history):
+                    digs = rec.metadata["visual_digests"] if "visual_digests" in rec.metadata else None
+                    if not isinstance(digs, dict):
+                        continue
+                    for iid in wanted - found.keys():
+                        if iid in digs and isinstance(digs[iid], str) and digs[iid]:
+                            found[iid] = digs[iid]
+                    if len(found) == len(wanted):
+                        return found
+        return found
 
     def mark_command_hit(self, session: Event | str, msg_id: Optional[str] = None) -> bool:
         """标记一条消息命中命令触发器（command_hit=True）。
@@ -677,16 +769,7 @@ class HistoryManager:
             return str(msg_id).strip() in self._command_hit_msg_ids
 
     def get_last_user_message(self, event: "Event") -> Optional[Dict[str, Any]]:
-        """获取指定session中最后一条用户消息
-
-        从历史记录中倒序查找 role="user" 的消息，返回其 user_id、user_name、user_avatar 和 message。
-
-        Args:
-            event: Event 事件对象
-
-        Returns:
-            包含 user_id、user_name、user_avatar、message 的字典，无用户消息时返回 None
-        """
+        """倒序获取指定 session 最后一条用户消息摘要。"""
         storage_event = self._get_storage_event(event)
         with self._lock:
             history = self._histories.get(storage_event, deque())

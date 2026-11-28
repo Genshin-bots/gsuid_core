@@ -48,7 +48,10 @@ from gsuid_core.ai_core.delivery_present import (
     _try_present_via_render_agent,
     _resolve_and_deliver_leaked_handles,
 )
-from gsuid_core.ai_core.control.angle_guard import MEME_TAG_PATTERN
+from gsuid_core.ai_core.control.angle_guard import (
+    MEME_TAG_PATTERN,
+    fold_protocol_tag_homoglyphs,
+)
 
 if TYPE_CHECKING:
     from gsuid_core.ai_core.inbox.turn import InboxTurn
@@ -58,8 +61,13 @@ if TYPE_CHECKING:
 # 表情没有字数，按 7 个字计，间隔是 1 秒。
 MEME_PAUSE_CHARS = 7
 _ERROR_OUTPUT_RE = re.compile(r"执行出错[:：]|status_code:\s*\d{3}|Traceback|rate_limit|APIError|TimeoutError")
-_INBOX_MAX_TARGETS: int = 3
-_INBOX_MAX_BUBBLES: int = 3
+_INBOX_MAX_TARGETS: int = 4
+_INBOX_MAX_BUBBLES: int = 4
+
+
+def _scaled_turn_cap(base: int, turn: "InboxTurn") -> int:
+    """多说话人合批轮按批内实际说话人数放宽出站帽（上限即 _MAX_TURN_ENTRIES）。"""
+    return max(base, len(turn.distinct_speaker_ids))
 
 
 def bubble_pause(char_count: int) -> float:
@@ -250,7 +258,7 @@ def normalize_meme_query(raw_tag: str) -> str:
 
 def extract_pure_meme_query(text: str) -> str | None:
     """仅含 <meme:...>（及可选协议标签/空白标点）时返回规范化短语，否则返回 None。"""
-    body = remainder_after_protocol_tags(text or "").strip()
+    body = remainder_after_protocol_tags(fold_protocol_tag_homoglyphs(text or "")).strip()
     if not body:
         return None
     matches = list(MEME_TAG_PATTERN.finditer(body))
@@ -324,7 +332,7 @@ async def send_chat_result(
         meta["speech_channel"] = "persona"
     extra_metadata = meta
 
-    _trimmed = text.strip()
+    _trimmed = fold_protocol_tag_homoglyphs(text.strip())
     if is_silence_marker(_trimmed):
         logger.debug(i18n_t("log.ai.send_chat_result_special_trimmed_skip", _trimmed=repr(_trimmed)))
         return
@@ -343,7 +351,7 @@ async def send_chat_result(
             _trimmed,
             valid_seqs=frozenset(_valid),
             default_seqs=(_turn.primary.item.seq,),
-            max_targets=_INBOX_MAX_TARGETS,
+            max_targets=_scaled_turn_cap(_INBOX_MAX_TARGETS, _turn),
         )
         if _plan.invalid_refs:
             logger.info(i18n_t("log.inbox.reply_ref_invalid", seqs=",".join(str(s) for s in _plan.invalid_refs)))
@@ -564,7 +572,8 @@ async def send_chat_result(
 
         _budget = _PERSONA_MAX_BUBBLES
         if _plan_turn is not None:
-            _turn_rem = max(0, _INBOX_MAX_BUBBLES - _plan_turn.bubbles_sent)
+            _turn_cap = _scaled_turn_cap(_INBOX_MAX_BUBBLES, _plan_turn)
+            _turn_rem = max(0, _turn_cap - _plan_turn.bubbles_sent)
             _budget = min(_PERSONA_MAX_BUBBLES, _turn_rem)
 
         if _budget <= 0:
@@ -689,9 +698,10 @@ async def _send_reply_plan_groups(
 
         prefix: list[Message] = []
         reply_target: tuple[int, str] | None = None
+        multi_speaker_unquoted = len(turn.distinct_speaker_ids) > 1 and not group.explicit
         if len(targets) > 1:
             prefix = [MessageSegment.at(uid) for uid, _ in targets]
-        else:
+        elif not multi_speaker_unquoted:
             quote_seq = target_seqs[0]
             msg_id = ""
             entry = turn.entry_for(quote_seq)
@@ -717,8 +727,10 @@ async def _send_reply_plan_groups(
                 rec = get_history_manager().find_by_seq(ev, quote_seq)
                 if rec is not None and "msg_id" in rec.metadata:
                     msg_id = str(rec.metadata["msg_id"])
-            # 显式 <reply #seq> 指向批内非最新消息时保留引用消歧；无标签回复在批内无人插话时免引
-            need_quote = quote_seq != latest_user_seq and (group.explicit or latest_user_seq not in pending)
+            # 多说话人批内显式 <reply #seq> 一律挂引用消歧；单说话人未插话时免引
+            need_quote = (group.explicit and len(turn.distinct_speaker_ids) > 1) or (
+                quote_seq != latest_user_seq and (group.explicit or latest_user_seq not in pending)
+            )
             if need_quote and msg_id:
                 prefix = [Message("reply", msg_id)]
             elif msg_id:
@@ -728,9 +740,10 @@ async def _send_reply_plan_groups(
                 )
 
         gmeta = dict(meta)
-        gmeta["reply_to_user_id"] = targets[0][0]
-        if targets[0][1]:
-            gmeta["reply_to_user_name"] = targets[0][1]
+        if not multi_speaker_unquoted:
+            gmeta["reply_to_user_id"] = targets[0][0]
+            if targets[0][1]:
+                gmeta["reply_to_user_name"] = targets[0][1]
 
         group_preselected: AiMemeRecord | None = None
         if remaining_preselected is not None and MEME_TAG_PATTERN.search(group.text):
@@ -739,7 +752,7 @@ async def _send_reply_plan_groups(
 
         binding = OutboundBinding(
             seen_seq=turn.head_seq,
-            in_reply_to_seqs=tuple(target_seqs),
+            in_reply_to_seqs=() if multi_speaker_unquoted else tuple(target_seqs),
             evidence=tuple(turn.observations),
             personal_credential=_personal_cred,
         )
@@ -758,7 +771,7 @@ async def _send_reply_plan_groups(
             )
         finally:
             reset_outbound(token)
-        turn.answered |= {s for s in target_seqs if s in pending}
+        turn.answered |= set(pending) if multi_speaker_unquoted else {s for s in target_seqs if s in pending}
 
 
 async def _prepare_meme_payload(

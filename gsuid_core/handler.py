@@ -873,7 +873,11 @@ async def handle_event(ws: _Bot, msg: MessageReceive, is_http: bool = False):
                     logger.warning(t("log.handler.ai_init_incomplete"))
                 return
 
-            # 结构唤醒判定：唤醒名 = 人格名 + persona keywords + framework_aliases。
+            # 结构唤醒判定：同群外部机器人的发言仅留作历史背景，不入收件箱唤醒本 Bot。
+            from gsuid_core.ai_core.memory.observer import is_external_bot_speaker
+
+            if event.group_id and is_external_bot_speaker(str(event.user_id or "")):
+                return
             link = inbound_record.link if inbound_record is not None else None
             if link is None:
                 return

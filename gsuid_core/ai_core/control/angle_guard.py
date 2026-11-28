@@ -34,10 +34,47 @@ _SILENCE_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 跨语种同形字母折叠（如模型偶发写出 <มeme:害怕> / 西里尔同形头）
+_TAG_HOMOGLYPH_MAP = str.maketrans(
+    {
+        "\u0e21": "m",
+        "\u043c": "m",
+        "\u041c": "M",
+        "\u0435": "e",
+        "\u0415": "E",
+        "\u0440": "r",
+        "\u0420": "R",
+        "\u0443": "y",
+        "\u0423": "Y",
+        "\u0456": "i",
+        "\u0406": "I",
+        "\u0441": "c",
+        "\u0421": "C",
+    }
+)
+_TAG_HEAD_HOMOGLYPH_RE = re.compile(
+    r"((?:<|&lt;|&#60;|&#x3c;|＜|\\<)\s*/?\s*)([^\s<>:：/]{2,12})(?=\s*(?:[：:]|\s+#|/?>|&gt;|&#62;|＞|\\>))"
+)
+
+
+def fold_protocol_tag_homoglyphs(text: str) -> str:
+    """仅折叠疑似协议标签名中的同形字符，不触碰正文。"""
+    if not text or ("<" not in text and "＜" not in text and "&lt;" not in text and "&#" not in text):
+        return text
+
+    def _fix_head(m: re.Match[str]) -> str:
+        folded = m.group(2).translate(_TAG_HOMOGLYPH_MAP)
+        if folded.lower() in ("meme", "reply", "silence"):
+            return f"{m.group(1)}{folded}"
+        return m.group(0)
+
+    return _TAG_HEAD_HOMOGLYPH_RE.sub(_fix_head, text)
+
+
 # 形如标签：以字母开头的名 + 可选属性/自闭合（不含「< 数字」比较）
 _ANGLE_TAG_RE = re.compile(r"</?[A-Za-z][\w:.-]*(?:\s[^<>]*?)?/?>")
-# 模型自造中文控制标签：`<要求用其他语言…>`。比较符 `1 < 2` 不含 CJK 名。
-_CJK_ANGLE_TAG_RE = re.compile(r"</?[\u4e00-\u9fff][^<>]{0,80}>")
+# 模型自造非 ASCII 控制标签（含中文/泰文/西里尔等）：比较符 `1 < 2` 不命中。
+_NON_ASCII_ANGLE_TAG_RE = re.compile(r"</?[^\W\d_A-Za-z][^<>]{0,80}>")
 
 # 常见 HTML / 模型自造控制标签：永不按「泛型类型参数」豁免
 _HTML_OR_CONTROL_TAG_NAMES: frozenset[str] = frozenset(
@@ -173,7 +210,8 @@ def strip_protocol_tags(text: str) -> str:
     """剥掉框架协议标签，便于检测「非法残留」。不含 ``<br>`` / ``<report>``。"""
     if not text:
         return text
-    out = _MEME_TAG_RE.sub("", text)
+    out = fold_protocol_tag_homoglyphs(text)
+    out = _MEME_TAG_RE.sub("", out)
     out = _SILENCE_TAG_RE.sub("", out)
     out = _REPLY_TAG_RE.sub("", out)
     return out
@@ -263,8 +301,10 @@ def find_illegal_angle_tags(text: str, *, pre_masked: str | None = None) -> List
         if raw not in seen:
             seen.add(raw)
             out.append(raw)
-    for m in _CJK_ANGLE_TAG_RE.finditer(residual):
+    for m in _NON_ASCII_ANGLE_TAG_RE.finditer(residual):
         raw = m.group(0)
+        if "@" in raw:
+            continue
         if raw not in seen:
             seen.add(raw)
             out.append(raw)
@@ -291,8 +331,9 @@ def _is_protocol_tag_raw(raw: str) -> bool:
 
 def _sanitize_region(text: str) -> str:
     """对单段非代码正文做非法标签剥离 / br→换行。"""
-    if not text or "<" not in text:
+    if not text or ("<" not in text and "＜" not in text):
         return text
+    text = fold_protocol_tag_homoglyphs(text)
 
     def _sub(m: re.Match[str]) -> str:
         raw = m.group(0)
@@ -307,6 +348,10 @@ def _sanitize_region(text: str) -> str:
         return "\n" if low in ("<br>", "<br/>", "</br>") else ""
 
     cleaned = _ANGLE_TAG_RE.sub(_sub, text)
+    cleaned = _NON_ASCII_ANGLE_TAG_RE.sub(
+        lambda m: m.group(0) if ("@" in m.group(0) or _is_protocol_tag_raw(m.group(0))) else "",
+        cleaned,
+    )
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     return re.sub(r" *\n *", "\n", cleaned)
 

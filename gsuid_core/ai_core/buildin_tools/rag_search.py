@@ -362,9 +362,9 @@ def _scope_from_ctx(ctx: RunContext[ToolContext], include_skill_doc: bool = Fals
         group_id=str(ev.group_id) if ev is not None and ev.group_id else None,
         persona_name=persona_name,
         include_skill_doc=include_skill_doc,
-        # 语义性开关在唯一的配置层给默认值，不在函数签名里给
         enable_system2=memory_config.enable_system2,
-        enable_user_global=memory_config.enable_user_global_memory,
+        enable_user_global=memory_config.enable_user_global_memory
+        and not ("multi_speaker_unscoped" in extra and bool(extra["multi_speaker_unscoped"])),
         clock_at=clock,
     )
 
@@ -381,6 +381,7 @@ async def search_cognition(
     limit: int = 64,
     offset: int = 0,
     intent: Optional[str] = None,
+    source_seq: int = 0,
 ) -> str:
     """回想已有信息：长期记忆、用户偏好、知识库、历史落盘与任务产物（不查外部实时网页）。
 
@@ -394,7 +395,14 @@ async def search_cognition(
         limit: 候选池深度（上限 48）
         offset: 翻页偏移，填上一页回执给出的值
         intent: 可选 point_latest / version_diff / timeline_order / broad_summary
+        source_seq: 可选，多人合批轮查特定说话人个人偏好或产物时填入对应消息序号
     """
+    from gsuid_core.ai_core.buildin_tools.call_tool import bind_run_context_caller
+
+    bound_ctx, bind_err = bind_run_context_caller(ctx, source_seq, neutral_group_fallback=True)
+    if bound_ctx is None:
+        return bind_err
+    ctx = bound_ctx
     scope = _scope_from_ctx(ctx)
     if not scope.user_id:
         return "⚠️ 无用户上下文，拒绝检索（防跨用户泄漏）。"

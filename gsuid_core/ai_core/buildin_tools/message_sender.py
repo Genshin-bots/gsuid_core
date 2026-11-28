@@ -424,7 +424,8 @@ async def send_message_by_ai(
                         )
                     )
                     try:
-                        img_data = await RM.get(img_id)
+                        _gid = str(ev.group_id or "") if ev is not None else ""
+                        img_data = await RM.get(img_id, group_id=_gid)
                         media_parts.append(MessageSegment.image(img_data))
                         success_img_ids.append(img_id)
                     except ValueError as e:
@@ -471,7 +472,8 @@ async def send_message_by_ai(
             else:
                 try:
                     logger.debug(t("log.ai.buildintools_calling_rm_get_2", image_id=img_id))
-                    img_data = await RM.get(img_id)
+                    _gid = str(ev.group_id or "") if ev is not None else ""
+                    img_data = await RM.get(img_id, group_id=_gid)
                     logger.debug(t("log.ai.buildintools_rm_get_succeeded_ok_2", p0=type(img_data)))
                     media_parts.append(MessageSegment.image(img_data))
                     success_img_ids.append(img_id)

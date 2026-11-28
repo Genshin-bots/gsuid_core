@@ -21,7 +21,8 @@ from gsuid_core.ai_core.persona.homeostasis import (
 from gsuid_core.ai_core.persona_reset.guard import is_persona_frozen
 
 _ECHO_AGE_SECONDS = 900.0
-_OFFSCREEN_WINDOW = 21600.0
+_OFFSCREEN_WINDOW = 1800.0
+_ECHO_RENDER_WINDOW = 1800.0
 _ECHO_CAP = 5
 _SUMMARY_MAX = 36
 _OFFSCREEN_MAX = 45
@@ -188,13 +189,20 @@ async def refresh_persona_state(persona_name: str, now: float) -> tuple[PersonaH
     return state, ribbon
 
 
-def _offscreen_visible(ribbon: PresenceRibbon, *, target_key: str, is_private: bool, user_id: str) -> bool:
-    """群聊只看 self 或本群；私聊只看 self、本人私聊或本人触发的记录。"""
+def _offscreen_visible(
+    ribbon: PresenceRibbon,
+    *,
+    target_key: str,
+    is_private: bool,
+    user_id: str,
+    include_self_offscreen: bool = True,
+) -> bool:
+    """群聊常规点名轮不注入无关独处心事（防谐音/短句锚定偏移），仅看本群或主动软触发。"""
     scope = ribbon.offscreen_scope.strip()
     if not scope:
         return False
     if scope == "self":
-        return True
+        return include_self_offscreen
     if not is_private:
         return scope == target_key
     uid = user_id.strip()
@@ -213,6 +221,7 @@ def render_presence(
     is_private: bool,
     now: float,
     user_id: str = "",
+    include_self_offscreen: bool = True,
 ) -> str:
     """≤120 字的存在感注入块。看不到别会话的 echo 与跨群 offscreen；没有内容返回空串。"""
     from gsuid_core.ai_core.control.lines import presence_echo_line, presence_offscreen_line
@@ -224,13 +233,54 @@ def render_presence(
     if (
         ribbon.offscreen_doing
         and now - ribbon.offscreen_at < _OFFSCREEN_WINDOW
-        and _offscreen_visible(ribbon, target_key=target_key, is_private=is_private, user_id=user_id)
+        and _offscreen_visible(
+            ribbon,
+            target_key=target_key,
+            is_private=is_private,
+            user_id=user_id,
+            include_self_offscreen=include_self_offscreen,
+        )
     ):
         parts.append(presence_offscreen_line(_age_label(ribbon.offscreen_at, now), ribbon.offscreen_doing))
     for echo in reversed(ribbon.echoes):
         if echo["target_key"] != target_key or echo["is_private"] != is_private:
             continue
+        if now - echo["emitted_at"] >= _ECHO_RENDER_WINDOW:
+            continue
         answered = echo["answered"] if echo["settled"] else None
         parts.append(presence_echo_line(_age_label(echo["emitted_at"], now), echo["summary"], answered))
         break
     return "\n".join(parts)[:120]
+
+
+async def consume_rendered_presence(
+    persona_name: str,
+    *,
+    target_key: str,
+    is_private: bool,
+    user_id: str = "",
+    include_self_offscreen: bool = True,
+) -> None:
+    """可见回复送达后弹出本目标已消费的闲时心事与主动回声，杜绝跨轮复读。"""
+    ribbon = await load_presence(persona_name)
+    dirty = False
+    if ribbon.offscreen_doing and _offscreen_visible(
+        ribbon,
+        target_key=target_key,
+        is_private=is_private,
+        user_id=user_id,
+        include_self_offscreen=include_self_offscreen,
+    ):
+        ribbon.offscreen_doing = ""
+        ribbon.offscreen_at = 0.0
+        ribbon.offscreen_scope = ""
+        ribbon.offscreen_user_id = ""
+        dirty = True
+    kept = [
+        echo for echo in ribbon.echoes if not (echo["target_key"] == target_key and echo["is_private"] == is_private)
+    ]
+    if len(kept) != len(ribbon.echoes):
+        ribbon.echoes = kept
+        dirty = True
+    if dirty:
+        await save_presence(persona_name, ribbon)

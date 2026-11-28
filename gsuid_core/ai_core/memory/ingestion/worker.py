@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import queue as sync_queue
 import asyncio
@@ -224,11 +225,25 @@ async def _ingest_window_inner(
     if not records:
         return stats
 
+    _img_tag_re = re.compile(r"\[图片\s+(img_[0-9a-f]{8,32})\]")
     for rec in records:
         if not rec.command_hit and rec.message_id and _hm.is_command_hit(rec.message_id):
             rec.command_hit = True
         if rec.command_hit:
             rec.raw_content = "[用户调用了 bot 功能]"
+            continue
+        found_ids = _img_tag_re.findall(rec.raw_content)
+        if found_ids:
+            digests = _hm.lookup_visual_digests(
+                group_id=rec.group_id,
+                user_id=rec.speaker_id,
+                image_ids=found_ids,
+            )
+            if digests:
+                rec.raw_content = _img_tag_re.sub(
+                    lambda m, _d=digests: f"[图片 {m.group(1)}: {_d[m.group(1)]}]" if m.group(1) in _d else m.group(0),
+                    rec.raw_content,
+                )
 
     threads = await AIMemThread.list_active_or_dormant(scope_key, limit=15)
     route = await route_window(scope_key, records, threads, force_settle=force_settle)

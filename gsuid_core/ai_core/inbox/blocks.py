@@ -9,8 +9,15 @@ from typing import Sequence
 
 from gsuid_core.message_history import MessageRecord
 from gsuid_core.ai_core.inbox.turn import InboxTurn
-from gsuid_core.ai_core.thread_view import _RenderCtx, format_pending_entry_line
-from gsuid_core.ai_core.control.lines import PENDING_BLOCK_HEAD
+from gsuid_core.ai_core.thread_view import (
+    _RenderCtx,
+    _replies_around,
+    format_pending_entry_line,
+)
+from gsuid_core.ai_core.control.lines import (
+    PENDING_BLOCK_HEAD,
+    pending_later_delivery_note,
+)
 
 __all__ = ["render_pending_block", "quote_fact_lines"]
 
@@ -19,11 +26,25 @@ def _index(records: Sequence[MessageRecord]) -> dict[int, MessageRecord]:
     return {r.link.seq: r for r in records if r.link is not None}
 
 
-def render_pending_block(turn: InboxTurn, records: Sequence[MessageRecord]) -> str:
-    """（待你回应）块：每条唤醒项一行，行尾给可核实的往来事实。"""
+def render_pending_block(
+    turn: InboxTurn,
+    records: Sequence[MessageRecord],
+    extra_lines: Sequence[str] = (),
+) -> str:
+    """（待你回应）补充块：正文已在时间线标 ★#seq，仅补命令回执、滞后送达与出窗引用事实。"""
     seq_index = _index(records)
     ctx = _RenderCtx(seq_index=seq_index, persona_name=turn.persona_name)
-    lines = [format_pending_entry_line(entry, seq_index, ctx) for entry in turn.entries]
+    lines: list[str] = []
+    for entry in turn.entries:
+        if entry.receipt is not None:
+            lines.append(format_pending_entry_line(entry, seq_index, ctx))
+            continue
+        _, later = _replies_around(seq_index, entry.item.user_id, entry.item.seq)
+        if later is not None:
+            lines.append(f"★#{entry.item.seq} {pending_later_delivery_note(entry.item.seq, later)}")
+    lines.extend(extra_lines)
+    if not lines:
+        return ""
     return "\n".join([PENDING_BLOCK_HEAD, *lines])
 
 

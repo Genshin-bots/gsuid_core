@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Dict, List, Type, Union, Optional, Sequence
+from typing import Dict, List, Type, Union, Optional, Sequence
 
 from sqlmodel import Field, Index, col, select, update
 from sqlalchemy import Row, UniqueConstraint, or_, func, delete, distinct
@@ -117,78 +117,78 @@ class Subscribe(BaseModel, table=True):
         command_tips: str = "请输入以下命令之一:",
         command_start_text: str = "",
         force_direct: bool = False,
-        extra_metadata: Optional[Dict[str, Any]] = None,
+        extra_metadata: Optional[Dict[str, object]] = None,
     ) -> int:
-        if force_direct:
+        if force_direct or self.user_type == "direct":
             user_type = "direct"
             group_id = None
-        else:
-            user_type = self.user_type
+        elif self.user_type == "channel":
+            user_type = "channel"
             group_id = self.group_id
-        ev = Event(
+        elif self.user_type == "sub_channel":
+            user_type = "sub_channel"
+            group_id = self.group_id
+        else:
+            user_type = "group"
+            group_id = self.group_id
+
+        from gsuid_core.message_history import get_history_manager
+
+        hm = get_history_manager()
+        target_id = group_id if user_type != "direct" else self.user_id
+        resolved_ws, matched_ws = hm.pick_active_ws_bot_id(
+            ws_bot_id=self.WS_BOT_ID,
             bot_id=self.bot_id,
-            user_id=self.user_id,
             bot_self_id=self.bot_self_id,
-            user_type=user_type,  # type: ignore
-            group_id=group_id,
-            real_bot_id=self.bot_id,
-            msg_id=self.msg_id if self.msg_id else "",
+            target_type=user_type,
+            target_id=target_id,
+            active_bots=gss.active_bot,
         )
-        params = {
-            "reply": reply,
-            "option_list": option_list,
-            "unsuported_platform": unsuported_platform,
-            "sep": sep,
-            "command_tips": command_tips,
-            "command_start_text": command_start_text,
-        }
-
-        if extra_metadata and reply is not None:
-            params["extra_metadata"] = extra_metadata
-
-        async def _dispatch(bot: Bot) -> None:
-            if extra_metadata is not None:
-                assert reply is not None
-                await bot.send(reply, extra_metadata=extra_metadata)
-            else:
-                await bot.send_option(**params)
-
-        if self.WS_BOT_ID:
-            if self.WS_BOT_ID in gss.active_bot:
-                BOT = gss.active_bot[self.WS_BOT_ID]
-                bot = Bot(BOT, ev)
-                await _dispatch(bot)
-                return 0
-            # WS_BOT_ID 失效（可能重连后 ID 变了），尝试通过 bot_id 查找活跃 Bot
-            for ws_bot_id, _bot in gss.active_bot.items():
-                if _bot.bot_id == self.bot_id:
-                    logger.info(
-                        t(
-                            "log.database.subscription_ws_bot_id_invalid",
-                            p0=self.WS_BOT_ID,
-                            ws_bot_id=ws_bot_id,
-                        )
-                    )
-                    # 更新数据库中的 WS_BOT_ID
-                    self.WS_BOT_ID = ws_bot_id
-                    await self.update_data(
-                        user_id=self.user_id,
-                        bot_id=self.bot_id,
-                        WS_BOT_ID=ws_bot_id,
-                    )
-                    bot = Bot(_bot, ev)
-                    await _dispatch(bot)
-                    return 0
+        if not resolved_ws:
+            if self.WS_BOT_ID:
+                logger.error(t("log.database.subscription_bot_exist_cannot_send", p0=self.WS_BOT_ID))
+            return -1
+        if self.WS_BOT_ID and not matched_ws:
             logger.error(t("log.database.subscription_bot_exist_cannot_send", p0=self.WS_BOT_ID))
             return -1
-        else:
-            if not gss.active_bot:
-                return -1
-            for bot_id in gss.active_bot:
-                BOT = gss.active_bot[bot_id]
-                bot = Bot(BOT, ev)
-                await _dispatch(bot)
+        if self.WS_BOT_ID and self.WS_BOT_ID != resolved_ws:
+            logger.info(t("log.database.subscription_ws_bot_id_invalid", p0=self.WS_BOT_ID, ws_bot_id=resolved_ws))
+        if self.WS_BOT_ID != resolved_ws and matched_ws:
+            self.WS_BOT_ID = resolved_ws
+            await self.update_data(user_id=self.user_id, bot_id=self.bot_id, WS_BOT_ID=resolved_ws)
+
+        res_bid, res_self = hm.resolve_session_identity(
+            ws_bot_id=resolved_ws, bot_id=self.bot_id, target_type=user_type, target_id=target_id
+        )
+        eff_self_id = self.bot_self_id if (self.bot_self_id and self.bot_self_id != "0") else res_self
+        eff_bot_id = res_bid if (not self.bot_id or self.bot_id == resolved_ws) and res_bid else self.bot_id
+        BOT = gss.active_bot[resolved_ws]
+        ev = Event(
+            bot_id=eff_bot_id,
+            user_id=self.user_id,
+            bot_self_id=eff_self_id,
+            user_type=user_type,
+            group_id=group_id,
+            real_bot_id=eff_bot_id,
+            msg_id=self.msg_id or "",
+            WS_BOT_ID=BOT.bot_id,
+        )
+        eff_meta: Optional[Dict[str, object]] = extra_metadata
+        if eff_meta is None and reply is not None and not option_list and user_type != "direct":
+            eff_meta = {"speech_channel": "plugin_broadcast", "source_label": self.task_name or "订阅推送"}
+        bot = Bot(BOT, ev)
+        if eff_meta is not None and not option_list and reply is not None:
+            await bot.send(reply, extra_metadata=eff_meta)
             return 0
+        await bot.send_option(
+            reply=reply,
+            option_list=option_list,
+            unsuported_platform=unsuported_platform,
+            sep=sep,
+            command_tips=command_tips,
+            command_start_text=command_start_text,
+        )
+        return 0
 
 
 class CoreTag(BaseIDModel, table=True):

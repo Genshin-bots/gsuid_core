@@ -76,9 +76,36 @@ def _normalize_surface(surface: str) -> str:
     return surface.strip().lower()
 
 
+# 拒绝入实体路由的现代汉语疑问词/指代高频虚词（防止脏别名在每句提问上误锁插件）。
+_FUNCTION_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "什么",
+        "怎么",
+        "如何",
+        "为什么",
+        "为啥",
+        "谁啊",
+        "谁呀",
+        "谁是",
+        "啥啊",
+        "哪个",
+        "哪里",
+        "哪儿",
+        "这个",
+        "那个",
+        "今天",
+        "明天",
+        "昨天",
+        "现在",
+        "大家",
+        "有人",
+    }
+)
+
+
 def _is_indexable(surface: str) -> bool:
-    """短词一律拒绝入索引——它们是误路由的主要来源（见模块 docstring）。"""
-    if not surface:
+    """短词与高频疑问/指代词一律拒绝入索引——它们是误路由的主要来源。"""
+    if not surface or surface in _FUNCTION_STOPWORDS:
         return False
     if surface.isascii():
         return len(surface) >= _MIN_ASCII_LEN and surface.isalnum()

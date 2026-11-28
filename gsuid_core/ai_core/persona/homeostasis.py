@@ -121,8 +121,8 @@ def advance_homeostasis(
 
 def apply_turn_shock(state: PersonaHomeostasis, traits: "DriveTraits", now: float) -> None:
     """一次实际可见发言的冲击：耗能、涨饱食、累计连续轮次（20 分钟内算连续）。"""
-    state.energy = max(0.10, state.energy - (0.09 - 0.0006 * traits.energy_endurance))
-    state.social_satiety = min(1.0, state.social_satiety + 0.18)
+    state.energy = max(0.10, state.energy - (0.045 - 0.0003 * traits.energy_endurance))
+    state.social_satiety = min(1.0, state.social_satiety + 0.10)
     state.consecutive_turns = state.consecutive_turns + 1 if now - state.last_turn_at < 1200 else 1
     state.last_turn_at = now
 

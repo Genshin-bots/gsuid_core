@@ -334,18 +334,34 @@ def chat_message_from_record(record: RecordLike, segments: Optional[List[Dict[st
     兜底成一条文本段。
     """
     meta = record.metadata if isinstance(record.metadata, dict) else {}
+    meta_images = meta["images"] if "images" in meta and isinstance(meta["images"], list) else []
     if not isinstance(segments, list) or not segments:
         content = str(record.content or "")
         segments = [{"type": "text", "text": content}] if content else []
-    sender = meta.get("sender")
+        for img_url in meta_images:
+            if isinstance(img_url, str) and img_url:
+                segments.append({"type": "image", "url": img_url})
+    elif meta_images:
+        repaired: List[Dict[str, object]] = []
+        img_idx = 0
+        for seg in segments:
+            if "type" in seg and seg["type"] == "image":
+                cur_idx = img_idx
+                img_idx += 1
+                cand = meta_images[cur_idx] if cur_idx < len(meta_images) else None
+                if ("url" not in seg or not seg["url"]) and isinstance(cand, str) and cand:
+                    repaired.append({"type": "image", "url": cand})
+                    continue
+            repaired.append(seg)
+        segments = repaired
+    sender = meta["sender"] if "sender" in meta else None
     sender_dict = sender if isinstance(sender, dict) else {}
     role = record.role or "user"
     user_id = record.user_id or ""
     # 机器人自己发的那条，record.user_id 存的是提问的人，换回 bot 自己
-    if role == "assistant" and sender_dict.get("user_id"):
+    if role == "assistant" and "user_id" in sender_dict and sender_dict["user_id"]:
         user_id = str(sender_dict["user_id"])
-    # 内存记录没有库主键，key 留空，由调用方按内容指纹兜底
-    return {
+    out: Dict[str, object] = {
         "key": "",
         "role": role,
         "user_id": user_id,
@@ -355,9 +371,16 @@ def chat_message_from_record(record: RecordLike, segments: Optional[List[Dict[st
         "content": record.content or "",
         "segments": segments,
         "sender": sender_dict,
-        "msg_id": str(meta.get("msg_id") or ""),
+        "msg_id": str(meta["msg_id"] or "") if "msg_id" in meta else "",
         "link": record.link.to_dict() if record.link is not None else None,
     }
+    if "speech_channel" in meta and isinstance(meta["speech_channel"], str) and meta["speech_channel"]:
+        out["speech_channel"] = meta["speech_channel"]
+    if "source_label" in meta and isinstance(meta["source_label"], str) and meta["source_label"]:
+        out["source_label"] = meta["source_label"]
+    if "visual_digests" in meta and isinstance(meta["visual_digests"], dict) and meta["visual_digests"]:
+        out["visual_digests"] = dict(meta["visual_digests"])
+    return out
 
 
 def segments_preview(segments: List[Dict[str, Any]], limit: int = 80) -> str:

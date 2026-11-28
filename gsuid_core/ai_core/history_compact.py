@@ -153,7 +153,7 @@ def _truncate_history_keep_prefix_with_split(
     history: List[ModelMessage],
     max_keep: int,
     *,
-    prefix_ratio: float = 0.55,
+    prefix_ratio: float = 0.25,
 ) -> tuple[List[ModelMessage], int]:
     """前缀稳定截断：永不丢头部，只裁中段，保留近期尾部，同时返回保留前缀长度。"""
     if len(history) <= max_keep:
@@ -304,7 +304,7 @@ def compact_session_history(
     max_history: int,
     *,
     trim_ratio: float = 0.6,
-    prefix_ratio: float = 0.55,
+    prefix_ratio: float = 0.25,
     max_prefix_age_s: float | None = None,
     now_ts: float | None = None,
 ) -> tuple[List[ModelMessage], bool]:

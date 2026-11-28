@@ -119,6 +119,7 @@ async def schedule_task(
     interval_value: int = 0,
     interval_type: str = "minutes",
     max_executions: int = 10,
+    source_seq: int = 0,
 ) -> str:
     """新建一次性或循环定时提醒（只新建；查/改/取消已有提醒先 find_tools 调同族管理工具）。
 
@@ -133,7 +134,14 @@ async def schedule_task(
         interval_value: mode="interval" 时的间隔数值（最小等价 5 分钟）
         interval_type: "minutes" / "hours" / "days"，默认 "minutes"
         max_executions: 循环最大次数，默认 10（上限 150）
+        source_seq: 多人合批轮必填：触发本次提醒创建的消息序号，归属到对应说话人
     """
+    from gsuid_core.ai_core.buildin_tools.call_tool import bind_run_context_caller
+
+    bound_ctx, bind_err = bind_run_context_caller(ctx, source_seq)
+    if bound_ctx is None:
+        return bind_err
+    ctx = bound_ctx
     kind = (mode or "").strip().lower()
     if kind == "once":
         return await _add_once_task_impl(ctx, run_time=run_time or start_time, task_prompt=task_prompt)
@@ -216,9 +224,9 @@ async def _add_once_task_impl(
             bot_id=ev.bot_id,
             user_id=ev.user_id,
             group_id=ev.group_id,
-            bot_self_id=getattr(ev, "bot_self_id", "") or "",
+            bot_self_id=ev.bot_self_id or "",
             user_type=ev.user_type or "direct",
-            WS_BOT_ID=getattr(ev, "WS_BOT_ID", None),
+            WS_BOT_ID=ev.WS_BOT_ID,
             persona_name=persona_name,
             session_id=session_id,
             task_type="once",
@@ -339,9 +347,9 @@ async def _add_interval_task_impl(
             bot_id=ev.bot_id,
             user_id=ev.user_id,
             group_id=ev.group_id,
-            bot_self_id=getattr(ev, "bot_self_id", "") or "",
+            bot_self_id=ev.bot_self_id or "",
             user_type=ev.user_type or "direct",
-            WS_BOT_ID=getattr(ev, "WS_BOT_ID", None),
+            WS_BOT_ID=ev.WS_BOT_ID,
             persona_name=persona_name,
             session_id=session_id,
             task_type="interval",

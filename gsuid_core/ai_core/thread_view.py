@@ -38,13 +38,11 @@ _PERSONA_SPEECH_LABEL = "闲聊回复"
 _MAX_ANCHOR_CHARS = 60
 _MAX_RECEIPT_CHARS = 280
 _BACKFILL_LINES = 16
-_QUOTE_HOPS = 3
-_SLICE_RECENT_WINDOW_S = 180.0
+_QUOTE_HOPS = 2
 _SLICE_MAX_AGE_S = 1800.0
-_SLICE_SELF_PRE_LIMIT = 3
-_SLICE_GROUP_RECENT_LIMIT = 6
+_SLICE_GROUP_RECENT_LIMIT = 15
 _SPAM_REPEAT_MIN = 3
-_ROUTER_RECENT_LIMIT = 4
+_ROUTER_RECENT_LIMIT = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,11 +124,44 @@ def _you(record: MessageRecord, persona_name: str | None) -> str:
 
 
 def _name_of(records: dict[int, MessageRecord], seq: int | None) -> str:
-    if seq is None:
+    return _plain_name(records[seq]) if seq is not None and seq in records else ""
+
+
+def _record_image_ids(record: MessageRecord) -> list[str]:
+    meta = record.metadata
+    if "image_id_list" in meta and isinstance(meta["image_id_list"], list):
+        return list(dict.fromkeys(x for x in meta["image_id_list"] if isinstance(x, str) and x))
+    if "image_id" in meta and isinstance(meta["image_id"], str) and meta["image_id"]:
+        return [meta["image_id"]]
+    return []
+
+
+def _format_image_tag(record: MessageRecord, image_id: str, *, quoted: bool = False) -> str:
+    head = "引用图" if quoted else "图片"
+    digs = record.metadata["visual_digests"] if "visual_digests" in record.metadata else None
+    if isinstance(digs, dict) and image_id in digs and isinstance(digs[image_id], str) and digs[image_id].strip():
+        return f"[{head} {image_id}: {_one_line(digs[image_id].strip(), 72)}]"
+    return f"[{head} {image_id}]"
+
+
+def _merge_inline_images(body: str, record: MessageRecord) -> str:
+    tags = [_format_image_tag(record, iid) for iid in _record_image_ids(record) if iid not in body]
+    if not tags:
+        return body
+    tag_str = " ".join(tags)
+    return tag_str if body.strip() in ("", "[图片]", "[图片/文件]") else f"{body} {tag_str}"
+
+
+def _quoted_image_suffix(record: MessageRecord, target: MessageRecord | None) -> str:
+    raw_list = record.metadata["reply_image_id_list"] if "reply_image_id_list" in record.metadata else None
+    if not isinstance(raw_list, list):
         return ""
-    if seq not in records:
-        return ""
-    return _plain_name(records[seq])
+    target_ids = set(_record_image_ids(target)) if target is not None else set()
+    src = target if target is not None else record
+    tags = [
+        _format_image_tag(src, r, quoted=True) for r in raw_list if isinstance(r, str) and r and r not in target_ids
+    ]
+    return f" {' '.join(tags)}" if tags else ""
 
 
 def _quote_marker(
@@ -141,27 +172,34 @@ def _quote_marker(
     link = record.link
     if link is None or link.reply_to_seq is None:
         meta = record.metadata
+        q_imgs = _quoted_image_suffix(record, None)
         if "reply_preview" in meta:
-            return f" {THREAD_REPLY_MARK}(引用: {_one_line(str(meta['reply_preview']), 40)})"
-        return ""
+            return f" {THREAD_REPLY_MARK}(引用: {_one_line(str(meta['reply_preview']), 40)}){q_imgs}"
+        return q_imgs
     target = seq_index[link.reply_to_seq] if link.reply_to_seq in seq_index else None
+    q_imgs = _quoted_image_suffix(record, target)
     if target is None:
         meta = record.metadata
         if "reply_preview" in meta:
-            return f" {THREAD_REPLY_MARK}(引用: {_one_line(str(meta['reply_preview']), 40)})"
-        return f" {THREAD_REPLY_MARK}(引用: #{link.reply_to_seq})"
+            return f" {THREAD_REPLY_MARK}(引用: {_one_line(str(meta['reply_preview']), 40)}){q_imgs}"
+        return f" {THREAD_REPLY_MARK}(引用: #{link.reply_to_seq}){q_imgs}"
     if target.role == "assistant":
         ago = _ago(record.timestamp - target.timestamp)
-        if _speech_channel(target) in _RECEIPT_CHANNELS:
+        ch = _speech_channel(target)
+        if ch == "plugin_broadcast":
+            src = str(target.metadata["source_label"]) if "source_label" in target.metadata else ""
+            label = f"群播报·{src}" if src else "群播报"
+            return f" {THREAD_REPLY_MARK}#{link.reply_to_seq}({label} · {ago}){q_imgs}"
+        if ch in _RECEIPT_CHANNELS:
             who = _reply_target_name(target, seq_index)
-            return f" {THREAD_REPLY_MARK}#{link.reply_to_seq}({THREAD_RECEIPT_TAG} · 由{who}触发 · {ago})"
+            return f" {THREAD_REPLY_MARK}#{link.reply_to_seq}({THREAD_RECEIPT_TAG} · 由{who}触发 · {ago}){q_imgs}"
         who = _reply_target_name(target, seq_index)
         when = datetime.fromtimestamp(target.timestamp).strftime("%H:%M")
         return (
             f" {THREAD_REPLY_MARK}#{link.reply_to_seq}"
-            f"({_you(target, persona_name)}→{who} · {when} · {ago} · {_PERSONA_SPEECH_LABEL})"
+            f"({_you(target, persona_name)}→{who} · {when} · {ago} · {_PERSONA_SPEECH_LABEL}){q_imgs}"
         )
-    return f" {THREAD_REPLY_MARK}#{link.reply_to_seq}({_plain_name(target)})"
+    return f" {THREAD_REPLY_MARK}#{link.reply_to_seq}({_plain_name(target)}){q_imgs}"
 
 
 def _name_by_uid(seq_index: dict[int, MessageRecord], uid: str) -> str:
@@ -213,14 +251,17 @@ def _user_body(record: MessageRecord) -> str:
     """命令触发的用户消息对模型遮蔽原话（旧 format_history_for_agent 同款）。"""
     if record.metadata and "command_hit" in record.metadata and record.metadata["command_hit"]:
         return "[用户调用了 bot 功能]"
-    return _one_line(_guard_body(record.content), _MAX_RECEIPT_CHARS)
+    body = _one_line(_guard_body(record.content), _MAX_RECEIPT_CHARS)
+    return _merge_inline_images(body, record)
 
 
 def _user_line(record: MessageRecord, ctx: "_RenderCtx") -> str:
     link = record.link
     seq = link.seq if link is not None else 0
+    star = "★" if seq in ctx.pending_seqs else ""
     markers = _at_markers(record, ctx.seq_index) + _quote_marker(record, ctx.seq_index, ctx.persona_name)
-    return f"#{seq} [{_format_timestamp(record.timestamp)}] {_ctx_speaker(record, ctx)}{markers}: {_user_body(record)}"
+    ts = _format_timestamp(record.timestamp)
+    return f"{star}#{seq} [{ts}] {_ctx_speaker(record, ctx)}{markers}: {_user_body(record)}"
 
 
 def _assistant_line(record: MessageRecord, ctx: "_RenderCtx") -> str | None:
@@ -228,23 +269,30 @@ def _assistant_line(record: MessageRecord, ctx: "_RenderCtx") -> str | None:
     seq = link.seq if link is not None else 0
     if is_silence_marker(record.content.strip()):
         return None
-    if _speech_channel(record) == "tool_delivery" and not _strip_resource_handles(record.content).strip():
+    ch = _speech_channel(record)
+    if ch == "tool_delivery" and not _strip_resource_handles(record.content).strip() and not _record_image_ids(record):
         return None
     you = _you(record, ctx.persona_name)
     ts = _format_timestamp(record.timestamp)
-    if _speech_channel(record) in _RECEIPT_CHANNELS:
+    if ch == "plugin_broadcast":
+        src = str(record.metadata["source_label"]).strip() if "source_label" in record.metadata else ""
+        head = f"[群播报·{src}]" if src else "[群播报]"
+        body = _merge_inline_images(_one_line(record.content, _MAX_RECEIPT_CHARS), record)
+        return f"#{seq} [{ts}] {head}: {body}"
+    if ch in _RECEIPT_CHANNELS:
         name = _reply_target_name(record, ctx.seq_index)
         arrow = f"→{name}" if name else ""
-        return f"#{seq} [{ts}] {you}[回执]{arrow}: {_one_line(record.content, _MAX_RECEIPT_CHARS)}"
+        body = _merge_inline_images(_one_line(record.content, _MAX_RECEIPT_CHARS), record)
+        return f"#{seq} [{ts}] {you}[回执]{arrow}: {body}"
     suffix = _evidence_suffix(record, ctx)
+    body = _merge_inline_images(_one_line(record.content, _MAX_ANCHOR_CHARS), record)
     if link is not None and link.in_reply_to_seqs:
         n = link.in_reply_to_seqs[0]
         name = _reply_target_name(record, ctx.seq_index)
         head = f"{you}→#{n}({name})"
     else:
-        head = f"{you}:"
-        return f"#{seq} [{ts}] {head} {_one_line(record.content, _MAX_ANCHOR_CHARS)}{THREAD_SENT_MARK}{suffix}"
-    return f"#{seq} [{ts}] {head}: {_one_line(record.content, _MAX_ANCHOR_CHARS)}{THREAD_SENT_MARK}{suffix}"
+        return f"#{seq} [{ts}] {you}: {body}{THREAD_SENT_MARK}{suffix}"
+    return f"#{seq} [{ts}] {head}: {body}{THREAD_SENT_MARK}{suffix}"
 
 
 @dataclass(slots=True)
@@ -254,6 +302,7 @@ class _RenderCtx:
     session_id: str = ""
     bot_id: str = ""
     compact: bool = False
+    pending_seqs: frozenset[int] = frozenset()
 
 
 def _evidence_suffix(record: MessageRecord, ctx: "_RenderCtx") -> str:
@@ -328,8 +377,10 @@ def _render_lines(records: Sequence[MessageRecord], ctx: _RenderCtx) -> list[_Li
     for record in sorted(records, key=lambda r: r.link.seq if r.link is not None else 0):
         if record.link is None or record.role == "system":
             continue
+        is_pending = record.link.seq in ctx.pending_seqs
         mergeable = (
             record.role == "user"
+            and not is_pending
             and not _has_structure(record)
             and group
             and str(group[-1].user_id) == str(record.user_id)
@@ -339,7 +390,7 @@ def _render_lines(records: Sequence[MessageRecord], ctx: _RenderCtx) -> list[_Li
             group.append(record)
             continue
         flush()
-        if record.role == "user" and not _has_structure(record):
+        if record.role == "user" and not is_pending and not _has_structure(record):
             group.append(record)
         else:
             text = _record_line(record, ctx)
@@ -361,10 +412,14 @@ def _is_unrelated_command_noise(record: MessageRecord, target_uids: frozenset[st
         return bool("command_hit" in record.metadata and record.metadata["command_hit"]) and (
             str(record.user_id or "") not in target_uids
         )
-    if record.role == "assistant" and _speech_channel(record) in _RECEIPT_CHANNELS:
-        meta = record.metadata
-        uid = str(meta["reply_to_user_id"]) if "reply_to_user_id" in meta and meta["reply_to_user_id"] else ""
-        return not uid or uid not in target_uids
+    if record.role == "assistant":
+        ch = _speech_channel(record)
+        if ch == "plugin_broadcast":
+            return False
+        if ch in _RECEIPT_CHANNELS or ch == "command_aside":
+            meta = record.metadata
+            uid = str(meta["reply_to_user_id"]) if "reply_to_user_id" in meta and meta["reply_to_user_id"] else ""
+            return not uid or uid not in target_uids
     return False
 
 
@@ -375,7 +430,7 @@ def _select_group_slice(
     seq_index: dict[int, MessageRecord],
     group_recent_limit: int = _SLICE_GROUP_RECENT_LIMIT,
 ) -> tuple[list[MessageRecord], int]:
-    """统一群聊切片：待回应 ∪ 引用链(≤3跳) ∪ 本人3分钟内前置(≤3) ∪ 群近3分钟(≤N)。"""
+    """群聊连续窗口切片：待回应 ∪ 引用链(≤2跳) ∪ 滞后已送达 ∪ 30分钟内最近N条非噪声消息。"""
     if not delta:
         return [], 0
     anchor_recs = [seq_index[s] for s in pending_seqs if s in seq_index]
@@ -394,53 +449,29 @@ def _select_group_slice(
                 quote_seqs.add(cur)
 
     keep_seqs: set[int] = set(pending_seqs) | quote_seqs
-    later_delivery_seqs: set[int] = set()
-    # 滞后追问之后已发给同用户的出站交付必须保留在切片内，防模型误判未送达
     if pending_seqs and target_uids:
         min_pending_seq = min(pending_seqs)
         for r in delta:
             if r.link is None or r.link.seq <= min_pending_seq or r.role != "assistant":
                 continue
             if any(_assistant_targets_uid(r, seq_index, uid) for uid in target_uids):
-                later_delivery_seqs.add(r.link.seq)
                 keep_seqs.add(r.link.seq)
-    cutoff_recent = anchor_ts - _SLICE_RECENT_WINDOW_S
-    if target_uids:
-        self_pre = [
-            r.link.seq
-            for r in delta
-            if r.role == "user"
-            and r.link is not None
-            and r.link.seq not in keep_seqs
-            and str(r.user_id or "") in target_uids
-            and r.timestamp >= cutoff_recent
-        ]
-        keep_seqs.update(self_pre[-_SLICE_SELF_PRE_LIMIT:])
-    ambient = [
+
+    recent_candidates = [
         r.link.seq
         for r in delta
         if r.link is not None
         and r.link.seq not in keep_seqs
-        and r.timestamp >= cutoff_recent
+        and anchor_ts - r.timestamp <= _SLICE_MAX_AGE_S
         and not _is_unrelated_command_noise(r, target_uids)
     ]
-    keep_seqs.update(ambient[-group_recent_limit:])
+    keep_seqs.update(recent_candidates[-group_recent_limit:])
 
     by_seq = {r.link.seq: r for r in delta if r.link is not None}
     for seq in quote_seqs:
         if seq in seq_index and seq not in by_seq:
             by_seq[seq] = seq_index[seq]
-    selected = [
-        r
-        for seq, r in sorted(by_seq.items())
-        if seq in keep_seqs
-        and (
-            seq in pending_seqs
-            or seq in quote_seqs
-            or seq in later_delivery_seqs
-            or anchor_ts - r.timestamp <= _SLICE_MAX_AGE_S
-        )
-    ]
+    selected = [r for seq, r in sorted(by_seq.items()) if seq in keep_seqs]
     return selected, sum(1 for r in delta if r.link is not None and r.link.seq not in keep_seqs)
 
 
@@ -529,6 +560,7 @@ def render_delta(
         persona_name=persona_name,
         session_id=session_id or _first_meta_str(linked, "session_id"),
         bot_id=bot_id or _first_meta_str(linked, "bot_id"),
+        pending_seqs=pending,
     )
     lines = _collapse_consecutive_repeats(delta, _render_lines(delta, ctx), pending, ctx)
     if len(lines) > _INBOX_DELTA_MAX_LINES:

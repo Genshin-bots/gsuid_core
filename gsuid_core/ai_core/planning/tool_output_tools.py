@@ -219,6 +219,7 @@ async def read_handle(
     limit: int = 8000,
     handle_ids: list[str] | None = None,
     query: str = "",
+    source_seq: int = 0,
 ) -> str:
     """统一读句柄：to_/sa_/res_/img_/dlg_/note:/journal:/kb_plugin/kb_kbdoc 均可；支持单句柄、多句柄与关键词窗口提取。
 
@@ -229,6 +230,12 @@ async def read_handle(
     ``kb_plugin`` / ``kb_kbdoc`` 是公共知识全文，无属主校验。
     框架保底工具：折叠后的检索/产物必须用本工具取全文，禁止空口说「只有句柄」。
     """
+    from gsuid_core.ai_core.buildin_tools.call_tool import bind_run_context_caller
+
+    bound_ctx, bind_err = bind_run_context_caller(ctx, source_seq, neutral_group_fallback=True)
+    if bound_ctx is None:
+        return bind_err
+    ctx = bound_ctx
     targets: list[str] = []
     if handle_ids:
         targets.extend(h.strip() for h in handle_ids if h and h.strip())

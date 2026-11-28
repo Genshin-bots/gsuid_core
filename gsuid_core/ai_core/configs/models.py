@@ -1087,15 +1087,6 @@ def get_model_by_full_name(full_name: str) -> AnyModel:
     return _build_model_by_full_name(full_name, fast=False)
 
 
-def get_fast_model_by_full_name(full_name: str) -> AnyModel:
-    """按全名构建**无思考**快模型：不注入 reasoning effort / thinking 档位。
-
-    前置路由、后台分诊与两阶段摄入统一走这条通道，避免用户为聊天配置的
-    ``model_effort="max"`` 让每次轻量调用吐出数千推理 Token。
-    """
-    return _build_model_by_full_name(full_name, fast=True)
-
-
 def get_model_config_by_full_name(full_name: str) -> StringConfig:
     """按 provider++name 取对应配置文件（failover 后读实际模型的 model_support）。"""
     provider, config_name = parse_provider_config_name(full_name)

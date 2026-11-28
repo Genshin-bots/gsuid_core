@@ -169,6 +169,7 @@ async def create_subagent(
     ctx: RunContext[ToolContext],
     task: str,
     agent_profile: str = "",
+    source_seq: int = 0,
 ) -> str:
     """委派专职能力代理执行多步任务（agent_profile 填 system 能力清单中的准确 node_id）。
 
@@ -179,13 +180,20 @@ async def create_subagent(
         ctx: 工具执行上下文
         task: 完整任务要求（非渲染节点只写调研/计算，勿要求出图；出图时附事实包或 res_ 句柄）
         agent_profile: 目标能力代理 node_id，禁止留空或自造名
+        source_seq: 多人合批轮必填：触发本次委派的消息序号，绑定对应群友身份与权限
     """
     from gsuid_core.ai_core.outbound import write_decision_memo, remember_outbound_topic
     from gsuid_core.ai_core.history_format import note_thread_handles_in_text
+    from gsuid_core.ai_core.buildin_tools.call_tool import bind_run_context_caller
     from gsuid_core.ai_core.capability_agents.delegation_contracts import (
         PENDING_DELEGATION_HOLD,
         delegation_is_inflight,
     )
+
+    bound_ctx, bind_err = bind_run_context_caller(ctx, source_seq)
+    if bound_ctx is None:
+        return bind_err
+    ctx = bound_ctx
 
     # 回执之后再补派只会串行。并列窗口在第一次 deferred ack 之前。
     if delegation_is_inflight(ctx.deps.extra):

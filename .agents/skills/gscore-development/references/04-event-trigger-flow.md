@@ -136,17 +136,22 @@ if "提及应答" in ai_mode:
 2. classify_wake 判定唤醒类型：private/mention/name/quote_self/followup/receipt（hard/soft）
 3. InboxScheduler.submit(PendingEntry)：同会话单飞，pending 进 settle 合并窗口
    （私聊/群聊 hard 4.0s / 群聊未说完起手式与 soft 8.0s / 上限 12.0s；同一发言人等待期内续发
-   无 @ 消息亦自动顺延并并入 turn.entries）；_build_turn 执行同批同说话人幂等折叠与
-   90s 跨轮非个人绑定（无工具观测且 memory_intent=="none"）精确消解，一次落定后入队 TaskContext(run_turn)
+   无 @ 消息亦自动顺延并并入 turn.entries）；_build_turn 按 hard 优先 + seq 升序合并窗口内
+   **全部说话人**（上限 8 条，溢出留待下一轮），仅同批同说话人的全等重复句幂等折叠，
+   一次落定后入队 TaskContext(run_turn)；复读避让改由时间线 + 提示词协议模型侧判行
 4. handle_inbox_turn(turn)：并发信号量 + 长度防护 → get_ai_session → 一段开口门
    → TurnRouter（群聊收件箱轮在 source=="llm" 时统一消费 soft_speak: bool 拦截复读/三方提及/软触发无关；
      离线退化 structural_fallback 保底放行 hard 项）
-   → run_interactive_turn：render_delta 线程视图（含出站〔依据〕）作 B 轨输入
-   → InboxKit 注入（待你回应）/（相关往来）/（本群近况）块
+   → run_interactive_turn：render_delta 线程视图（待回应行首 ★#seq、行内 [图片 img_…] 句柄、
+   出站〔依据〕与 [群播报·来源] 标签）作 B 轨输入
+   → InboxKit 注入（待你回应）补充块（仅回执/滞后送达/出窗引用事实）
    → turn.reached_model=True 紧邻 session.run
-5. 出站：send_chat_result 先 parse_reply_plan 解析 <reply #seq>，分组发送；
-   OutboundBinding 写入 EventLink（in_reply_to_seqs/evidence），回执通道不拦截
-6. 结算：answered 集合只含 pending 项；未达模型不推进 read_seq，模型前错误重试 1 次后过期，已达模型故障直接过期
+5. 出站：send_chat_result 先 parse_reply_plan 解析 <reply #seq>，分组发送（多说话人批内显式
+   reply 一律挂引用消歧；target/bubble 帽随批内说话人数放宽）；
+   OutboundBinding 写入 EventLink（in_reply_to_seqs/evidence），回执通道不拦截；
+   工具调用经 events_by_seq 按 source_seq 切换真实发言人身份与权限
+6. 结算：按说话人独立 settle_turn（防多人合批张冠李戴）；answered 集合只含 pending 项；
+   未达模型不推进 read_seq，模型前错误重试 1 次后过期，已达模型故障直接过期
 ```
 
 > `enable_ai` 在 `handle_ai.py` 仍是函数内动态读取——WebConsole 切总开关后无需重启（D-21）。

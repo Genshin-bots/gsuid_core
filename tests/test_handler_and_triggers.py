@@ -83,7 +83,6 @@ class _InboxRig:
         self.hold_next_turn = False
         self.answer_all = True
         self.emit_tool_obs = False
-        self.emit_mem_dep = False
         self.sched = InboxScheduler(clock=lambda: self.now, sleep=self._sleep, runner=self._runner)
 
     async def _sleep(self, seconds: float) -> None:
@@ -97,8 +96,6 @@ class _InboxRig:
         self.turn_times.append(self.now)
         if self.emit_tool_obs:
             turn.observations.append("ob_test0001")
-        if self.emit_mem_dep:
-            turn.memory_dependent = True
         self.in_flight.set()
         if self.manual_outcomes:
             return await self.outcomes.get()
@@ -477,14 +474,19 @@ def test_inbox_scheduler_settle_and_one_time_settlement(monkeypatch: pytest.Monk
 
 
 def test_quoted_image_attribution_and_unread_image_filtering(monkeypatch: pytest.MonkeyPatch) -> None:
-    """引用图拆入 reply_image_id_list、引用自动 @ 区分、二次引用新图与待读图过滤。"""
+    """引用图拆入 reply_image_id_list、时间线行内图片句柄收口与按群隔离图片落盘。"""
+    import io
+
+    from PIL import Image
+
+    import gsuid_core.utils.resource_manager as rm_mod
     from gsuid_core.handler import msg_process, _record_inbound_history
     from gsuid_core.message_history import MessageRecord
-    from gsuid_core.ai_core.turn_pipeline import extract_pending_unread_images
+    from gsuid_core.ai_core.thread_view import render_delta
+    from gsuid_core.utils.resource_manager import ResourceManager
     from gsuid_core.ai_core.configs.ai_config import ai_config
     from gsuid_core.ai_core.multimodal.payload import prepare_media_payload
 
-    # 显式固定懒读图配置，防止本地 config.json 漂移或发起真实外网图片请求
     monkeypatch.setattr(ai_config.get_config("lazy_image_read"), "data", True)
 
     async def scenario() -> None:
@@ -545,9 +547,18 @@ def test_quoted_image_attribution_and_unread_image_filtering(monkeypatch: pytest
             assert ev_explicit.at_bot is True and ev_explicit.quote_auto_at is False
             assert rec_exp is not None and rec_exp.link is not None and rec_exp.link.at_self is True
 
-            payload, _ = await prepare_media_payload([(2, ev_quote)], "[群消息 #1–#2]\n#2: 测试人格，注意防潮")
-            joined = "\n".join(p for p in payload if isinstance(p, str))
-            assert "引用的历史图片" in joined and "用户发送了图片" not in joined
+            q_delta = render_delta(
+                hm.get_history(base_ev),
+                from_seq=0,
+                head_seq=hm.head_seq(base_ev),
+                backfill=False,
+                pending_seqs=frozenset({rec_q.link.seq if rec_q.link else 2}),
+                persona_name="测试人格",
+                private=False,
+            )
+            assert f"[引用图 {ev_quote.reply_image_id_list[0]}]" in q_delta
+            payload, _ = await prepare_media_payload([(2, ev_quote)], q_delta)
+            assert len(payload) == 1 and payload[0] == q_delta
 
             ev_chain, rec_chain = await _ingest(
                 "u_chain_own_img",
@@ -562,41 +573,57 @@ def test_quoted_image_attribution_and_unread_image_filtering(monkeypatch: pytest
             )
             assert ev_chain.reply_image_id_list == []
             assert rec_chain is not None and rec_chain.metadata["image_id_list"] == ev_chain.image_id_list
-            payload_c, _ = await prepare_media_payload([(3, ev_chain)], "[群消息 #2–#3]\n#3: 帮我看下这张新图")
-            joined_c = "\n".join(p for p in payload_c if isinstance(p, str))
-            assert "用户发送了图片" in joined_c and "引用的历史图片" not in joined_c
-
-            ev_quote_pre, _ = await _ingest(
-                "u_quote_2",
-                [
-                    Message("reply_id", "bot_card_1"),
-                    Message("reply", ""),
-                    Message("image", "https://example.invalid/bot_card.png"),
-                    Message("text", "不用代理能存上去？"),
-                ],
-                nickname="测试用户B",
+            c_delta = render_delta(
+                hm.get_history(base_ev),
+                from_seq=0,
+                head_seq=hm.head_seq(base_ev),
+                backfill=False,
+                pending_seqs=frozenset({rec_chain.link.seq if rec_chain.link else 5}),
+                persona_name="测试人格",
+                private=False,
             )
-            assert ev_quote_pre.reply_image_id_list == ev_quote_pre.image_id_list
-            ev_followup, _ = await _ingest("u_joke_3", [Message("text", "给测试人格装上")])
-            assert extract_pending_unread_images(ev_followup, set()) == []
+            assert f"[图片 {ev_chain.image_id_list[0]}]" in c_delta
 
-            await _ingest(
-                "u_meme_other",
-                [Message("at", "100000001"), Message("image", "https://example.invalid/meme.png")],
-                uid="100000003",
+            _, rec_split_img = await _ingest(
+                "u_split_1", [Message("image", "https://example.invalid/doc.png")], uid="100000004"
             )
-            ev_ask_bot, _ = await _ingest("u_ask_meme", [Message("text", "测试人格来点表情包")], uid="100000003")
-            assert extract_pending_unread_images(ev_ask_bot, set()) == []
+            _, rec_split_q = await _ingest("u_split_2", [Message("text", "测试人格帮我看下这张图")], uid="100000004")
+            assert rec_split_img is not None and rec_split_q is not None and rec_split_q.link is not None
+            split_delta = render_delta(
+                hm.get_history(base_ev),
+                from_seq=0,
+                head_seq=hm.head_seq(base_ev),
+                backfill=False,
+                pending_seqs=frozenset({rec_split_q.link.seq}),
+                persona_name="测试人格",
+                private=False,
+            )
+            split_iid = rec_split_img.metadata["image_id_list"][0]
+            assert f"[图片 {split_iid}]" in split_delta
 
-            await _ingest("u_split_1", [Message("image", "https://example.invalid/doc.png")], uid="100000004")
-            ev_split_q, _ = await _ingest("u_split_2", [Message("text", "测试人格帮我看下这张图")], uid="100000004")
-            pending_imgs = extract_pending_unread_images(ev_split_q, set())
-            assert len(pending_imgs) == 1
-            split_payload, _ = await prepare_media_payload(
-                [(9, ev_split_q)], "[群消息 #8–#9]", pending_unread_images=pending_imgs
-            )
-            split_joined = "\n".join(p for p in split_payload if isinstance(p, str))
-            assert "仅当本句确在追问或讨论该图时调用" in split_joined
+        rm_local = ResourceManager()
+        buf = io.BytesIO()
+        Image.new("RGB", (32, 32), (120, 160, 200)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+        rid = rm_local.register(png_bytes)
+        tmp_group_dir = rm_mod.get_res_path(["ai_core", "group_media", "test_iso_g1"])
+        try:
+            assert await rm_local.pin_group_image(rid, "test_iso_g1", png_bytes) is True
+            rm_local._store.clear()
+            assert rm_local.has(rid, group_id="test_iso_g1") is True
+            assert rm_local.has(rid, group_id="test_iso_g2") is False
+            assert rm_local.has(rid) is False
+            restored = await rm_local.get(rid, group_id="test_iso_g1")
+            assert len(restored) > 0
+            with pytest.raises(ValueError):
+                await rm_local.get(rid, group_id="test_iso_g2")
+            with pytest.raises(ValueError):
+                await rm_local.get(rid)
+        finally:
+            if tmp_group_dir.is_dir():
+                for f in tmp_group_dir.glob("*"):
+                    f.unlink(missing_ok=True)
+                tmp_group_dir.rmdir()
 
     asyncio.run(scenario())
 
@@ -613,7 +640,11 @@ def test_group_multi_speaker_coalesce_dedup_and_handle_event(monkeypatch: pytest
     from gsuid_core.ai_core.followup_window import group_is_too_busy_for_followup
 
     async def scenario() -> None:
-        # 1) 仅同说话人连发顺延；不同说话人不延长当前结算窗且独立成轮
+        from gsuid_core.bot import Bot
+        from gsuid_core.ai_core.models import ToolContext
+        from gsuid_core.ai_core.buildin_tools.call_tool import _bind_caller_deps
+
+        # 1) 同说话人连发顺延；结算窗口内的多说话人合并进同一 InboxTurn（不顺延他人计时），保留各自 Event
         rig_c = _InboxRig(start=2000.0, ws_id="coalesce_ws")
         rig_c.submit(21, uid="100000001", raw_text="在吗")
         rig_c.now = 2000.3
@@ -622,66 +653,49 @@ def test_group_multi_speaker_coalesce_dedup_and_handle_event(monkeypatch: pytest
         rig_c.submit(23, uid="100000002", raw_text="我也问一下")
         first_turn = await rig_c.drain_next()
         assert rig_c.turn_times[0] == pytest.approx(2004.8)
-        second_turn = await rig_c.drain_next()
-        assert [e.item.seq for e in first_turn.entries] == [21, 22]
-        assert [e.item.seq for e in second_turn.entries] == [23]
+        assert [e.item.seq for e in first_turn.entries] == [21, 22, 23]
+        assert first_turn.distinct_speaker_ids == ("100000001", "100000002")
+        assert set(first_turn.events_by_seq) == {21, 22, 23}
 
-        # 2) 同批全等折叠 + 跨轮零工具 +1 消解 + 有工具观测跨人放行
+        # 2) call_tool 按 source_seq 切调用者 Event，支持公开代查 at_user_id 与仅主人 act_as_user_id
+        ev_u1 = first_turn.events_by_seq[21]
+        ev_u2 = first_turn.events_by_seq[23]
+        ev_u1.user_pm = 0
+        ev_u1.sender = {"nickname": "测试主人", "avatar": "https://example.invalid/master.png"}
+        ev_u2.user_pm = 6
+        multi_deps = ToolContext(bot=Bot(rig_c.ws, ev_u1), ev=ev_u1, events_by_seq=first_turn.events_by_seq)
+        bad_deps, _, _, _, err_missing = _bind_caller_deps(multi_deps, source_seq=0, at_user_id="", act_as_user_id="")
+        assert bad_deps is None and "source_seq" in err_missing
+
+        u2_deps, eff_at, c_uid2, c_seq2, err_ok = _bind_caller_deps(
+            multi_deps, source_seq=23, at_user_id="<@100000009>", act_as_user_id=""
+        )
+        assert err_ok == "" and u2_deps is not None and u2_deps.ev is not None
+        assert u2_deps.ev.user_id == "100000002" and u2_deps.ev.at == "100000009" and eff_at == "100000009"
+        assert c_uid2 == "100000002" and c_seq2 == 23
+
+        deny_deps, _, _, _, err_deny = _bind_caller_deps(
+            multi_deps, source_seq=23, at_user_id="", act_as_user_id="100000009"
+        )
+        assert deny_deps is None and "权限不足" in err_deny
+
+        master_deps, _, c_uid_m, c_seq_m, err_master = _bind_caller_deps(
+            multi_deps, source_seq=21, at_user_id="", act_as_user_id="100000009"
+        )
+        assert err_master == "" and master_deps is not None and master_deps.ev is not None
+        assert master_deps.ev.user_id == "100000009" and master_deps.ev.sender == {}
+        assert c_uid_m == "100000001" and c_seq_m == 21
+
+        # 3) 同批内仅折叠同一说话人的全等重复句，不同说话人或带图消息全部保留交由主 Agent 自主判断
         rig_d = _InboxRig(start=2100.0, ws_id="dedup_ws")
-        rig_d.hold_turn()
-        rig_d.submit(31, uid="100000001", raw_text="测试人格，发测试凭据给我")
-        t_run1 = await rig_d.start_next()
-        rig_d.now += 14.0
-        rig_d.submit(32, uid="100000002", raw_text="测试人格，发测试凭据给我")
-        rig_d.release_turn.set()
-        await t_run1
-        await rig_d.pump()
-        assert rig_d.ws.queue.empty() and len(rig_d.batches) == 1
-
-        rig_d.emit_tool_obs = True
         rig_d.submit(41, uid="100000001", raw_text="测试人格，领每日奖励")
         rig_d.submit(42, uid="100000001", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 0.1)
         rig_d.submit(43, uid="100000002", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 0.2)
         rig_d.submit(
             44, uid="100000001", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 0.3, image_id="img_own_1"
         )
-        assert [e.item.seq for e in (await rig_d.drain_next()).entries] == [41, 44]
-        assert [e.item.seq for e in (await rig_d.drain_next()).entries] == [43]
-
-        rig_d.submit(45, uid="100000001", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 5.0)
-        await rig_d.pump()
-        assert rig_d.ws.queue.empty()
-        rig_d.submit(46, uid="100000004", raw_text="测试人格，领每日奖励", created_at=rig_d.now + 6.0)
-        assert [e.item.seq for e in (await rig_d.drain_next()).entries] == [46]
-
-        # 3) 去重维度：未应答不缓存、at_bot、at_list、memory_dependent
-        rig_s = _InboxRig(start=2200.0, ws_id="sel_ws")
-        rig_s.answer_all = False
-        rig_s.submit(51, uid="100000001", kind="followup", strength="soft", raw_text="在吗")
-        await rig_s.drain_next()
-        rig_s.answer_all = True
-        rig_s.submit(52, uid="100000001", kind="followup", strength="soft", raw_text="在吗", created_at=rig_s.now + 1.0)
-        await rig_s.drain_next()
-        rig_s.submit(53, uid="100000002", kind="mention", raw_text="在吗", at_bot=True, created_at=rig_s.now + 2.0)
-        assert [e.item.seq for e in (await rig_s.drain_next()).entries] == [53]
-
-        rig_s.submit(
-            54, uid="100000001", raw_text="测试人格帮我看看", at_list=["100000008"], created_at=rig_s.now + 3.0
-        )
-        await rig_s.drain_next()
-        rig_s.submit(
-            55, uid="100000002", raw_text="测试人格帮我看看", at_list=["100000009"], created_at=rig_s.now + 4.0
-        )
-        assert [e.item.seq for e in (await rig_s.drain_next()).entries] == [55]
-
-        rig_s.emit_mem_dep = True
-        rig_s.submit(56, uid="100000001", raw_text="测试人格，我上次说的那个怎么样", created_at=rig_s.now + 5.0)
-        await rig_s.drain_next()
-        rig_s.submit(57, uid="100000001", raw_text="测试人格，我上次说的那个怎么样", created_at=rig_s.now + 6.0)
-        await rig_s.pump()
-        assert rig_s.ws.queue.empty()
-        rig_s.submit(58, uid="100000002", raw_text="测试人格，我上次说的那个怎么样", created_at=rig_s.now + 7.0)
-        assert [e.item.seq for e in (await rig_s.drain_next()).entries] == [58]
+        merged_turn = await rig_d.drain_next()
+        assert [e.item.seq for e in merged_turn.entries] == [41, 43, 44]
 
         # 4) 同说话人 settling 续发：is_awaiting_speaker、4s 滑动、12s 封顶、soft+hard 保序与回执隔离
         rig_k = _InboxRig(start=3000.0, ws_id="cont_ws")

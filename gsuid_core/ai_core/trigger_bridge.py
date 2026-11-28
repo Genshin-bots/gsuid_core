@@ -295,7 +295,13 @@ async def run_trigger_via_mockbot(real_bot: Bot, fake_ev: Event, func: Any, extr
     return _assemble_trigger_output(call_ctx, extra)
 
 
-# ─── _register_trigger_as_ai_tool ─────────────────────────────────────────────
+def _clean_target_uid(raw: str) -> str:
+    val = (raw or "").strip()
+    if val.startswith("<") and val.endswith(">"):
+        val = val[1:-1].strip()
+    if val.startswith("@"):
+        val = val[1:].strip()
+    return val
 
 
 def _register_trigger_as_ai_tool(
@@ -367,6 +373,7 @@ def _register_trigger_as_ai_tool(
         text: str = "",
         image_id: str = "",
         audio_id: str = "",
+        at_user_id: str = "",
     ) -> str:
         from gsuid_core.ai_core.register import execute_guarded_tool
 
@@ -384,6 +391,15 @@ def _register_trigger_as_ai_tool(
                 fake_ev.image_id = image_id
             if audio_id:
                 fake_ev.audio_id = audio_id
+            target_at = _clean_target_uid(at_user_id)
+            if target_at and target_at != str(fake_ev.bot_self_id):
+                fake_ev.at = target_at
+                fake_ev.at_list = [target_at, *[u for u in fake_ev.at_list if u != target_at]]
+            act_as_raw = run_ctx.deps.extra["act_as_user_id"] if "act_as_user_id" in run_ctx.deps.extra else ""
+            act_as = _clean_target_uid(act_as_raw) if isinstance(act_as_raw, str) else ""
+            if act_as and ev.user_pm == 0:
+                fake_ev.user_id = act_as
+                fake_ev.sender = {}
 
             if trigger_type == "regex":
                 match = re.search(primary_keyword, text)
@@ -409,9 +425,10 @@ def _register_trigger_as_ai_tool(
             return await _call_with_ctx(ctx)
 
         norm_text = text.strip()
+        clean_at = _clean_target_uid(at_user_id)
         args_key = (
-            json.dumps((norm_text, image_id, audio_id), ensure_ascii=False)
-            if (norm_text or image_id or audio_id)
+            json.dumps((norm_text, image_id, audio_id, clean_at), ensure_ascii=False)
+            if (norm_text or image_id or audio_id or clean_at)
             else ""
         )
         res = await execute_guarded_tool(
@@ -442,6 +459,7 @@ def _register_trigger_as_ai_tool(
         "text": str,
         "image_id": str,
         "audio_id": str,
+        "at_user_id": str,
         "return": str,
     }
 
@@ -466,6 +484,12 @@ def _register_trigger_as_ai_tool(
         ),
         inspect.Parameter(
             "audio_id",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=str,
+            default="",
+        ),
+        inspect.Parameter(
+            "at_user_id",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             annotation=str,
             default="",

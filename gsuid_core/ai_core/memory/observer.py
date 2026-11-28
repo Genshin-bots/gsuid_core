@@ -231,7 +231,7 @@ def _gate(
         return None
     if _is_system_or_error_echo(stripped):
         return None
-    if stripped.startswith("[图片]") and len(stripped) < 10:
+    if stripped.startswith("[图片]") and "img_" not in stripped and len(stripped) < 10:
         return None
     if _COMMAND_ECHO_RE.search(stripped):
         logger.trace(t("log.memory.observer_command_echo_filter", p0=stripped[:30]))

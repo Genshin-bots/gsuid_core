@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from datetime import datetime, timezone, timedelta
 
 from sqlmodel import col, select
@@ -17,21 +16,6 @@ _SLEEP_BATCH = 20
 # 故事线状态机流转阈值（唯一定义源，供 sleep_extract / consolidation_worker / v2.1 迁移共用）
 THREAD_DORMANT_HOURS = 72
 THREAD_ARCHIVE_DAYS = 14
-
-
-def cosine_dense(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b, strict=True):
-        dot += x * y
-        na += x * x
-        nb += y * y
-    if na <= 0.0 or nb <= 0.0:
-        return 0.0
-    return dot / math.sqrt(na * nb)
 
 
 async def _apply_thread_status_transition(

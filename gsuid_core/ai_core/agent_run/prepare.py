@@ -217,15 +217,6 @@ class PreparePhase:
             st.last_user_question = st.user_message.strip()
         elif isinstance(st.user_message, Sequence):
             st.last_user_question = "\n".join(item for item in st.user_message if isinstance(item, str)).strip()
-        if st.ev is not None and not (st.ev.image_id_list or st.ev.image_id):
-            if "待读图片ID:" in st.last_user_question:
-                st.run_extra["pending_unread_images"] = True
-            else:
-                from gsuid_core.ai_core.turn_pipeline import extract_pending_unread_images
-
-                _pending = extract_pending_unread_images(st.ev, self.read_image_ids)
-                if _pending:
-                    st.run_extra["pending_unread_images"] = _pending
         if self.persona_name:
             st.run_extra["persona_name"] = self.persona_name
         if st.user_turn_id:
@@ -272,6 +263,9 @@ class PreparePhase:
         st.in_flight_short = (not st.fw_msg) and st.has_active_task and spoken_user_body_len(_probe_for_policy) <= 48
         if self.route_decision is not None:
             st.run_extra["memory_intent"] = self.route_decision.memory_intent
+        from gsuid_core.ai_core.inbox.turn import current_turn
+
+        _active_turn = current_turn()
         st.context = ToolContext(
             bot=st.bot,
             ev=st.ev,
@@ -281,6 +275,7 @@ class PreparePhase:
             parent_session_id=self.session_id,
             blocked_tool_names=st.blocked_exclusive,
             allow_user_outbound=st.allow_outbound,
+            events_by_seq=_active_turn.events_by_seq if _active_turn is not None else {},
         )
 
     async def _run_once_prepare_user_message(self: RunOnceHost, st: RunOnceState) -> None:

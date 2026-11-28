@@ -1,28 +1,4 @@
-"""
-图片读取工具模块
-
-群聊环境下图片极多——若把每张图都塞进多模态上下文，既爆 Token 又会稀释
-Agent 对当前问题的注意力。因此框架的策略是：图片本体存入 RM 资源池，只把
-「图片ID」(``img_xxxxxxxx``) 以文字形式透传给 Agent（见 ``handler.py`` 收图时
-``RM.register`` + ``ev.image_id_list``）。
-
-当 Agent 确实需要「看」某一张图时，再调用本工具 :func:`read_image` 按 ID 取回图片。
-惰性投喂不变。仅当问句在认人/认形象时才附视觉身份；新闻截图不叠人格指纹。
-
-取回后**分两条路**：
-
-- **主模型支持多模态** → 把图片**直接塞回会话**（``ToolReturn(content=[ImageUrl])``），
-  让主模型当轮原生看图。无损、省一次模型调用、也不受转述子代理的超时约束。
-- **主模型不支持多模态** → 退回 ``image_understand.understand_image`` 把图**转述成文字**
-  （MCP 转述模型 + 10 分钟缓存，同图重复读取不重复消耗视觉调用）。
-
-资源 ID 解析与 ``message_sender`` 对齐，支持三类来源：
-
-1. ``img_xxxxxxxx`` —— RM 临时图片资源（用户上传图 / 头像等），``RM.get`` 直读字节。
-2. ``res_xxxxxxxx`` —— Kanban ``AIAgentArtifact`` 句柄（能力代理产物），读落盘
-   ``payload_path`` / 内联 ``payload_inline``。
-3. ``http(s)://`` / ``base64://`` / ``data:image/`` —— 直接物化后转述。
-"""
+"""图片惰性读取工具（read_image）：主模型支持多模态时原生呈现，否则调用转述后端。"""
 
 import re
 import asyncio
@@ -82,7 +58,11 @@ def _bytes_to_data_uri(data: bytes) -> tuple[str | None, str | None]:
     return uri, None
 
 
-async def _resolve_raw_image_bytes(image_id: str) -> tuple[bytes | None, str | None, str | None]:
+async def _resolve_raw_image_bytes(
+    image_id: str,
+    *,
+    group_id: str = "",
+) -> tuple[bytes | None, str | None, str | None]:
     """解析图片 ID / URL，优先返回原始未缩放字节以支持大图切片。
 
     Returns:
@@ -145,7 +125,7 @@ async def _resolve_raw_image_bytes(image_id: str) -> tuple[bytes | None, str | N
             )
 
     try:
-        data = await RM.get(raw)
+        data = await RM.get(raw, group_id=group_id)
     except ValueError as e:
         if "找不到资源" in str(e):
             return None, None, f"❌ 找不到图片资源: {raw}（可能已过期或 ID 不正确）"
@@ -158,14 +138,9 @@ async def _resolve_raw_image_bytes(image_id: str) -> tuple[bytes | None, str | N
     return data_b, None, None
 
 
-async def _resolve_image_to_url(image_id: str) -> tuple[str | None, str | None]:
-    """把图片 ID / URL 统一解析成可消费的 image_url。
-
-    Returns:
-        ``(image_url, error)``。成功 error 为 None；失败 image_url 为 None、
-        error 为给 Agent 的中文说明。**非图片内容必须在此拦下**，不得交给服务商。
-    """
-    raw_bytes, http_url, error = await _resolve_raw_image_bytes(image_id)
+async def _resolve_image_to_url(image_id: str, *, group_id: str = "") -> tuple[str | None, str | None]:
+    """把图片 ID / URL 统一解析成可消费的 image_url。"""
+    raw_bytes, http_url, error = await _resolve_raw_image_bytes(image_id, group_id=group_id)
     if error:
         return None, error
     if http_url is not None:
@@ -345,6 +320,31 @@ def _mark_image_id_read(ctx: RunContext[ToolContext], image_id: str) -> None:
                     read_set.discard(oldest)
 
 
+def _schedule_digest_backfill(
+    ctx: RunContext[ToolContext],
+    *,
+    image_id: str,
+    raw_bytes: bytes | None,
+    image_url: str = "",
+    known_desc: str = "",
+) -> None:
+    if not ctx.deps.allow_user_outbound or ctx.deps.ev is None:
+        return
+    from gsuid_core.ai_core.memory.ingestion.multimodal import enqueue_read_image_digest
+
+    ev = ctx.deps.ev
+    enqueue_read_image_digest(
+        session_id=str(ev.session_id or ""),
+        group_id=str(ev.group_id) if ev.group_id else None,
+        speaker_id=str(ev.user_id or ""),
+        bot_self_id=str(ev.bot_self_id or ""),
+        image_id=image_id,
+        raw_bytes=raw_bytes,
+        image_url=image_url,
+        known_desc=known_desc,
+    )
+
+
 def _build_direct_image_return(
     ctx: RunContext[ToolContext],
     *,
@@ -354,8 +354,14 @@ def _build_direct_image_return(
     question: str | None,
     prefix_note: str = "",
 ) -> ToolReturn:
-    """统一构造原生识图 ToolReturn，收口标记、日志与自我视觉提示。"""
+    """统一构造原生识图 ToolReturn，收口标记、日志、后台摘要落盘与自我视觉提示。"""
     _mark_image_id_read(ctx, image_id)
+    _schedule_digest_backfill(
+        ctx,
+        image_id=image_id,
+        raw_bytes=image_ref_or_bytes if isinstance(image_ref_or_bytes, bytes) else None,
+        image_url=image_ref_or_bytes if isinstance(image_ref_or_bytes, str) else "",
+    )
     logger.info(t("log.ai.buildintools_read_image_directly_send", image_id=image_id))
     shown = f"🖼️ 图片[{image_id}]已直接呈现给你，请直接查看后作答。"
     if prefix_note:
@@ -380,7 +386,8 @@ async def read_image(
         image_id: 图片资源 ID（img_xxx / 图片类 res_xxx / 图片 URL）
         question: 可选，想重点确认的细节或文字
     """
-    raw_bytes, http_url, error = await _resolve_raw_image_bytes(image_id)
+    gid = str(ctx.deps.ev.group_id or "") if ctx.deps.ev is not None else ""
+    raw_bytes, http_url, error = await _resolve_raw_image_bytes(image_id, group_id=gid)
     if error:
         # 非图片 / 找不到 / 解码失败：只回字符串，绝不 ToolReturn 注入
         return error
@@ -499,6 +506,13 @@ async def read_image(
         return f"⚠️ 图片 {image_id} 已读取，但未能解析出有效内容。"
     logger.info(t("log.ai.buildintools_read_image_id", image_id=image_id, p0=len(description)))
     _mark_image_id_read(ctx, image_id)
+    _schedule_digest_backfill(
+        ctx,
+        image_id=image_id,
+        raw_bytes=raw_bytes,
+        image_url=image_url or "",
+        known_desc=description,
+    )
     reads = _bump_read_count(ctx.deps.extra, image_id)
     body = f"🖼️ 图片[{image_id}]的内容：\n" + wrap_untrusted("image_ocr", description)
     note = _self_visual_note(ctx, image_url, question)

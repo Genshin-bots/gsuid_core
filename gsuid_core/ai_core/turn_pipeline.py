@@ -20,8 +20,6 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 from gsuid_core.ai_core.const import ERROR_QUOTA_EXHAUSTED
-from gsuid_core.ai_core.models import PendingImage
-from gsuid_core.message_history import get_history_manager
 from gsuid_core.ai_core.delivery import send_chat_result
 from gsuid_core.ai_core.quota_guard import quota_breaker
 from gsuid_core.ai_core.agent_errors import (
@@ -184,64 +182,9 @@ def current_time_line(now: datetime | None = None) -> str:
 
 
 def stamp_current_time(user_messages: Sequence[UserContent], now: datetime | None = None) -> None:
-    """把精确时间钉在本轮发言块末尾（摘要之后、动态上下文之前）。
-
-    **只进 user 侧**：每轮变化的内容进 system 会让 provider 前缀缓存每轮失效。
-    ``now`` 只接受调用方显式传入的时钟（评测 ``clock_at``）；禁止从用户原文解析。
-    """
+    """把精确时间钉在本轮发言块末尾（摘要之后、动态上下文之前）。"""
     if isinstance(user_messages, list) and user_messages and isinstance(user_messages[0], str):
         user_messages[0] += f"\n{current_time_line(now)}"
-
-
-def extract_pending_unread_images(
-    event: Event,
-    read_image_ids: set[str],
-    *,
-    window_seconds: float = 45.0,
-    max_images: int = 2,
-) -> list[PendingImage]:
-    """提取同说话人紧邻连发（<=45s、未与别人在群内另开对话）的未读图片。"""
-    if not event.user_id:
-        return []
-    records = get_history_manager().get_history(event, limit=12)
-    if not records:
-        return []
-    now_ts = time.time()
-    pending: list[PendingImage] = []
-    search_records = records[:-1] if len(records) > 1 else []
-    for rec in reversed(search_records):
-        if rec.role == "assistant":
-            break
-        if now_ts - rec.timestamp > window_seconds:
-            break
-        if rec.role != "user":
-            continue
-        if str(rec.user_id) != str(event.user_id):
-            continue
-        if rec.link is not None:
-            to_other_quote = bool(rec.link.reply_to_author and rec.link.reply_to_author != "self")
-            if to_other_quote or bool(rec.link.at_targets):
-                break
-        img_ids: list[str] = []
-        if rec.metadata and "image_id_list" in rec.metadata:
-            val = rec.metadata["image_id_list"]
-            if isinstance(val, list):
-                img_ids.extend(str(x) for x in val if x)
-        elif rec.metadata and "image_id" in rec.metadata:
-            val = rec.metadata["image_id"]
-            if val:
-                img_ids.append(str(val))
-        for iid in img_ids:
-            if iid and iid not in read_image_ids and not any(p.img_id == iid for p in pending):
-                t_str = datetime.fromtimestamp(rec.timestamp).strftime("%H:%M:%S")
-                desc = (rec.content or "").strip()[:80] or "图片"
-                pending.append(PendingImage(img_id=iid, text=desc, time_str=t_str))
-                if len(pending) >= max_images:
-                    break
-        if len(pending) >= max_images:
-            break
-    pending.reverse()
-    return pending
 
 
 def classify_run_result(chat_result: str) -> Tuple[str, bool, bool]:

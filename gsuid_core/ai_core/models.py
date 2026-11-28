@@ -10,13 +10,6 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.agent_node.tool_scope import ToolScope
 
 
-@dataclass(frozen=True)
-class PendingImage:
-    img_id: str
-    text: str
-    time_str: str
-
-
 @dataclass
 class ToolContext:
     """工具执行上下文
@@ -42,6 +35,8 @@ class ToolContext:
     allow_user_outbound: bool = True
     # 人格 enabled_tools 作用域快照。find_tools 检索时按它收放；None = 不限。
     tool_scope: Optional["ToolScope"] = None
+    # 多说话人/多事件轮次映射：#seq -> 真实发言人 Event（供 call_tool 按 source_seq 精确切身份与权限）。
+    events_by_seq: Dict[int, Event] = field(default_factory=dict)
 
 
 class KnowledgeBase(TypedDict):

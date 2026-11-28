@@ -159,7 +159,6 @@ def _format_timestamp(ts: float, ref_ts: Optional[float] = None) -> str:
 
 # 出站产物句柄。不含 to_/sa_：那些是检索落盘，不是对这个人发出去的内容。
 _THREAD_HANDLE_RE = re.compile(r"\b(?:res|img|aud|vid|fil)_[0-9a-fA-F]{6,}\b|\bdlg_[0-9a-fA-F-]{8,}\b")
-SPEAKER_THREAD_LIMIT = 14
 _THREAD_HANDLES_KEY = "thread_handles"
 _MAX_NOTED_HANDLES = 4
 _RECEIPT_CHANNELS: frozenset[str] = frozenset({"command", "tool_delivery"})

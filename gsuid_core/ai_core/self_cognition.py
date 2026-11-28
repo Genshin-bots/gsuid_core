@@ -323,24 +323,8 @@ async def retrieve_self_episodes(bot_id: str, persona_name: str, limit: int = 3)
     return "\n".join(lines)
 
 
-async def _compute_live_recurring_topics(
-    scope_key: str,
-    top_n: int = 5,
-) -> List[str]:
-    """从 group_profile 的累计 tag 频次实时计算本 scope 的"反复出现的话题"。
-
-    group_profile.record_entity_tags 在每次 ingestion 时累加该 scope 的实体标签
-    频次（见 ai_core/memory/group_profile.py），这里直接取 top-N 即可。
-    无法读取（未配置 / 表不存在 / 该 scope 没积累）时返回空列表，
-    让上层退回静态 self_model.recurring_topics。
-
-    Args:
-        scope_key: 已格式化的 scope（如 "group:xxx"）
-        top_n:     返回的话题数量上限
-
-    Returns:
-        话题字符串列表（按频次降序）；任何异常都返回空 list 不抛
-    """
+async def _compute_live_recurring_topics(scope_key: str, top_n: int = 5) -> List[str]:
+    """从 group_profile 的累计 tag 频次读取本 scope 的常见话题；无记录时返回空列表。"""
     if not scope_key:
         return []
     try:

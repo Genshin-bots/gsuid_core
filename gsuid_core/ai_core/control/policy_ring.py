@@ -22,11 +22,9 @@ from gsuid_core.ai_core.protocol_text import is_silence_marker
 from gsuid_core.ai_core.agent_run.state import ReturnMode, RunOnceState
 from gsuid_core.ai_core.agent_run.support import (
     _RENDER_TOOL_NAMES,
-    _SCHED_MUTATE_TOOLS,
     _INTERACTIVE_CREATE_BY,
     _MAIN_PERSONA_CREATE_BY,
     _claims_fake_done,
-    _claims_missing_offered_tool,
     _claims_inflight_without_backend,
 )
 from gsuid_core.ai_core.control.directive import (
@@ -117,26 +115,6 @@ def unbacked_inflight_promise_directive(*, tool_calls: int) -> Directive:
     )
 
 
-def missing_offered_tool_directive(*, tool_pool_size: int) -> Directive:
-    return _correction(
-        "missing_offered_tool",
-        "你声称没有对应工具，但本轮主会话已经装配了查询/修改/取消类工具。"
-        "先用列表类工具定位目标，再修改或取消。禁止再说没有工具，禁止为此 create_subagent。",
-        must="call_tool",
-        satisfied_by=("any_tool_called",),
-        detail=f"可用工具 {tool_pool_size} 个",
-    )
-
-
-def addressed_silence_directive() -> Directive:
-    return _correction(
-        "addressed_silence",
-        "本轮你被直接呼叫，却只输出了沉默。该拒就短拒，该办事就调工具，该闲聊就短回；不要只沉默。",
-        must="deliver",
-        satisfied_by=("any_tool_called",),
-    )
-
-
 def pure_meme_no_match_directive(query: str) -> Directive:
     """被寻址轮仅发纯表情但未命中时，要求改用当前人格回一句短台词。"""
     detail = f"未匹配表情：{query[:24]}" if query else "未匹配表情"
@@ -146,29 +124,6 @@ def pure_meme_no_match_directive(query: str) -> Directive:
         must="deliver",
         satisfied_by=("user_visible_sent",),
         detail=detail,
-    )
-
-
-def cover_hit_zero_tool_directive() -> Directive:
-    return _correction(
-        "cover_hit_zero_tool",
-        "用户原话命中了已注册工具的覆盖句，但本轮没有调用任何工具，刚才的答案是空口编的。"
-        "现在调用 find_tools 或对口工具。禁止用 dispute_directive 把空口建议留住。不要重复刚才那句。",
-        must="call_tool",
-        satisfied_by=("any_tool_called",),
-        detail="原话命中工具 cover",
-    )
-
-
-def structural_zero_tool_directive(*, tool_pool_size: int) -> Directive:
-    return _correction(
-        "structural_zero_tool",
-        "本轮有未处理的附件，或可继承的上轮工具任务，但没有调用任何工具。"
-        "现在调用对应工具；缺参数先用上文实体试一次。"
-        "若附件或跟进并不需要工具，调用 dispute_directive 申辩，不要重复原答。",
-        must="call_tool",
-        satisfied_by=("any_tool_called",),
-        detail=f"可用工具 {tool_pool_size} 个",
     )
 
 
@@ -198,28 +153,6 @@ def master_title_directive(title: str) -> Directive:
         must="deliver",
         satisfied_by=("user_visible_sent",),
         detail="主人称呼",
-    )
-
-
-def entity_zero_tool_directive() -> Directive:
-    return _correction(
-        "entity_without_tool",
-        "本轮已经为这句装上了查询工具，但没有调用任何工具就回答了。"
-        "先调用能回答这句的查询工具，再按工具结果用角色口吻回答。"
-        "若这句只是闲聊、不需要查数据，调用 dispute_directive 申辩。",
-        must="call_tool",
-        satisfied_by=("any_tool_called",),
-    )
-
-
-def status_zero_tool_directive() -> Directive:
-    return _correction(
-        "status_without_tool",
-        "用户在追问进行中事项的进度，但你本轮没有调用任何查询工具就报了状态。"
-        "先核实真实状态（在途委派用 check_delegation，看板用 list_my_kanban_tasks，"
-        "产物用 artifact_get_recent），再用角色短句说明还在弄/弄好了/翻砸了。不要空口说「快好了」。",
-        must="check_delegation",
-        satisfied_by=("status_tool_called", "delegation_checked"),
     )
 
 
@@ -359,9 +292,7 @@ def _match_deliver_before_send(ctx: SpeechContext, body: str) -> bool:
         return False
     if looks_like_deliver_progress(body):
         return True
-    if not ctx.allow_render:
-        return False
-    return (looks_like_report_speech(body) and len(body) >= 160) or (body.count("|") >= 6 and "\n" in body)
+    return ctx.allow_render and body.count("|") >= 8 and "\n" in body
 
 
 def _rw_blocked_voice(_a: RewriteDirectiveArgs) -> Directive:
@@ -470,30 +401,9 @@ _SPEECH_RING: tuple[SpeechPolicyRule, ...] = (
     ),
     SpeechPolicyRule("report_speech", _match_report_speech, rewrite=_rw_report_speech),
     SpeechPolicyRule(
-        "entity_without_tool",
-        lambda ctx, _body: (
-            (not ctx.in_settle_exit)
-            and ctx.entity_routed
-            and not ctx.image_sent
-            and not ctx.tool_calls_so_far
-            and ctx.policy in ("free", "status_ok")
-        ),
-        rewrite=lambda _a: entity_zero_tool_directive(),
-    ),
-    SpeechPolicyRule(
         "deliver_before_send",
         _match_deliver_before_send,
         rewrite=lambda a: framework_idle_deliver_directive(allow_render=a.allow_render),
-    ),
-    SpeechPolicyRule(
-        "status_without_tool",
-        lambda ctx, _body: (
-            (not ctx.in_settle_exit)
-            and ctx.policy == "status_ok"
-            and not ctx.has_status_tool
-            and not ctx.tool_calls_so_far
-        ),
-        rewrite=lambda _a: status_zero_tool_directive(),
     ),
 )
 
@@ -1003,46 +913,6 @@ def _obligations_met(directive: Directive, st: RunOnceState) -> bool:
     return all(obligation_satisfied(ob, facts=facts, tool_calls=st.tool_call_list) for ob in directive.obligations)
 
 
-def _has_unread_attachment(st: RunOnceState, *, video_readable: bool) -> bool:
-    ev = st.ev
-    if ev is None:
-        return False
-    quoted_pure_image = bool((ev.reply_id or (st.tg is not None and st.tg.quoted_tome)) and not ev.reply)
-    own_imgs = [i for i in ev.image_id_list if i not in ev.reply_image_id_list]
-    has_own_img = bool(own_imgs or (ev.image_id and ev.image_id not in ev.reply_image_id_list))
-    if has_own_img and not quoted_pure_image:
-        return True
-    if ev.audio_id_list or ev.audio_id:
-        return True
-    if ev.file:
-        return True
-    return bool(video_readable and (ev.video_id_list or ev.video_id))
-
-
-def _utterance_cover_hit(st: RunOnceState) -> bool:
-    if st.ev is None or not st.ev.raw_text:
-        return False
-    from gsuid_core.ai_core.rag.tools import cover_dominates_utterance
-
-    return cover_dominates_utterance(st.ev.raw_text.strip())
-
-
-def _zero_tool_needs_correction(st: RunOnceState, *, video_readable: bool) -> bool:
-    if _has_unread_attachment(st, video_readable=video_readable):
-        return True
-    if st.tg is not None and st.tg.call_to_self and st.tg.task_management:
-        return True
-    if st.followup_detected or (st.tg is not None and st.tg.ellipsis_followup):
-        sched_ok = "sched_mutate_ok" in st.run_extra and st.run_extra["sched_mutate_ok"] is True
-        if not st.has_active_task and not sched_ok:
-            from gsuid_core.ai_core.interaction_scaffold import is_pure_stop_ellipsis
-
-            if is_pure_stop_ellipsis(turn_user_text(st)):
-                return False
-        return True
-    return False
-
-
 def _voice_block_reason(st: RunOnceState, result_msg: str) -> str:
     if st.main_channel_sends > 0 or st.image_sent_this_run:
         return ""
@@ -1108,10 +978,7 @@ class _SettlePreState:
     def delivery_wake_needs_correction(self) -> bool:
         if not self.result_msg:
             return False
-        dense = self.allow_render and (
-            (looks_like_report_speech(self.match_msg) and len(self.result_msg.strip()) >= 160)
-            or (self.result_msg.count("|") >= 6 and "\n" in self.result_msg)
-        )
+        dense = self.allow_render and self.result_msg.count("|") >= 8 and "\n" in self.result_msg
         return dense or looks_like_deliver_progress(self.match_msg)
 
 
@@ -1162,40 +1029,6 @@ async def _apply_delivery_wake(s: _SettlePreState) -> SettleRingOutcome:
     if isinstance(dc, str) and correction_is_deliverable(dc, is_delivery_wake=True, user_text=turn_user_text(st)):
         return SettleRingOutcome(result_msg=dc.strip())
     return SettleRingOutcome(result_msg="<SILENCE>")
-
-
-async def _apply_entity_or_cover(s: _SettlePreState) -> SettleRingOutcome:
-    st = s.st
-    cover_hit = _utterance_cover_hit(st)
-    if cover_hit:
-        logger.warning(i18n_t("log.agent.cover_hit_zero_tool_correction"))
-    else:
-        logger.warning(i18n_t("log.agent.entity_zero_tool_correction"))
-    prior = s.result_msg.strip()
-    disputes_before = s.host.dispute_count
-    ec = await s.host.try_correction_pass(
-        st,
-        (cover_hit_zero_tool_directive() if cover_hit else entity_zero_tool_directive(),),
-        suppress_intermediate_text=True,
-        return_mode="return",
-    )
-    disputed = s.host.dispute_count > disputes_before
-    called = [n for n in s.host.attempt_tool_calls if n != "dispute_directive"]
-    # 命中 cover 的空口建议不能靠申辩留住
-    if disputed and not cover_hit:
-        next_msg = prior
-    elif (
-        isinstance(ec, str)
-        and correction_is_deliverable(ec, user_text=turn_user_text(st))
-        and (called or not cover_hit)
-    ):
-        next_msg = ec.strip()
-    else:
-        next_msg = "<SILENCE>"
-    if title_mentioned(forbid_title_for(st, s.host.persona_name), next_msg):
-        next_msg = "<SILENCE>"
-    await s.host.emit_unsent_reply(st, next_msg)
-    return SettleRingOutcome(result_msg=next_msg)
 
 
 async def _apply_master_title(s: _SettlePreState) -> SettleRingOutcome:
@@ -1333,59 +1166,6 @@ _SETTLE_PRE_RING: tuple[_SettlePreRule, ...] = (
         _make_inv3_apply(lambda s: unbacked_inflight_promise_directive(tool_calls=len(s.st.tool_call_list))),
     ),
     _SettlePreRule(
-        "structural_zero_tool",
-        lambda ctx: (
-            ctx.non_silence_msg
-            and not ctx.st.tool_call_list
-            and bool(ctx.st.tool_names)
-            and ctx.non_capability_interactive
-            and ctx.st.ev is not None
-            and _zero_tool_needs_correction(
-                ctx.st,
-                video_readable=ctx.host.model_declares_video(),
-            )
-        ),
-        _make_inv3_apply(lambda s: structural_zero_tool_directive(tool_pool_size=len(s.st.tool_names))),
-    ),
-    _SettlePreRule(
-        "missing_offered_tool",
-        lambda ctx: (
-            bool(ctx.result_msg)
-            and ctx.non_capability_interactive
-            and ctx.st.tg is not None
-            and ctx.st.tg.task_management
-            and _claims_missing_offered_tool(ctx.match_msg, ctx.st.tool_names)
-            and not bool(_SCHED_MUTATE_TOOLS.intersection(ctx.st.tool_call_list))
-        ),
-        _make_inv3_apply(lambda s: missing_offered_tool_directive(tool_pool_size=len(s.st.tool_names))),
-    ),
-    _SettlePreRule(
-        "addressed_silence",
-        lambda ctx: (
-            not ctx.non_silence_msg
-            and not ctx.host.sent_texts
-            and not ctx.st.blocks_user_speech
-            and ctx.non_capability_interactive
-            and ctx.st.tg is not None
-            and ctx.st.tg.call_to_self
-            and not ctx.st.tg.quoted_tome
-            and not ctx.st.tg.address_gated
-        ),
-        _make_inv3_apply(lambda _s: addressed_silence_directive(), scrub_replaced=False),
-    ),
-    _SettlePreRule(
-        "status_zero_tool",
-        lambda ctx: (
-            ctx.st.status_inquiry
-            and ctx.st.has_active_task
-            and not ctx.st.tool_call_list
-            and not ctx.st.fake_done_retry
-            and ctx.non_silence_msg
-            and ctx.host.create_by in ("Chat", "Agent")
-        ),
-        _make_inv3_apply(lambda _s: status_zero_tool_directive(), scrub_replaced=False),
-    ),
-    _SettlePreRule(
         "delivery_wake",
         lambda ctx: (
             ctx.delivery_wake
@@ -1397,18 +1177,6 @@ _SETTLE_PRE_RING: tuple[_SettlePreRule, ...] = (
             and ctx.delivery_wake_needs_correction
         ),
         _apply_delivery_wake,
-    ),
-    _SettlePreRule(
-        "entity_or_cover_zero_tool",
-        lambda ctx: (
-            (ctx.st.entity_routed or _utterance_cover_hit(ctx.st))
-            and ctx.st.tg is not None
-            and ctx.st.tg.call_to_self
-            and not ctx.st.tool_call_list
-            and ctx.non_capability_interactive
-            and ctx.non_silence_msg
-        ),
-        _apply_entity_or_cover,
     ),
     _SettlePreRule(
         "master_title",

@@ -68,6 +68,7 @@ class MoodKit(AgentKit):
             is_private=is_private,
             now=now,
             user_id=str(ctx.ev.user_id or ""),
+            include_self_offscreen=is_private or ctx.soft_triggered,
         )
         if text:
             ctx.set_context_block("presence", text)
@@ -85,6 +86,7 @@ class MoodKit(AgentKit):
         if not text or is_silence_marker(text) or is_agent_error_text(text):
             return
         from gsuid_core.ai_core.persona.config import persona_config_manager
+        from gsuid_core.ai_core.persona.presence import consume_rendered_presence
         from gsuid_core.ai_core.persona.homeostasis import apply_turn_shock, load_homeostasis, save_homeostasis
         from gsuid_core.ai_core.persona.config_rules import read_drive_traits
 
@@ -92,6 +94,16 @@ class MoodKit(AgentKit):
         state = await load_homeostasis(ctx.persona_name)
         apply_turn_shock(state, traits, time.time())
         await save_homeostasis(ctx.persona_name, state)
+        if ctx.ev is not None:
+            is_private = ctx.ev.user_type == "direct"
+            target_key = f"private:{ctx.ev.user_id}" if is_private else str(ctx.ev.group_id or "")
+            await consume_rendered_presence(
+                ctx.persona_name,
+                target_key=target_key,
+                is_private=is_private,
+                user_id=str(ctx.ev.user_id or ""),
+                include_self_offscreen=is_private or ctx.soft_triggered,
+            )
 
 
 KIT = register_agent_kit(MoodKit(kit_id="gscore.mood", slot="mood", display_name="人格情绪"))

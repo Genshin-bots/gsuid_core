@@ -22,7 +22,7 @@ _BRIEF = (
     timeout=None,
     code_callable=False,
 )
-async def run_code(ctx: RunContext[ToolContext], code: str) -> str:
+async def run_code(ctx: RunContext[ToolContext], code: str, source_seq: int = 0) -> str:
     """在沙箱中执行 Python 批量编排工具、筛选对齐或汇总计算，返回最后一行表达式。
 
     可 await 本轮已暴露且 code_callable=True 的工具（多目标用 `asyncio.gather`）；
@@ -31,7 +31,12 @@ async def run_code(ctx: RunContext[ToolContext], code: str) -> str:
     Args:
         ctx: 工具执行上下文
         code: 要执行的 Python 源码
+        source_seq: 多人合批轮必填：触发本次脚本执行的消息序号，隔离说话人身份与权限
     """
     from gsuid_core.ai_core.monty_exec import execute_script
+    from gsuid_core.ai_core.buildin_tools.call_tool import bind_run_context_caller
 
-    return await execute_script(ctx, code)
+    bound_ctx, bind_err = bind_run_context_caller(ctx, source_seq)
+    if bound_ctx is None:
+        return bind_err
+    return await execute_script(bound_ctx, code)

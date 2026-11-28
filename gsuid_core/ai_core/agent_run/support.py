@@ -31,13 +31,6 @@ from gsuid_core.ai_core.session_logger import AISessionLogger
 from gsuid_core.ai_core.agent_run.state import RunOnceState
 from gsuid_core.ai_core.history_compact import _is_framework_prompt_content
 from gsuid_core.ai_core.control.directive import CONTROL_ENVELOPE_TAG
-
-# re-export：settle / prepare / gs_agent 与测试共用
-from gsuid_core.ai_core.agent_run.speech_policy import (  # noqa: F401
-    _REPORT_SPEECH_NUDGE,
-    _RENDER_DELEGATE_NUDGE,
-    _STATUS_ZERO_TOOL_NUDGE,
-)
 from gsuid_core.ai_core.control.outbound_detectors import (  # noqa: F401
     looks_like_report_speech as _looks_like_report_speech,
     looks_like_capability_absence,
@@ -252,34 +245,11 @@ _MAIN_PERSONA_CREATE_BY = frozenset({"Chat", "Agent", "Plan"})
 # on_trace 轨迹事件类型：模型推理段 / 工具调用（见 GsCoreAIAgent._emit_trace）
 TraceKind = Literal["thinking", "thinking_delta", "tool", "tool_result"]
 
-_FAKE_DONE_NUDGE = (
-    "（系统校验：你上一条回复声称已完成某个操作，但本轮没有任何工具调用记录，该声明是编造的。"
-    "现在立即调用对应工具真正执行（改/取消既有安排先用列表类工具定位目标）；若确实做不到，"
-    "就如实向用户说明「刚才说错了，还没有做」。绝不允许再输出不带工具调用支撑的完成话术。"
-    "本校验轮禁止抱怨式闲聊；做不到就角色短句或 <SILENCE>。）"
-)
-
-_SCHED_MUTATE_TOOLS: frozenset[str] = frozenset(
-    {
-        "list_scheduled_tasks",
-        "cancel_scheduled_task",
-        "modify_scheduled_task",
-        "pause_scheduled_task",
-        "resume_scheduled_task",
-    }
-)
 _INFLIGHT_PROMISE_RE = re.compile(
     r"(?:落好|搭好|挂好|建好|弄好|办好|做好|查好|画好|渲好|跑完|算完|写完)之后.{0,10}(?:跟你说|叫你|喊你|唤你|告诉你|发你|给你)"
     r"|我还在(?:跑|查|搭|挂|算|画|弄|改).{0,12}(?:弄好|跑完|算完|画完|查完|好了|完了|完成)再(?:跟你说|告诉你|发你|给你)"
     r"|(?:一会儿|回头|稍后|等下).{0,10}(?:弄好|跑完|做好|查完).{0,6}再?(?:发你|给你|告诉你|跟你说)"
 )
-
-
-def _claims_missing_offered_tool(text: str, offered: Sequence[str]) -> bool:
-    """声称缺少工具或把任务推给另一套指令/机器人，但本轮已提供非空工具集。"""
-    if not offered:
-        return False
-    return looks_like_capability_absence(text or "")
 
 
 def _claims_inflight_without_backend(text: str) -> bool:
@@ -290,33 +260,9 @@ def _claims_inflight_without_backend(text: str) -> bool:
     return bool(_INFLIGHT_PROMISE_RE.search(body))
 
 
-# 结构假完成：被呼叫 + 池内有工具 + 零调用 + 非沉默/非极短寒暄（不解析用户话题词）
-_STRUCTURAL_ZERO_TOOL_NUDGE = (
-    "（系统校验：本轮你被直接呼叫（或同人省略续聊），且工具池非空，但你没有调用任何工具就结束了。"
-    "先判断你刚才的回答是否已经**完整**解决用户：若是纯概念/常识解释且你有把握、"
-    "或纯寒暄——只输出 <SILENCE>，不要重复或补充。"
-    "若用户在让你办事/查询/看图/出图/设安排而尚未办到——现在立即调对应工具；"
-    "缺具体参数时也先用上文实体或记忆/查询/搜索工具尝试一次，禁止只用澄清收束；"
-    "禁止假装已经查过或记过。）"
-)
-
-
 def _correction_nudge_markers() -> tuple[str, ...]:
-    """纠正指令在 history 里的识别锚点。
-
-    纠正轮结束后统一从持久 history 剥掉这些 user turn：它们是框架内部指令，
-    累积会污染上下文并破坏 provider 前缀缓存（方案四/五）。
-    现役纠正统一走 ``<control>`` 信封；其余常量保留仅为兼容尚未迁移的历史条目。
-    """
-
-    return (
-        f"<{CONTROL_ENVELOPE_TAG}",
-        _FAKE_DONE_NUDGE,
-        _STRUCTURAL_ZERO_TOOL_NUDGE,
-        _RENDER_DELEGATE_NUDGE,
-        _REPORT_SPEECH_NUDGE,
-        _STATUS_ZERO_TOOL_NUDGE,
-    )
+    """纠正指令在 history 里的识别锚点，持久落盘前剥除（防污染前缀缓存）。"""
+    return (f"<{CONTROL_ENVELOPE_TAG}",)
 
 
 _RENDER_TOOL_NAMES = frozenset({"render_html_to_image", "render_card", "render_markdown_to_image"})

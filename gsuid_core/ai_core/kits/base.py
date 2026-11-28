@@ -25,11 +25,14 @@ CONTEXT_BLOCK_ORDER: Tuple[str, ...] = (
     "task",
     "plan_hint",
     "chitchat_style",
-    "transaction_priority",
     "report_titles",
     "inbox_pending",
     "evidence",
     "plugin_hints",
+    "speaker_preference",
+    "anchor_lore",
+    "alias_binding",
+    "mention_hint",
 )
 
 # 长库时 800 字会把专名/数字切掉；join 仍按块截断。memory 不在此表：
@@ -38,20 +41,21 @@ BLOCK_CHAR_BUDGET: Mapping[str, int] = {
     "mood": 80,
     "presence": 120,
     "relationship": 220,
-    # 口吻 86 + 敌对档口气 60 + 复读提示 60 左右
     "voice_anchor": 240,
     "identity": 80,
-    # 同人线程 14 条 + 旁人 6 条；600 会从尾部截掉最新出站句柄。
     "history": 4000,
     "group_context": 200,
     "task": 250,
     "plan_hint": 250,
     "chitchat_style": 160,
-    "transaction_priority": 80,
     "report_titles": 80,
     "inbox_pending": 600,
     "evidence": 400,
     "plugin_hints": 150,
+    "speaker_preference": 320,
+    "anchor_lore": 420,
+    "alias_binding": 280,
+    "mention_hint": 240,
 }
 
 # 建 session 时才允许写的稳定块（H29）。运行中禁止改 system。

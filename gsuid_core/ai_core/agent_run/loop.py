@@ -695,7 +695,6 @@ def _build_speech_context(host: RunOnceHost, st: RunOnceState, *, hard: int) -> 
         speech_len_hard=hard,
         user_asked_detail=False,
         forbid_title=non_master_title(addr, host.persona_name),
-        entity_routed=st.entity_routed,
         user_text=user_q,
         allow_render=allow_render,
     )

@@ -394,7 +394,7 @@ def test_thread_view_and_quote_rendering(monkeypatch: pytest.MonkeyPatch) -> Non
     assert quote_idx < sent_idx and "↩#2(测试用户C" in lines[quote_idx]
 
     quoted = next(ln for ln in lines if "谁叫汉堡" in ln)
-    assert quoted.startswith("#6 ") and "↩#5(你→测试用户B" in quoted and "前 · 闲聊回复" in quoted
+    assert quoted.startswith("★#6 ") and "↩#5(你→测试用户B" in quoted and "前 · 闲聊回复" in quoted
     for w in ("要回", "应该", "请回", "必须", "不要"):
         assert w not in quoted
     assert "x2 / x3" in next(ln for ln in lines if ln.startswith("#7–#8"))
@@ -652,8 +652,10 @@ def test_thread_view_and_quote_rendering(monkeypatch: pytest.MonkeyPatch) -> Non
         head_seq=12,
     )
     pending_txt = render_pending_block(turn_lag, recs)
-    assert "群友_0001(用户ID:100000001)" in pending_txt
-    assert "在该条(#11)之后你已于 #12 向其发过回复/交付" in pending_txt and "你上次回他是 #12" not in pending_txt
+    assert "在该条(#11)之后你已于 #12 向其发过回复/交付" in pending_txt
+    # 普通无回执/无滞后送达轮不重复输出（待你回应）块，统一认时间线行首 ★#seq
+    turn_plain = _make_turn(10, "100000001", "mention", "hard", t0, group_id="group_1", raw_text="查一下测试数据")
+    assert render_pending_block(turn_plain, recs[:1]) == ""
     delta_txt = render_delta(
         recs,
         from_seq=9,
@@ -663,7 +665,45 @@ def test_thread_view_and_quote_rendering(monkeypatch: pytest.MonkeyPatch) -> Non
         persona_name="测试人格",
         private=False,
     )
-    assert "群友_0001(用户ID:100000001)" in delta_txt and "#12 " in delta_txt
+    assert "★#11 " in delta_txt and "群友_0001(用户ID:100000001)" in delta_txt and "#12 " in delta_txt
+
+    # 群播报来源标签保留 + 行内图片句柄与单事实源视觉摘要回写
+    bcast_ev = Event("OneBot", "900000001", "bcast_0", "group", "group_bcast_1", "100000001", {}, 6)
+    with isolated_history(bcast_ev) as hm_b:
+        hm_b.add_message(
+            bcast_ev,
+            role="assistant",
+            content="[图片]",
+            metadata={
+                "msg_id": "bcast_m1",
+                "speech_channel": "plugin_broadcast",
+                "source_label": "订阅测试公告",
+                "image_id_list": ["img_bcast0001"],
+            },
+        )
+        hm_b.add_message(bcast_ev, role="user", content="测试人格，注意防潮", user_name="测试用户A")
+        b_recs = hm_b.get_history(bcast_ev)
+        b_delta_1 = render_delta(
+            b_recs,
+            from_seq=0,
+            head_seq=2,
+            backfill=False,
+            pending_seqs=frozenset({2}),
+            persona_name="测试人格",
+            private=False,
+        )
+        assert "[群播报·订阅测试公告]: [图片 img_bcast0001]" in b_delta_1
+        assert hm_b.attach_visual_digest(bcast_ev.session_id, "img_bcast0001", "测试游戏周边立牌长图") is True
+        b_delta_2 = render_delta(
+            hm_b.get_history(bcast_ev),
+            from_seq=0,
+            head_seq=2,
+            backfill=False,
+            pending_seqs=frozenset({2}),
+            persona_name="测试人格",
+            private=False,
+        )
+        assert "[图片 img_bcast0001: 测试游戏周边立牌长图]" in b_delta_2
     late_rec = _user_rec(13, "100000002", "测试用户B", "一小时后的新追问", t0 + 3600)
     delta_late = render_delta(
         [*recs, late_rec],

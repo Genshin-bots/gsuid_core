@@ -175,24 +175,7 @@ async def emit_proactive_message(
     persona_name: Optional[str] = None,
     source_group_id: str = "",
 ) -> bool:
-    """统一主动消息出口。
-
-    Args:
-        event: 目标会话（已含 user/group 信息）。
-        message: 要发送的文本内容。
-        source: 主动消息来源，决定 metadata 分类与是否走 C8 网关防撞车。
-        trigger_reason: 触发原因（mood / task_id / subtask display_name 等）。
-        generator_log_files: 决策 / 转译子 agent 的 session 日志文件路径列表，
-            会作为 ``linked_agents`` 写入用户主 session 的 logger，
-            前端可点击跳转。
-        bot: 可选；调用方已有 ``Bot`` 实例时直接复用，避免重新构造。
-        suppress_when_heartbeat_recent: 仅 Heartbeat 来源需要 ``True``；
-            其它来源（task / kanban / tool）默认 ``False``，确保关键播报
-            不被刚发完的 Heartbeat 抑制。
-
-    Returns:
-        是否真的发送成功。被 C8 抑制 / 沉默信号 / bot 解析失败时返回 ``False``。
-    """
+    """统一主动消息出口（经过主动策略门与防撞车检查；沉默信号或无连接返回 False）。"""
     if not message or not message.strip() or is_silence_marker(message.strip()):
         return False
     files: List[str] = list(generator_log_files or [])

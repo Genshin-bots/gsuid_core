@@ -38,29 +38,6 @@ SpeechPolicy = Literal[
 # 单轮主通道可见台词上限
 MAIN_CHANNEL_VISIBLE_LIMIT = 2
 
-_RENDER_DELEGATE_NUDGE = (
-    "（系统校验·内部轮：不对用户闲聊）"
-    "本轮已有检索/工具材料或长结构内容且未出图 → **必须** "
-    'create_subagent(agent_profile="render_agent", task=把本轮要点做成信息图)；'
-    "禁止再输出长正文/标题列表；禁止引导性追问。"
-    "仅当本轮工具全部失败且无任何可展示要点 → 只输出 <SILENCE>。"
-    "禁止向用户解释本校验、禁止抱怨、禁止念节点名。"
-)
-
-# 主人格把长结构念成台词时的纠正（比通用 render nudge 更硬）
-_REPORT_SPEECH_NUDGE = (
-    "（系统校验·内部轮）你刚才用多段标题/列表把长信息念成了台词，这不允许。"
-    '立即 create_subagent(agent_profile="render_agent", '
-    "task=将本轮已查到的要点做成一张信息图)；"
-    "禁止再把这张表念成台词。出图之后怎么收尾由你定。"
-)
-
-_STATUS_ZERO_TOOL_NUDGE = (
-    "（系统校验：用户在追问进行中事项的进度，但你本轮未调用任何查询工具就报了状态。"
-    "立即 list_my_kanban_tasks 或 artifact_get_recent 核实；"
-    "再以角色短句说明，禁止空口「快好了」。）"
-)
-
 
 def resolve_speech_policy(
     *,
@@ -89,16 +66,19 @@ def resolve_speech_policy(
 
 
 def non_master_title(user_id: str, persona_name: str | None) -> str:
-    """接收人不是主人时返回该人格的主人称呼，否则空串。"""
-    uid = (user_id or "").strip()
-    if not uid:
-        return ""
+    """接收人含非主人时返回该人格的主人称呼，否则空串。"""
     from gsuid_core.ai_core.utils import _is_master_user
-
-    if _is_master_user(uid):
-        return ""
+    from gsuid_core.ai_core.inbox.turn import current_turn
     from gsuid_core.ai_core.persona.settings import get_master_title
 
+    turn = current_turn()
+    if turn is not None and len(turn.distinct_speaker_ids) > 1:
+        if any(not _is_master_user(u) for u in turn.distinct_speaker_ids):
+            return get_master_title(persona_name).strip()
+        return ""
+    uid = (user_id or "").strip()
+    if not uid or _is_master_user(uid):
+        return ""
     return get_master_title(persona_name).strip()
 
 
@@ -118,7 +98,6 @@ class SpeechContext:
     speech_len_hard: int = 0
     user_asked_detail: bool = False
     forbid_title: str = ""
-    entity_routed: bool = False
     user_text: str = ""
     allow_render: bool = True
     in_settle_exit: bool = False

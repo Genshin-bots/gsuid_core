@@ -12,7 +12,6 @@ from PIL import Image
 from gsuid_core.i18n import t as i18n_t
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
-from gsuid_core.ai_core.models import PendingImage
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import UserContent
@@ -175,14 +174,8 @@ async def prepare_media_payload(
     task_level: Literal["high", "low"] = "high",
     *,
     task_kind: Optional[str] = None,
-    pending_unread_images: Optional[Sequence[PendingImage]] = None,
 ) -> Tuple[Sequence["UserContent"], "GuardFlags"]:
-    """线程视图轮次的媒体负载：渲染好的时间线文本 + 各事件图/音/视频/合并转发。
-
-    正文安全标注由 ``thread_view._guard_body`` 逐条做过；这里重跑探测器只为回收
-    GuardFlags 供结算判负向信号。``events`` 为 ``(seq, Event)`` 对，多事件时媒体
-    段前冠 ``#seq`` 便于模型对齐到行。
-    """
+    """线程视图轮次的媒体负载：时间线文本已内联 `[图片 img_…]`，这里补音视频/合并转发与非惰性原图。"""
     from gsuid_core.ai_core.content_guard import GuardFlags
     from gsuid_core.ai_core.configs.ai_config import ai_config
 
@@ -211,30 +204,12 @@ async def prepare_media_payload(
             content_payload.append(f"--- {tag}合并转发 ---\n{preview}\n")
 
         media_text = ""
-        if ev.image_id_list:
+        if ev.image_id_list and not lazy_image_read:
             own_imgs = [i for i in ev.image_id_list if i not in ev.reply_image_id_list]
-            quoted_imgs = list(ev.reply_image_id_list)
-            if own_imgs:
-                if lazy_image_read:
-                    media_text += f"--- {tag}用户发送了图片(未展开, 需要查看内容时请调用 read_image(图片ID)) ---"
-                    for i in own_imgs:
-                        media_text += f"\n图片ID: {i}"
-                    media_text += "\n"
-                else:
-                    for i in own_imgs:
-                        media_text += f"--- {tag}用户上传图片ID: {i} ---\n"
-            if quoted_imgs:
-                if lazy_image_read:
-                    media_text += (
-                        f"--- {tag}当前消息引用的历史图片"
-                        "(非当前说话人新发；仅当回应需核对原图细节时调用 read_image(图片ID)) ---"
-                    )
-                    for i in quoted_imgs:
-                        media_text += f"\n图片ID: {i}"
-                    media_text += "\n"
-                else:
-                    for i in quoted_imgs:
-                        media_text += f"--- {tag}引用的历史图片ID: {i} ---\n"
+            for i in own_imgs:
+                media_text += f"--- {tag}用户上传图片ID: {i} ---\n"
+            for i in ev.reply_image_id_list:
+                media_text += f"--- {tag}引用的历史图片ID: {i} ---\n"
 
         if ev.audio_id:
             media_text += f"--- {tag}用户上传音频ID: {ev.audio_id} ---\n"
@@ -254,15 +229,6 @@ async def prepare_media_payload(
                 media_text += f"--- {tag}用户发送了视频(当前模型无法查看视频内容) ---\n"
         if media_text:
             content_payload.append(media_text)
-
-    if pending_unread_images and not any(ev.image_id_list or ev.image_id for _, ev in events):
-        from gsuid_core.ai_core.control.lines import pending_unread_image_guide_line
-
-        pending_text = "\n--- 当前说话人刚发过的未读图片（供按需参考） ---\n"
-        for p_img in pending_unread_images:
-            pending_text += f"- [{p_img.time_str}] 配文：「{p_img.text}」 | 待读图片ID: {p_img.img_id}\n"
-            pending_text += f"{pending_unread_image_guide_line(p_img.img_id)}\n"
-        content_payload.append(pending_text)
 
     if lazy_image_read:
         return content_payload, GuardFlags(hit_fake_tool, hit_fake_system, hit_encoded)

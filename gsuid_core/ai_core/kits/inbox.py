@@ -23,10 +23,8 @@ class InboxKit(AgentKit):
         if turn is None or ctx.ev is None:
             return
         records = get_history_manager().get_history(ctx.ev)
-        pending = render_pending_block(turn, records)
         facts = await quote_fact_lines(turn, records)
-        if facts:
-            pending = f"{pending}\n" + "\n".join(facts)
+        pending = render_pending_block(turn, records, extra_lines=facts)
         pieces = [pending, receipt_context_lines(turn, records)]
         text = "\n".join(p for p in pieces if p)
         if text:

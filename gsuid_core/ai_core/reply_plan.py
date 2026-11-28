@@ -97,6 +97,8 @@ def parse_reply_plan(
         if not body or is_silence_marker(body):
             continue
         if remaining <= 0:
+            if explicit:
+                continue
             seqs = ()
         else:
             seqs = seqs[:remaining]

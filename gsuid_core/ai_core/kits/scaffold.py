@@ -49,19 +49,6 @@ class ScaffoldKit(AgentKit):
                 "chitchat_style",
                 f"（若纯寒暄：建议不超过 {style.soft} 字/条，至多 {style.bubbles} 条；若需查数/办事仍调工具。）{quota}",
             )
-        # 私聊 FULL 一律催工具；群聊看路由结论（工具/问答或明确委托事务）。
-        need_tools = (
-            (not is_group)
-            or ctx.intent in ("工具", "问答")
-            or bool(ctx.route_decision is not None and ctx.route_decision.needs_committed_work)
-        )
-        if need_tools:
-            from gsuid_core.ai_core.prompt_group.store import render_prompt
-
-            ctx.set_context_block(
-                "transaction_priority",
-                render_prompt(ctx.persona_name, "transaction_priority"),
-            )
         if ctx.recent_report_titles:
             titles = "、".join(ctx.recent_report_titles[-3:])
             ctx.set_context_block("report_titles", f"（上一轮资料图：{titles}）")

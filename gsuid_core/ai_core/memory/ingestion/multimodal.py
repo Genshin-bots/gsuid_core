@@ -1,16 +1,7 @@
-"""多模态记忆摄入（C9 / plans/agent_design_review.md 建议四）
+"""多模态记忆摄入与视觉摘要单通道（C9）。
 
-群友大量用表情包、抽卡截图、深渊战绩图交互，但 Observer 原本只摄入文字。
-本模块让"高价值图片"也能进入记忆——**且严格隔离队列，绝不阻塞聊天延迟**：
-
-- ``submit_image_observation``：handler 在关键路径上**仅做纯规则过滤 + 入队**，
-  不 await 任何图片理解（约束 3 / 建议四的队列隔离约束）。
-- ``ImageUnderstandWorker``：独立后台任务消费 ``_multimodal_queue``，调用
-  ``understand_image`` 把图片转述为文本，再以 ``[图片理解]`` 前缀包装成普通
-  观察记录推入主 ``observe()`` 管道。识别失败只记日志，不回塞、不阻塞。
-
-队列与主 ``observation_queue`` 物理隔离：图片风暴不会挤爆文本记忆摄入。
-``_multimodal_queue`` 为进程内存队列，重启即清空——无持久化、无向后兼容问题。
+关键路径仅做 0-token 规则过滤 + 非阻塞入队；后台 ImageUnderstandWorker 独立并发消费，
+完成群专属图片压缩落盘、HistoryManager 视觉摘要回写与被动文本观察投递。
 """
 
 import time
@@ -44,14 +35,19 @@ _MIN_DESC_LEN = 15
 
 @dataclass
 class MultimodalRecord:
-    """多模态摄入队列的数据单元（图片）。"""
+    """多模态摄入队列的数据单元（被动图片观察 + read_image 摘要回写与群媒体落盘共用）。"""
 
     image_url: str
     speaker_id: str
     group_id: Optional[str]
     bot_self_id: str
     message_type: str
-    observer_blacklist: list
+    observer_blacklist: list[str]
+    session_id: str = ""
+    image_id: str = ""
+    raw_bytes: Optional[bytes] = None
+    known_desc: str = ""
+    emit_standalone_observe: bool = True
 
 
 def _passes_rule_filter(scope_id: str, image_url: str) -> bool:
@@ -76,20 +72,28 @@ def _passes_rule_filter(scope_id: str, image_url: str) -> bool:
     return True
 
 
+def _enqueue_record(record: MultimodalRecord) -> bool:
+    try:
+        _multimodal_queue.put_nowait(record)
+        return True
+    except asyncio.QueueFull:
+        logger.debug(t("log.memory.multimodal_queue_full_discarding"))
+        return False
+
+
 def submit_image_observation(
-    image_urls: list,
+    image_urls: list[str],
     speaker_id: str,
     group_id: Optional[str],
     bot_self_id: str,
-    observer_blacklist: list,
+    observer_blacklist: list[str],
     message_type: str = "group_msg",
+    *,
+    session_id: str = "",
+    image_ids: Optional[list[str]] = None,
 ) -> int:
-    """把消息中的图片提交到多模态摄入队列（handler 关键路径调用，不阻塞）。
-
-    Returns:
-        实际入队的图片数量。
-    """
-    if not image_urls:
+    """把消息中的图片提交到多模态摄入队列（handler 关键路径调用，不阻塞）。"""
+    if not image_urls or (group_id and group_id in observer_blacklist):
         return 0
     from gsuid_core.ai_core.memory.observer import (
         is_ai_list_allowed,
@@ -99,34 +103,71 @@ def submit_image_observation(
 
     if not (speaker_id or "").strip() or _is_known_bot_speaker(speaker_id, bot_self_id):
         return 0
-    if is_external_bot_speaker(speaker_id):
-        return 0
-    if group_id and group_id in observer_blacklist:
-        return 0
-    if not is_ai_list_allowed(speaker_id, group_id):
+    if is_external_bot_speaker(speaker_id) or not is_ai_list_allowed(speaker_id, group_id):
         return 0
     scope_id = str(group_id or speaker_id)
     submitted = 0
-    for url in image_urls:
-        if not url or not isinstance(url, str):
+    for idx, url in enumerate(image_urls):
+        if not url or not isinstance(url, str) or not _passes_rule_filter(scope_id, url):
             continue
-        if not _passes_rule_filter(scope_id, url):
-            continue
-        record = MultimodalRecord(
+        iid = image_ids[idx] if image_ids and idx < len(image_ids) else ""
+        rec = MultimodalRecord(
             image_url=url,
             speaker_id=speaker_id,
             group_id=group_id,
             bot_self_id=bot_self_id,
             message_type=message_type,
             observer_blacklist=list(observer_blacklist),
+            session_id=session_id,
+            image_id=iid,
+            emit_standalone_observe=not bool(iid),
         )
-        try:
-            _multimodal_queue.put_nowait(record)
-            submitted += 1
-        except asyncio.QueueFull:
-            logger.debug(t("log.memory.multimodal_queue_full_discarding"))
+        if not _enqueue_record(rec):
             break
+        submitted += 1
     return submitted
+
+
+def enqueue_read_image_digest(
+    *,
+    session_id: str,
+    group_id: Optional[str],
+    speaker_id: str,
+    bot_self_id: str,
+    image_id: str,
+    raw_bytes: Optional[bytes] = None,
+    image_url: str = "",
+    known_desc: str = "",
+) -> bool:
+    """read_image 读图成功后非阻塞入队：回写 HistoryManager 视觉摘要并将群图片落盘。"""
+    iid = image_id.strip()
+    if not iid.startswith("img_"):
+        return False
+    from gsuid_core.ai_core.memory.config import memory_config
+
+    if group_id and group_id in memory_config.observer_blacklist:
+        return False
+    urls = _recent_urls.setdefault(f"read:{group_id or session_id or speaker_id}", deque(maxlen=_RECENT_URL_WINDOW))
+    dedup_key = f"{session_id}:{iid}"
+    if dedup_key in urls:
+        return False
+    urls.append(dedup_key)
+    start_multimodal_worker()
+    return _enqueue_record(
+        MultimodalRecord(
+            image_url=image_url,
+            speaker_id=speaker_id,
+            group_id=group_id,
+            bot_self_id=bot_self_id,
+            message_type="group_msg" if group_id else "private_msg",
+            observer_blacklist=list(memory_config.observer_blacklist),
+            session_id=session_id,
+            image_id=iid,
+            raw_bytes=raw_bytes,
+            known_desc=known_desc.strip(),
+            emit_standalone_observe=False,
+        )
+    )
 
 
 class ImageUnderstandWorker:
@@ -169,25 +210,58 @@ class ImageUnderstandWorker:
             asyncio.create_task(self._process(record))
 
     async def _process(self, record: MultimodalRecord) -> None:
-        """对单张图片做理解 + 转述 + 推入主观察管道。"""
+        """单通道完成：群媒体压缩落盘 + 视觉摘要写回 HistoryManager + 被动观察兜底。"""
         async with self._sem:
-            try:
-                from gsuid_core.ai_core.image_understand import understand_image
+            from gsuid_core.message_history import get_history_manager
+            from gsuid_core.utils.resource_manager import RM
 
-                desc = await understand_image(
-                    record.image_url,
-                    prompt="简要描述这张图片的核心内容，若含文字/数字请一并转述。",
+            pin_bytes = record.raw_bytes
+            if pin_bytes is None and record.group_id and record.image_id.startswith("img_"):
+                if RM.has(record.image_id):
+                    try:
+                        pin_bytes = await RM.get(record.image_id, group_id=record.group_id)
+                    except ValueError:
+                        pin_bytes = None
+            if pin_bytes and record.group_id and record.image_id.startswith("img_"):
+                await RM.pin_group_image(record.image_id, record.group_id, pin_bytes)
+
+            desc = record.known_desc
+            if not desc and record.image_id:
+                existing = get_history_manager().lookup_visual_digests(
+                    group_id=record.group_id,
+                    user_id=record.speaker_id,
+                    image_ids=[record.image_id],
                 )
-            except Exception as e:
-                logger.debug(t("log.memory.multimodal_image_understanding_ignore", e=e))
+                if record.image_id in existing:
+                    desc = existing[record.image_id]
+            if not desc:
+                src_url = record.image_url
+                if not src_url and pin_bytes is not None:
+                    from gsuid_core.utils.image.image_io import bytes_to_data_uri
+
+                    uri, _, _ = bytes_to_data_uri(pin_bytes, flatten_animation=True)
+                    src_url = uri or ""
+                if not src_url:
+                    return
+                try:
+                    from gsuid_core.ai_core.image_understand import understand_image
+
+                    desc = await understand_image(
+                        src_url,
+                        prompt="用一句不超过60字的精炼中文概括图片主体、梗或关键文字，不要分点。",
+                    )
+                except Exception as e:
+                    logger.debug(t("log.memory.multimodal_image_understanding_ignore", e=e))
+                    return
+
+            desc = " ".join((desc or "").split()).strip()
+            if not desc:
+                return
+            if record.image_id:
+                get_history_manager().attach_visual_digest(record.session_id, record.image_id, desc[:80])
+            if not record.emit_standalone_observe or len(desc) < _MIN_DESC_LEN:
                 return
 
-            desc = (desc or "").strip()
-            if len(desc) < _MIN_DESC_LEN:
-                # 转述过短——视为低价值图片（表情包等），丢弃
-                return
-
-            # 标注来源 [图片理解]，避免被当作用户原话
             from gsuid_core.ai_core.memory.observer import observe
 
             try:
@@ -206,8 +280,10 @@ class ImageUnderstandWorker:
 _worker: Optional[ImageUnderstandWorker] = None
 
 
-def get_multimodal_health() -> dict:
+def get_multimodal_health() -> dict[str, int | float | bool]:
     """多模态摄入健康度快照（控制台只读）。"""
+    from gsuid_core.utils.resource_manager import RM
+
     worker = get_multimodal_worker()
     return {
         "queue_size": _multimodal_queue.qsize(),
@@ -220,6 +296,7 @@ def get_multimodal_health() -> dict:
         "tracked_scopes": len(_scope_image_times),
         "recent_url_scopes": len(_recent_urls),
         "min_desc_len": _MIN_DESC_LEN,
+        "pinned_groups": RM.count_pinned_groups(),
     }
 
 

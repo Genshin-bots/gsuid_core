@@ -25,14 +25,13 @@ if TYPE_CHECKING:
 class InboxTurn:
     session_id: str
     persona_name: str
-    entries: tuple[PendingEntry, ...]  # 同说话人按 seq 升序
+    entries: tuple[PendingEntry, ...]  # 批内唤醒项（按 seq 升序，支持多说话人多 Event）
     from_seq: int  # 不含：开跑时的 read_seq
     head_seq: int  # 含：开跑时 A 轨 head
     backfill: bool = False
     active_seq: int | None = None
     answered: set[int] = field(default_factory=set)
     observations: list[str] = field(default_factory=list)
-    memory_dependent: bool = False
     bubbles_sent: int = 0
     reached_model: bool = False
 
@@ -46,6 +45,14 @@ class InboxTurn:
             if entry.item.strength == "hard":
                 return entry
         return self.entries[0]
+
+    @property
+    def distinct_speaker_ids(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(str(e.item.user_id) for e in self.entries if e.item.user_id))
+
+    @property
+    def events_by_seq(self) -> dict[int, Event]:
+        return {e.item.seq: e.event for e in self.entries}
 
     def entry_for(self, seq: int) -> PendingEntry | None:
         for entry in self.entries:

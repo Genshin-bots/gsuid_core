@@ -514,7 +514,7 @@ OFFSCREEN_CARE_GENERIC = "顺手帮熟人翻了点资料"
 
 
 def presence_offscreen_line(ago: str, doing: str) -> str:
-    return f"（{ago}你闲着时{doing}。）"
+    return f"（{ago}你独自闲待时心里琢磨过：{doing}；群友并不知道，无关时勿提。）"
 
 
 def presence_echo_line(ago: str, summary: str, answered: bool | None) -> str:
@@ -542,14 +542,6 @@ def quote_other_line(speaker_name: str, time_str: str) -> str:
 def quote_command_card_line(time_str: str) -> str:
     """说话人引用了群内刚生成的命令回执卡片。"""
     return f"（被引用内容是群内于 {time_str} 执行命令生成的输出结果/卡片，非你口头发言）"
-
-
-def pending_unread_image_guide_line(img_id: str) -> str:
-    """当前说话人刚发出的挂起未读图片中性提示。"""
-    return (
-        f'（以上是当前说话人刚发出的未读图片；仅当本句确在追问或讨论该图时调用 read_image("{img_id}")，'
-        "日常表情包或无关话题请忽略）"
-    )
 
 
 def quote_bystander_line(time_str: str, target_desc: str) -> str:
@@ -617,10 +609,8 @@ ROUTER_PRINCIPLE = (
     "复读或起哄紧邻上文你刚公开答复过的同一件事（无替他人查的〔依据〕）无需再回。"
 )
 
-# 证据块与工具结果前缀（§4.6；B 轨 obs 行 / 出站〔依据〕标签 / 实时状态行）
+# 证据块与工具结果前缀（§4.6；出站〔依据〕标签与 MCP 凭据状态）
 EVIDENCE_BLOCK_HEAD = "（证据）"
-EVIDENCE_FOR_TARGETS_HEAD = "替本轮待回应者查的："
-EVIDENCE_FOR_OTHERS_HEAD = "替别人查的："
 EVIDENCE_LIVE_HEAD = "实时状态（刚查询）："
 EVIDENCE_STALE_AUTH = "已失效（凭据已变更）"
 EVIDENCE_OUTCOME_LABELS: Final[dict[str, str]] = {

@@ -367,20 +367,6 @@ async def audit_log(
     return row.id
 
 
-async def audit_finish(row_id: Optional[int], result: "ExecResult", status: str = "executed") -> None:
-    """审批放行后单独执行时,把结果补回决策阶段那条审计。"""
-    if row_id is None or not cfg_bool("audit_enabled"):
-        return
-    from gsuid_core.ai_core.command_exec.executor import clip
-
-    await AICommandAudit.finish(
-        row_id=row_id,
-        status=status,
-        returncode=result.returncode,
-        output_excerpt=clip(result.stdout),
-    )
-
-
 async def cleanup_expired_audit() -> int:
     """删早于 TTL 的低风险审计（高危 / provision 永久留存）。返回删除行数。"""
     n = await AICommandAudit.delete_expired(cfg_int("audit_ttl_days"))

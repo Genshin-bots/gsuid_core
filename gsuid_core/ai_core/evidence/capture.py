@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from gsuid_core.ai_core.inbox.turn import InboxTurn
 
 _MARK: ContextVar["EvidenceMark | None"] = ContextVar("gs_evidence_mark", default=None)
+_REQUESTER_OVERRIDE: ContextVar[tuple[str, int] | None] = ContextVar("gs_evidence_requester", default=None)
 
 _HANDLE_RE = re.compile(r"\bto_[A-Za-z0-9_-]{2,}\b")
 _SUMMARY_MAX = 80
@@ -144,14 +145,26 @@ def _service_of(tool_name: str, mark: EvidenceMark | None) -> str:
     return tb.plugin if tb is not None else tool_name
 
 
+def set_evidence_requester(user_id: str, seq: int) -> Token[tuple[str, int] | None]:
+    return _REQUESTER_OVERRIDE.set((user_id, seq))
+
+
+def reset_evidence_requester(token: Token[tuple[str, int] | None]) -> None:
+    _REQUESTER_OVERRIDE.reset(token)
+
+
 def _requested_by(turn: "InboxTurn") -> str:
+    override = _REQUESTER_OVERRIDE.get()
+    if override is not None and override[0]:
+        return override[0]
     active = turn.active_entry()
-    if active is not None:
-        return active.item.user_id
-    return turn.primary.item.user_id
+    return active.item.user_id if active is not None else turn.primary.item.user_id
 
 
 def _requested_seq(turn: "InboxTurn") -> int:
+    override = _REQUESTER_OVERRIDE.get()
+    if override is not None and override[1] > 0:
+        return override[1]
     if turn.active_seq is not None:
         return turn.active_seq
     return turn.primary.item.seq if turn.entries else 0

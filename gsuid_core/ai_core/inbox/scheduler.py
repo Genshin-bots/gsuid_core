@@ -38,8 +38,7 @@ _INCOMPLETE_OPENER_SETTLE_S = 8.0
 _SOFT_SETTLE_S = 8.0
 _INBOX_SETTLE_MAX_S = 12.0
 _READ_SEQ_CAP = 1024
-_EXACT_DEDUP_TTL_S = 90.0
-_EXACT_DEDUP_PER_SESSION_CAP = 16
+_MAX_TURN_ENTRIES = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,14 +48,7 @@ class TurnOutcome:
     answered: frozenset[int] = frozenset()
 
 
-_ExactDedupKey = tuple[str, str, bool, tuple[str, ...]]
-
-
-@dataclass(frozen=True, slots=True)
-class _SettledExact:
-    settled_at: float
-    user_ids: frozenset[str]
-    speaker_bound: bool
+_BatchDedupKey = tuple[str, str, str, bool, tuple[str, ...]]
 
 
 def _has_own_media(entry: PendingEntry) -> bool:
@@ -101,8 +93,8 @@ def _is_incomplete_opener(entry: PendingEntry) -> bool:
     return not rem.strip(_OPENER_FILLERS)
 
 
-def _exact_dedup_key(entry: PendingEntry) -> _ExactDedupKey | None:
-    """群聊无自有附件消息的字节幂等键 (正文, reply_id, at_bot, at_list)；带媒体或空正文返回 None。"""
+def _batch_dedup_key(entry: PendingEntry) -> _BatchDedupKey | None:
+    """同批次内同一说话人重复连发的幂等键；带媒体或空正文返回 None。"""
     ev = entry.event
     if ev.user_type == "direct" or entry.receipt is not None:
         return None
@@ -112,7 +104,7 @@ def _exact_dedup_key(entry: PendingEntry) -> _ExactDedupKey | None:
     if not text:
         return None
     at_targets = tuple(str(x) for x in ev.at_list if x)
-    return (text, str(ev.reply_id or ""), bool(ev.at_bot), at_targets)
+    return (entry.item.user_id, text, str(ev.reply_id or ""), bool(ev.at_bot), at_targets)
 
 
 class InboxScheduler:
@@ -132,7 +124,6 @@ class InboxScheduler:
         self._settle_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._ws: dict[tuple[str, str], _Bot] = {}
         self._last_read_seq: OrderedDict[tuple[str, str], int] = OrderedDict()
-        self._recent_exact: OrderedDict[tuple[str, str], OrderedDict[_ExactDedupKey, _SettledExact]] = OrderedDict()
 
     def has_active_session(self, session_id: str) -> bool:
         """指定会话是否有待收敛或正在执行的收件箱轮次。"""
@@ -220,49 +211,6 @@ class InboxScheduler:
         while len(self._last_read_seq) > _READ_SEQ_CAP:
             self._last_read_seq.popitem(last=False)
 
-    def _prune_exact(self, key: tuple[str, str], now: float) -> OrderedDict[_ExactDedupKey, _SettledExact] | None:
-        if key not in self._recent_exact:
-            return None
-        bucket = self._recent_exact[key]
-        stale = [dk for dk, rec in bucket.items() if now - rec.settled_at > _EXACT_DEDUP_TTL_S]
-        for dk in stale:
-            del bucket[dk]
-        if not bucket:
-            del self._recent_exact[key]
-            return None
-        return bucket
-
-    def _remember_exact(
-        self,
-        key: tuple[str, str],
-        turn: InboxTurn,
-        answered: frozenset[int],
-        now: float,
-    ) -> None:
-        speaker_bound = bool(turn.observations) or turn.memory_dependent
-        for entry in turn.entries:
-            if entry.item.seq not in answered:
-                continue
-            dkey = _exact_dedup_key(entry)
-            if dkey is None:
-                continue
-            if key not in self._recent_exact:
-                self._recent_exact[key] = OrderedDict()
-            bucket = self._recent_exact[key]
-            prior_uids = bucket[dkey].user_ids if dkey in bucket else frozenset()
-            prior_bound = bucket[dkey].speaker_bound if dkey in bucket else False
-            bucket[dkey] = _SettledExact(
-                settled_at=now,
-                user_ids=prior_uids | {entry.item.user_id},
-                speaker_bound=speaker_bound or prior_bound,
-            )
-            bucket.move_to_end(dkey)
-            while len(bucket) > _EXACT_DEDUP_PER_SESSION_CAP:
-                bucket.popitem(last=False)
-            self._recent_exact.move_to_end(key)
-            while len(self._recent_exact) > _READ_SEQ_CAP:
-                self._recent_exact.popitem(last=False)
-
     def _settle_max_s(self) -> float:
         return _INBOX_SETTLE_MAX_S
 
@@ -299,8 +247,6 @@ class InboxScheduler:
         """会话历史清空时同步重置已读游标与挂起项，防 seq 回绕错位。"""
         for key in [k for k in self._last_read_seq if k[0] == session_id]:
             self._last_read_seq.pop(key, None)
-        for key in [k for k in self._recent_exact if k[0] == session_id]:
-            del self._recent_exact[key]
         for key in [k for k in self._inboxes if k[0] == session_id]:
             inbox = self._inboxes[key]
             inbox.read_seq = 0
@@ -352,8 +298,6 @@ class InboxScheduler:
 
     def _build_turn(self, inbox: SessionInbox) -> InboxTurn | None:
         now = self._clock()
-        key = (inbox.session_id, inbox.persona_name)
-        settled_exact = self._prune_exact(key, now)
         for entry in inbox.items.values():
             item = entry.item
             if item.state != "pending":
@@ -361,25 +305,16 @@ class InboxScheduler:
             if now - item.created_at > WAKE_TTL_SECONDS[item.kind]:
                 item.state = "expired"
                 logger.info(t("log.inbox.item_expired", seq=item.seq, kind=item.kind, reason="ttl"))
-                continue
-            if settled_exact is not None:
-                dkey = _exact_dedup_key(entry)
-                if dkey is not None and dkey in settled_exact:
-                    prev = settled_exact[dkey]
-                    if not prev.speaker_bound or item.user_id in prev.user_ids:
-                        item.state = "dismissed"
-                        logger.info(t("log.inbox.item_dedup", seq=item.seq, reason="settled"))
         pending = [e for e in inbox.items.values() if e.item.state == "pending"]
         if not pending:
             return None
-        ordered = sorted(pending, key=lambda e: (e.item.strength != "hard", e.item.seq))
-        # 单轮只合同一说话人的连发（按时间线 seq 升序）；其他说话人留待下一轮
-        target_uid = ordered[0].item.user_id
-        same_speaker = sorted((e for e in pending if e.item.user_id == target_uid), key=lambda e: e.item.seq)
+        # 优先纳入 hard 唤醒项，再按时间线 seq 升序合并同窗内全部待回应项（消除单人串行积压）
+        prioritized = sorted(pending, key=lambda e: (e.item.strength != "hard", e.item.seq))[:_MAX_TURN_ENTRIES]
+        window_entries = sorted(prioritized, key=lambda e: e.item.seq)
         kept: list[PendingEntry] = []
-        seen_batch: set[_ExactDedupKey] = set()
-        for entry in same_speaker:
-            dkey = _exact_dedup_key(entry)
+        seen_batch: set[_BatchDedupKey] = set()
+        for entry in window_entries:
+            dkey = _batch_dedup_key(entry)
             if dkey is not None:
                 if dkey in seen_batch:
                     entry.item.state = "dismissed"
@@ -439,7 +374,6 @@ class InboxScheduler:
                 entry.item.state = "answered" if seq in outcome.answered else "dismissed"
             inbox.read_seq = turn.head_seq
             self._remember_read_seq(key, turn.head_seq)
-            self._remember_exact(key, turn, outcome.answered, self._clock())
 
         settled = [s for s, e in inbox.items.items() if e.item.state != "pending"]
         for seq in settled:

@@ -1,20 +1,4 @@
-"""AI 聊天入口：**薄编排器**。
-
-本模块只做编排——并发闸 / TTL / 预算 / Session / 长度防护 / 开口门 / 结算调用 /
-出站分发，以及在固定锚点 ``fire_hooks``。产品能力（记忆、关系温度、情绪、意图分类、
-软触发门、脚手架注入、工具装配）全部是**套件**，挂在 hook 总线上。
-
-``run_interactive_turn`` 是生产 ``handle_inbox_turn`` 与评测
-``/api/chat_with_history`` 共用的**唯一一轮编排**。评测只允许在进这个函数之前
-做适配（建 Event / 灌 history / 夹具 View），不许再自己分类、检索或结算。
-
-三条纪律：
-1. 内核函数体里不出现 ``dual_route_retrieve`` / ``update_mood`` / ``classifier_service``
-   这类产品 import——关某个能力靠**槽位不注册**，不靠在内核里写 ``if enable_x``。
-   ``settle_turn`` / ``RelationshipView`` 是冻结写主，留在本模块是有意的。
-2. 每轮动态内容只进 user 侧；``system_prompt`` 会话内绝不改串。
-3. 结算是唯一写主：负信号不受「是否有效互动」限制，早退路径也要结算。
-"""
+"""AI 聊天入口薄编排器：生产 handle_inbox_turn 与评测共用 run_interactive_turn，动态内容仅进 user 侧。"""
 
 import time
 import asyncio
@@ -53,7 +37,6 @@ from gsuid_core.ai_core.turn_pipeline import (
     prev_turn_used_tools,
     recent_report_titles,
     apply_absolute_length_guard,
-    extract_pending_unread_images,
 )
 from gsuid_core.ai_core.trigger_bridge import MockBot
 from gsuid_core.ai_core.followup_window import (
@@ -242,13 +225,7 @@ async def run_passive_interactive_chat(
 
 
 async def handle_inbox_turn(turn: InboxTurn, ws: _Bot) -> TurnOutcome:
-    """收件箱轮次入口（异步队列执行）。**不抛**：边界内一切异常归一成
-    ``TurnOutcome(error=True)``，调度器据此重试 / 过期。
-
-    锚点顺序：预算 → H01 → 长度防护 → Session → TurnGraph/开口门 → H02 → H03 分类
-    → 开口门重判 → H04 软门 → payload → H05 检索 → H06/H07 合成 → 开口门终判
-    → ``session.run`` → 出站 → 结算 + H08。
-    """
+    """收件箱轮次入口：边界内一切异常归一为 TurnOutcome(error=True)。"""
     primary = turn.primary
     bot = Bot(ws, primary.event)
     has_hard = any(e.item.strength == "hard" for e in turn.entries)
@@ -341,9 +318,13 @@ async def run_interactive_turn(
         query = turn.primary.event.raw_text or ""
 
     def _count_soft_silence() -> None:
-        if not soft_triggered or not event.user_id:
+        if not soft_triggered:
             return
-        record_gate_silence(event.session_id, str(event.user_id))
+        uids = {str(e.item.user_id) for e in turn.entries if e.item.kind == "followup" and e.item.user_id}
+        if not uids and event.user_id:
+            uids = {str(event.user_id)}
+        for uid in uids:
+            record_gate_silence(event.session_id, uid)
 
     bot_id = bot.bot_id if bot is not None else ""
     hook_ctx.persona_name = session.persona_name
@@ -379,7 +360,11 @@ async def run_interactive_turn(
             if r.role == "user" and (r.link is None or r.link.seq not in _pending_seqs)
         ][-20:]
     _has_at_other = bool(
-        event.group_id and not event.at_bot and any(str(uid) != str(event.bot_self_id) for uid in event.at_list)
+        event.group_id
+        and all(
+            not e.event.at_bot and any(str(uid) != str(e.event.bot_self_id) for uid in e.event.at_list)
+            for e in turn.entries
+        )
     )
     turn_graph = build_turn_graph(
         query,
@@ -432,7 +417,7 @@ async def run_interactive_turn(
         _rcpt_plugin = turn.primary.receipt.plugin_label or "插件"
         _rcpt_body = (turn.primary.receipt.receipt_text or "[图片]").strip()[:200]
         hook_ctx.router_query = f"[命令回执] 插件={_rcpt_plugin} 内容={_rcpt_body}"
-    # 群聊显式 @Bot 直通主模型；但若带引用且原消息作者不明（防残留自动 @），仍过 TurnRouter 辨归属
+    # 确认含真实 @Bot 的批次不因前置路由早退静音，但仍统一走 TurnRouter 获取准确意图与记忆模态
     has_confirmed_mention = False
     if inbox_turn is not None and bool(event.group_id):
         _seq_map = {r.link.seq: r.link for r in render_records if r.link is not None}
@@ -448,12 +433,6 @@ async def run_interactive_turn(
             return bool(_lnk is not None and _lnk.reply_to_author not in (None, "self"))
 
         has_confirmed_mention = any(_is_confirmed_mention(e.item.seq, e.item.kind, e.event) for e in turn.entries)
-        if has_confirmed_mention and all(
-            _is_confirmed_mention(e.item.seq, e.item.kind, e.event)
-            or (e.receipt is None and e.item.kind in ("followup", "name") and not (e.event.reply_id or e.event.reply))
-            for e in turn.entries
-        ):
-            hook_ctx.skip_llm_router = True
     _relation_label = "主人" if rel.is_master else (rel.zone.value if rel.scored else "普通群友")
     _anchor_ts = hook_ctx.clock_at.timestamp() if hook_ctx.clock_at is not None else time.time()
     _group_rate_1m = (
@@ -469,9 +448,6 @@ async def run_interactive_turn(
     )
     await fire_hooks(AgentHookPoint.CLASSIFY, hook_ctx)
     intent = hook_ctx.intent or ""
-    turn.memory_dependent = bool(
-        hook_ctx.route_decision is not None and hook_ctx.route_decision.memory_intent != "none"
-    )
 
     # 二段入站门：LLM 路由可用时认 TurnRouter.soft_speak；含确认 @Bot 的批次只分类不沉默整轮。
     router_gated = bool(
@@ -521,17 +497,12 @@ async def run_interactive_turn(
         enqueue_ts = time.time()
 
     await session.refresh_model_if_changed()
-    pending_images = []
-    if not any(e.event.image_id_list or e.event.image_id for e in turn.entries):
-        pending_images = extract_pending_unread_images(event, session.read_image_ids)
-
     # 线程视图 delta 已在 CLASSIFY 前渲染（路由要看同一份时间线），这里直接入 payload。
     user_messages, guard_flags = await prepare_media_payload(
         [(e.item.seq, e.event) for e in turn.entries],
         delta_text,
         session.task_level,
         task_kind=session.task_kind,
-        pending_unread_images=pending_images,
     )
     await apply_summary_guard(event, user_messages)
     stamp_current_time(user_messages, now=hook_ctx.clock_at)
@@ -578,6 +549,8 @@ async def run_interactive_turn(
     if merge_line:
         user_messages = [*user_messages, merge_line]
 
+    if turn.backfill:
+        session.thread_backfill_due = False
     turn.reached_model = True
     chat_result = await session.run(
         user_message=user_messages,
@@ -605,7 +578,6 @@ async def run_interactive_turn(
             await save_micro_arcs(_pn, _arcs)
 
     # 收件箱落定：answered 的每人登记续聊窗口；followup 项按 answered/dismissed 记账。
-    session.thread_backfill_due = False
     if not is_error:
         _fw = ai_config.get_config("follow_up_window").data
         _fmax = ai_config.get_config("follow_up_max_total").data
@@ -641,6 +613,7 @@ async def run_interactive_turn(
         await _settle_and_fire_after_run(
             bot=bot,
             event=event,
+            turn=turn,
             hook_ctx=hook_ctx,
             bot_id=bot_id,
             query=query,
@@ -659,6 +632,7 @@ async def _settle_and_fire_after_run(
     *,
     bot: Bot,
     event: Event,
+    turn: InboxTurn,
     hook_ctx: AgentHookContext,
     bot_id: str,
     query: str,
@@ -670,34 +644,72 @@ async def _settle_and_fire_after_run(
     is_error: bool,
     persona_name: str = "",
 ) -> None:
-    """⑩ 关系温度结算 + H08 收尾套件（mood 更新 / 统计上报共用同一份信号扫描）。"""
-    outcome = await settle_turn(
-        user_id=str(event.user_id),
-        bot_id=bot_id,
-        user_text=query,
-        intent=intent,
-        effective=effective,
-        silenced=is_silence,
-        error=is_error,
-        reached_model=True,
-        is_master=rel.is_master,
-        guard_flags=guard_flags,
-        persona_name=persona_name,
-    )
-    if persona_name:
-        from gsuid_core.ai_core.relationship.dyadic_distill import maybe_schedule_dyadic_distill
+    """⑩ 按说话人独立结算关系温度 + H08 收尾套件（防多人合批张冠李戴扣错分）。"""
+    from gsuid_core.ai_core.utils import _is_master_user
+    from gsuid_core.ai_core.relationship.dyadic_distill import maybe_schedule_dyadic_distill
 
-        await maybe_schedule_dyadic_distill(
-            event=event,
-            bot=bot,
-            user_id=event.user_id,
+    grouped: dict[str, list[Event]] = {}
+    answered_uids = {str(e.item.user_id) for e in turn.entries if e.item.seq in turn.answered and e.item.user_id}
+    for entry in turn.entries:
+        uid = str(entry.item.user_id or entry.event.user_id or "")
+        if uid:
+            grouped.setdefault(uid, []).append(entry.event)
+    if not grouped and event.user_id:
+        grouped[str(event.user_id)] = [event]
+
+    primary_uid = str(event.user_id or "")
+    primary_outcome = None
+    check_guard = bool(ai_config.get_config("content_guard_enable").data)
+    multi = len(grouped) > 1
+    for uid, ev_list in grouped.items():
+        if not multi:
+            spk_text = query
+            spk_guard = guard_flags
+            spk_master = rel.is_master
+            spk_eff = effective
+        else:
+            spk_text = "\n".join(ev.raw_text or "" for ev in ev_list if (ev.raw_text or "").strip())
+            hf_tool = hf_sys = hf_enc = False
+            if check_guard:
+                for ev in ev_list:
+                    body = (ev.text or "").strip()
+                    if body:
+                        _, _fg = annotate_untrusted_message_ex(body)
+                        hf_tool = hf_tool or _fg.fake_tool_result
+                        hf_sys = hf_sys or _fg.fake_system_hint
+                        hf_enc = hf_enc or _fg.encoded_injection
+            spk_guard = GuardFlags(fake_tool_result=hf_tool, fake_system_hint=hf_sys, encoded_injection=hf_enc)
+            spk_master = rel.is_master if uid == primary_uid else _is_master_user(uid)
+            spk_eff = effective and (uid in answered_uids or not answered_uids)
+        outcome = await settle_turn(
+            user_id=uid,
             bot_id=bot_id,
+            user_text=spk_text,
+            intent=intent,
+            effective=spk_eff,
+            silenced=is_silence,
+            error=is_error,
+            reached_model=True,
+            is_master=spk_master,
+            guard_flags=spk_guard,
             persona_name=persona_name,
-            score_after=outcome.score_after,
         )
+        if primary_outcome is None or uid == primary_uid:
+            primary_outcome = outcome
+        if persona_name:
+            await maybe_schedule_dyadic_distill(
+                event=ev_list[0],
+                bot=bot,
+                user_id=uid,
+                bot_id=bot_id,
+                persona_name=persona_name,
+                score_after=outcome.score_after,
+            )
+    if primary_outcome is None:
+        return
     hook_ctx.point = AgentHookPoint.AFTER_RUN
-    hook_ctx.signals = outcome.signals
-    hook_ctx.settle_outcome = outcome
+    hook_ctx.signals = primary_outcome.signals
+    hook_ctx.settle_outcome = primary_outcome
     hook_ctx.result_text = query if not hook_ctx.result_text else hook_ctx.result_text
     task = asyncio.create_task(fire_hooks(AgentHookPoint.AFTER_RUN, hook_ctx))
 
@@ -727,11 +739,7 @@ async def _settle_silent_turn(
     rel: RelationshipView,
     persona_name: str = "",
 ) -> None:
-    """群策略门静音早退路径的结算（``reached_model=False``：只放行负信号）。
-
-    不补这一次结算就会出现吸收态：**用户越界 → zone 掉到 cold → 以后未 @ 的越界发言
-    全部走早退 → 再也扣不到分**。闸门应该过滤（只过滤正信号），不该整轮跳过。
-    """
+    """群策略门静音早退路径结算（reached_model=False：只放行负信号，防冷区吸收态）。"""
     guard = GuardFlags()
     if ai_config.get_config("content_guard_enable").data and event.text:
         _, guard = annotate_untrusted_message_ex(event.text.strip())

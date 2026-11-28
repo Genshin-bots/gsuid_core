@@ -129,30 +129,39 @@ async def execute_scheduled_task(task_id: str) -> None:
         _schedule_overdue_job(task.task_id, "循环任务" if task.task_type == "interval" else "一次性任务", 0)
         return
 
-    # 2. 构建 Event 对象
+    from gsuid_core.message_history import get_history_manager
+    from gsuid_core.ai_core.proactive import resolve_event_session_identity
+
+    resolved_ws, matched_ws = get_history_manager().pick_active_ws_bot_id(
+        ws_bot_id=task.WS_BOT_ID,
+        bot_id=task.bot_id,
+        bot_self_id=task.bot_self_id,
+        target_type=task.user_type,
+        target_id=task.group_id if task.user_type != "direct" else task.user_id,
+        active_bots=gss.active_bot,
+    )
+    if task.WS_BOT_ID and not matched_ws:
+        resolved_ws = ""
+    u_type = task.user_type if task.user_type in ("group", "direct", "channel", "sub_channel") else "group"
     ev = Event(
         bot_id=task.bot_id,
         user_id=task.user_id,
         bot_self_id=task.bot_self_id,
-        user_type=task.user_type,  # type: ignore
+        user_type=u_type,
         group_id=task.group_id,
         real_bot_id=task.bot_id,
         msg_id="",
+        WS_BOT_ID=resolved_ws or None,
     )
+    resolve_event_session_identity(ev)
 
-    # 3. 获取 Bot 实例用于发送消息
     bot_instance: Optional[Bot] = None
-    if task.WS_BOT_ID:
-        if task.WS_BOT_ID in gss.active_bot:
-            BOT = gss.active_bot[task.WS_BOT_ID]
-            bot_instance = Bot(BOT, ev)
-        else:
-            logger.error(t("log.scheduler.not_found", p0=task.WS_BOT_ID))
-    else:
-        for bot_id in gss.active_bot:
-            BOT = gss.active_bot[bot_id]
-            bot_instance = Bot(BOT, ev)
-            break  # 只使用第一个
+    if resolved_ws and resolved_ws in gss.active_bot:
+        BOT = gss.active_bot[resolved_ws]
+        ev.WS_BOT_ID = BOT.bot_id
+        bot_instance = Bot(BOT, ev)
+    elif task.WS_BOT_ID:
+        logger.error(t("log.scheduler.not_found", p0=task.WS_BOT_ID))
 
     # 4. 派发 SubAgent 执行体完成任务，避免任务指令作为伪 user_input 污染用户主会话。
     try:

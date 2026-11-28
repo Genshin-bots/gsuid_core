@@ -204,18 +204,103 @@ def is_call_tool_allowed(
     return True, ""
 
 
+def _clean_uid_arg(raw: str) -> str:
+    val = (raw or "").strip()
+    val = val[1:-1].strip() if val.startswith("<") and val.endswith(">") else val
+    return val[1:].strip() if val.startswith("@") else val
+
+
+def _bind_caller_deps(
+    deps: ToolContext, *, source_seq: int, at_user_id: str = "", act_as_user_id: str = ""
+) -> tuple[ToolContext | None, str, str, int, str]:
+    """按 source_seq / at_user_id / act_as_user_id 构造隔离的调用上下文，并返回真实请求人 (uid, seq)。"""
+    from copy import deepcopy
+
+    from gsuid_core.bot import Bot
+
+    distinct_uids = {str(ev.user_id) for ev in deps.events_by_seq.values() if ev.user_id}
+    resolved_seq = source_seq
+    if source_seq > 0:
+        if source_seq not in deps.events_by_seq:
+            valid = ", ".join(f"#{s}" for s in sorted(deps.events_by_seq)) or "无"
+            return None, "", "", 0, f"⚠️ 无效的 source_seq=#{source_seq}（当前轮可用序号：{valid}）。"
+        base_ev = deps.events_by_seq[source_seq]
+    elif len(distinct_uids) > 1:
+        valid = ", ".join(f"#{s}({deps.events_by_seq[s].user_id})" for s in sorted(deps.events_by_seq))
+        return (
+            None,
+            "",
+            "",
+            0,
+            f"⚠️ 当前轮含多名群友发言（{valid}），调工具须传 source_seq 指明处理哪条消息，严禁串用身份。",
+        )
+    else:
+        base_ev = deps.ev
+        if resolved_seq <= 0 and deps.events_by_seq:
+            resolved_seq = next(iter(deps.events_by_seq))
+
+    caller_uid = str(base_ev.user_id or "") if base_ev is not None else ""
+    clean_at, clean_act = _clean_uid_arg(at_user_id), _clean_uid_arg(act_as_user_id)
+    if clean_act and (base_ev is None or base_ev.user_pm != 0):
+        return (
+            None,
+            "",
+            "",
+            0,
+            "❌ 权限不足：普通群友禁冒用他人身份；代查公开面板请改传 at_user_id，仅主人可传 act_as_user_id。",
+        )
+    if base_ev is None:
+        return deps, clean_at, caller_uid, resolved_seq, ""
+
+    eff_ev = deepcopy(base_ev)
+    eff_extra = {k: v for k, v in deps.extra.items() if k != "act_as_user_id"}
+    if clean_act:
+        eff_ev.user_id, eff_ev.sender, eff_ev.at, eff_ev.at_list = clean_act, {}, None, []
+        eff_extra["act_as_user_id"] = clean_act
+    if clean_at and clean_at != str(eff_ev.bot_self_id):
+        eff_ev.at = clean_at
+        eff_ev.at_list = [clean_at, *[u for u in eff_ev.at_list if u != clean_at]]
+    eff_bot = Bot(deps.bot.bot, eff_ev) if isinstance(deps.bot, Bot) else deps.bot
+    return replace(deps, ev=eff_ev, bot=eff_bot, extra=eff_extra), clean_at, caller_uid, resolved_seq, ""
+
+
+def bind_run_context_caller(
+    ctx: RunContext[ToolContext], source_seq: int = 0, *, neutral_group_fallback: bool = False
+) -> tuple[RunContext[ToolContext] | None, str]:
+    """供直接核心工具按 source_seq 绑定说话人身份；只读群工具可启用 neutral_group_fallback 防泄漏。"""
+    from copy import deepcopy
+
+    deps = ctx.deps
+    distinct_uids = {str(ev.user_id) for ev in deps.events_by_seq.values() if ev.user_id}
+    if source_seq <= 0 and len(distinct_uids) > 1 and neutral_group_fallback and deps.ev is not None:
+        neutral_ev = deepcopy(deps.ev)
+        neutral_ev.user_id, neutral_ev.user_pm, neutral_ev.sender = "__group_shared__", 6, {}
+        eff_extra = {**deps.extra, "multi_speaker_unscoped": True}
+        return replace(ctx, deps=replace(deps, ev=neutral_ev, extra=eff_extra)), ""
+    eff_deps, _, _, _, err = _bind_caller_deps(deps, source_seq=source_seq)
+    if eff_deps is None:
+        return None, err
+    return (replace(ctx, deps=eff_deps) if eff_deps is not deps else ctx), ""
+
+
 @ai_tools(category="meta", timeout=None, track_health=False, raw_passthrough=True, code_callable=False)
 async def call_tool(
     ctx: RunContext[ToolContext],
     tool_name: str,
     arguments_json: str | dict[str, JsonValue] = "{}",
+    source_seq: int = 0,
+    at_user_id: str = "",
+    act_as_user_id: str = "",
 ) -> str | bytes | ToolReturn:
-    """按工具名调用经 find_tools 发现的非核心工具（不改会话工具表，保持前缀缓存）。
+    """按工具名调用经 find_tools 发现的非核心工具（保持前缀缓存，支持多消息轮次与 @他人代查）。
 
     Args:
         ctx: 工具执行上下文
         tool_name: 目标工具的准确名称（来自 find_tools 返回名单）
         arguments_json: 参数 JSON 对象或 JSON 对象字符串（如 {"query":"关键词"}），无参传 {}
+        source_seq: 多人合批轮必填：触发本次工具调用的消息序号（如 122），自动绑定该发言人的真实身份与权限
+        at_user_id: 可选，当发言人说「帮 @某人 / 帮某群友查面板/签到」时填入目标群友的用户ID（写入 ev.at）
+        act_as_user_id: 仅主人(pm=0)可用：对不支持 @ 代查的本人专属命令（如部分签到），以目标群友用户ID代为执行
     """
     from gsuid_core.ai_core.tool_risk import TOOLS_EXECUTION_GATED_KEY, high_risk_block
     from gsuid_core.ai_core.control.lines import TOOLS_EXECUTION_GATED_DENY
@@ -236,7 +321,17 @@ async def call_tool(
         _mark_evidence_error()
         return TOOLS_EXECUTION_GATED_DENY
 
-    denied = high_risk_block(ctx.deps.ev, name)
+    eff_deps, clean_at, caller_uid, caller_seq, bind_err = _bind_caller_deps(
+        ctx.deps,
+        source_seq=source_seq,
+        at_user_id=at_user_id,
+        act_as_user_id=act_as_user_id,
+    )
+    if eff_deps is None:
+        _mark_evidence_error()
+        return bind_err
+
+    denied = high_risk_block(eff_deps.ev, name)
     if denied is not None:
         _mark_evidence_error()
         return denied
@@ -258,7 +353,7 @@ async def call_tool(
         _mark_evidence_error()
         return f"⚠️ 未找到工具 `{name}`。请先调用 find_tools 查询准确工具名。"
 
-    allowed, deny_reason = is_call_tool_allowed(tb, ctx.deps, caller_mode="call_tool")
+    allowed, deny_reason = is_call_tool_allowed(tb, eff_deps, caller_mode="call_tool")
     if not allowed:
         _mark_evidence_error()
         return deny_reason
@@ -267,10 +362,12 @@ async def call_tool(
     if parsed_obj is None:
         _mark_evidence_error()
         return parse_err
+    if clean_at and tb.category == "by_trigger" and "at_user_id" not in parsed_obj:
+        parsed_obj["at_user_id"] = clean_at
 
     tool = tb.tool
     max_retries = tool.max_retries if tool.max_retries is not None else 1
-    sub_ctx = replace(ctx, tool_name=name, retry=0, max_retries=max_retries)
+    sub_ctx = replace(ctx, deps=eff_deps, tool_name=name, retry=0, max_retries=max_retries)
 
     bypass_tok = enter_call_tool_direct_invoke()
     try:
@@ -306,6 +403,9 @@ async def call_tool(
             return f"⚠️ 调用 `{name}` 参数校验未通过：{exc.message}"
 
     logger.debug(t("log.ai.call_tool_dispatch", name=name))
+    from gsuid_core.ai_core.evidence.capture import set_evidence_requester, reset_evidence_requester
+
+    req_tok = set_evidence_requester(caller_uid, caller_seq)
     try:
         if tb.check_in_wrapper:
             result = await tool.function_schema.call(validated, sub_ctx)
@@ -324,3 +424,5 @@ async def call_tool(
     except ModelRetry as exc:
         _mark_evidence_error()
         return f"⚠️ 调用 `{name}` 需调整参数后重试：{exc.message}"
+    finally:
+        reset_evidence_requester(req_tok)

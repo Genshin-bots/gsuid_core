@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 from pydantic_ai.messages import TextPart, ToolCallPart, ModelResponse
 
-from tests._support import make_run_state
 from gsuid_core.ai_core.hooks.models import AgentHookContext
 from gsuid_core.ai_core.hooks.points import AgentHookPoint
 from gsuid_core.ai_core.kits.scaffold import ScaffoldKit
@@ -120,27 +119,36 @@ def test_ellipsis_followup_and_speaker_isolation() -> None:
     for m in ["测试人格早上好呀今天天气真不错", "帮我算算88乘以12"]:
         assert not references_task_management(m)
 
-    # 结案后纯谢绝/叫停短句（「不用了」）无活跃任务与日程时不误触 structural_zero_tool；有在途事项时仍触发
-    from gsuid_core.models import Event
-    from gsuid_core.ai_core.control.policy_ring import _zero_tool_needs_correction
+    # 异体字符协议标签折叠（<มeme:害怕> -> <meme:害怕>）与 presence 30m 可见窗
+    from gsuid_core.ai_core.persona.presence import PresenceRibbon, SocialEchoDict, render_presence
+    from gsuid_core.ai_core.control.angle_guard import (
+        sanitize_illegal_angle_tags,
+        fold_protocol_tag_homoglyphs,
+    )
 
     msg_stop = "测试用户A(用户ID:100000001)：不用了"
     assert is_pure_stop_ellipsis(msg_stop) and not is_pure_stop_ellipsis("改成八点半吧")
-    tg_stop = build_turn_graph(
-        msg_stop, persona_name="测试人格", is_tome=True, user_type="group", primary_speaker="100000001"
+    assert fold_protocol_tag_homoglyphs("吓一跳<มeme:害怕>") == "吓一跳<meme:害怕>"
+    assert sanitize_illegal_angle_tags("吓一跳<มeme:害怕>") == "吓一跳<meme:害怕>"
+
+    now_ts = 10_000.0
+    echo_item: SocialEchoDict = {
+        "target_key": "group_1",
+        "is_private": False,
+        "summary": "大家早呀",
+        "emitted_at": now_ts - 200,
+        "answered": True,
+        "settled": True,
+    }
+    ribbon = PresenceRibbon(
+        offscreen_doing="翻了会儿手账",
+        offscreen_at=now_ts - 300,
+        offscreen_scope="self",
+        echoes=[echo_item],
     )
-    st_idle = make_run_state(
-        msg_stop,
-        ev=Event(user_id="100000001", raw_text="不用了"),
-        intent="工具",
-        suppress_intermediate_text=False,
-        turn_graph=tg_stop,
-    )
-    st_idle.followup_detected = True
-    st_idle.tg = tg_stop
-    assert _zero_tool_needs_correction(st_idle, video_readable=False) is False
-    st_idle.has_active_task = True
-    assert _zero_tool_needs_correction(st_idle, video_readable=False) is True
+    rendered_pres = render_presence(ribbon, "", target_key="group_1", is_private=False, now=now_ts)
+    assert "翻了会儿手账" in rendered_pres and "大家早呀" in rendered_pres
+    assert render_presence(ribbon, "", target_key="group_1", is_private=False, now=now_ts + 1900) == ""
 
 
 def test_turn_router_and_scaffold_kit_contract() -> None:
@@ -190,14 +198,14 @@ def test_turn_router_and_scaffold_kit_contract() -> None:
     )
     idle = AgentHookContext(
         point=AgentHookPoint.COMPOSE_CONTEXT,
-        intent="",
+        intent="闲聊",
         query="看看这个",
         turn_graph=tg_group,
         persona_name="测试人格",
         route_decision=_route("闲聊", "none"),
     )
     asyncio.run(kit.inject_style(idle))
-    assert "transaction_priority" not in idle.blocks
+    assert "chitchat_style" in idle.blocks and "transaction_priority" not in idle.blocks
 
     work = AgentHookContext(
         point=AgentHookPoint.COMPOSE_CONTEXT,
@@ -208,35 +216,17 @@ def test_turn_router_and_scaffold_kit_contract() -> None:
         route_decision=_route("工具", "none", live=True, work=True),
     )
     asyncio.run(kit.inject_style(work))
-    assert "transaction_priority" in work.blocks
+    assert "chitchat_style" not in work.blocks and "transaction_priority" not in work.blocks
 
 
 def test_turn_graph_hints_and_group_gates() -> None:
-    memory_qa_hint = default_body("memory_qa")
-    speaker_recall_hint = default_body("speaker_recall")
     quote_tome_hint = default_body("quote_tome")
 
     tg_dm = build_turn_graph(
         "帮我设个提醒", persona_name="测试人格", is_tome=True, user_type="direct", primary_speaker="u1"
     )
     assert allow_group_speak(tg_dm) is True
-    assert memory_qa_hint not in scaffold_hints_from_graph(tg_dm, intent="工具")
-    assert speaker_recall_hint not in scaffold_hints_from_graph(tg_dm, intent="工具")
-
-    tg_count = build_turn_graph(
-        "How many projects have I led?", persona_name="评测助手", is_tome=True, user_type="direct", primary_speaker="u1"
-    )
-    assert memory_qa_hint in scaffold_hints_from_graph(tg_count, intent="问答")
-    assert memory_qa_hint not in scaffold_hints_from_graph(tg_count, speaker_recall=False)
-    assert memory_qa_hint in scaffold_hints_from_graph(
-        tg_dm, intent="问答", route_decision=_route("问答", "point_latest")
-    )
-    assert memory_qa_hint not in scaffold_hints_from_graph(
-        tg_count, intent="闲聊", route_decision=_route("闲聊", "none")
-    )
-    assert memory_qa_hint not in scaffold_hints_from_graph(
-        tg_dm, intent="工具", route_decision=_route("工具", "none", live=True, work=True)
-    )
+    assert scaffold_hints_from_graph(tg_dm, intent="工具") == []
 
     tg_chat = build_turn_graph(
         "小明(用户ID:9001)：食堂不错 / 小红(用户ID:9002)：确实",
@@ -245,7 +235,7 @@ def test_turn_graph_hints_and_group_gates() -> None:
         user_type="group",
         primary_speaker="9001",
     )
-    assert tg_chat.multi_speaker and not allow_group_speak(tg_chat)
+    assert tg_chat.multi_speaker and admit_pre_router(tg_chat) and allow_group_speak(tg_chat)
 
     tg_open = build_turn_graph(
         "小明(用户ID:9001)：早上好",
@@ -264,7 +254,7 @@ def test_turn_graph_hints_and_group_gates() -> None:
         primary_speaker="9001",
     )
     assert tg_at.call_to_self and allow_group_speak(tg_at)
-    assert speaker_recall_hint in scaffold_hints_from_graph(tg_at, intent="工具")
+    assert scaffold_hints_from_graph(tg_at, intent="工具") == []
 
     hist = [("user", "小明(用户ID:9001)：@测试人格 现在几点"), ("assistant", "唔…三点。")]
     tg_quote_follow = build_turn_graph(
@@ -406,6 +396,7 @@ def test_interactive_turn_group_router_gates(tmp_path: Path, monkeypatch: pytest
                 ),
                 from_seq=0,
                 head_seq=seq,
+                backfill=sess.thread_backfill_due,
             )
             hctx = AgentHookContext(
                 point=AgentHookPoint.BEFORE_AI_CHAT,
@@ -429,6 +420,7 @@ def test_interactive_turn_group_router_gates(tmp_path: Path, monkeypatch: pytest
             return turn, res
 
         try:
+            sess.thread_backfill_due = True
             t_llm_block, res_block = await _run_group_turn(
                 ev_grp,
                 TurnRouteDecision(
@@ -437,7 +429,7 @@ def test_interactive_turn_group_router_gates(tmp_path: Path, monkeypatch: pytest
                 seq=1,
             )
             assert res_block.is_silence and res_block.silenced_early and not t_llm_block.reached_model
-            assert t_llm_block.memory_dependent is False
+            assert sess.thread_backfill_due is True
 
             t_fallback_open, res_fallback = await _run_group_turn(
                 ev_grp,
@@ -452,7 +444,7 @@ def test_interactive_turn_group_router_gates(tmp_path: Path, monkeypatch: pytest
                 seq=2,
             )
             assert t_fallback_open.reached_model and not res_fallback.silenced_early
-            assert t_fallback_open.memory_dependent is True
+            assert sess.thread_backfill_due is False
 
             # name + @他人：句首呼名（@为宾语）放行，非句首提及且 @他人前置静默
             dec_tool_open = TurnRouteDecision(
@@ -569,3 +561,28 @@ def test_style_push_address_and_ambient_gates() -> None:
 
     payload = "小黄(用户ID:3001) 是群里的熟面孔，正常互动即可。\n--- 消息 ---\n醒了吗\n[当前时间：2026-07-12 21:03]"
     assert extract_message_body(payload) == "醒了吗"
+
+    from pydantic_ai import RunContext
+    from pydantic_ai.usage import RunUsage
+    from pydantic_ai.models.test import TestModel
+
+    from gsuid_core.models import Event
+    from gsuid_core.ai_core.models import ToolContext
+    from gsuid_core.ai_core.buildin_tools.call_tool import _bind_caller_deps, bind_run_context_caller
+
+    ev_master = Event("OneBot", "900000001", "m1", "group", "group_1", "100000000", {}, 0, raw_text="早")
+    ev_member = Event("OneBot", "900000001", "m2", "group", "group_1", "100000002", {}, 6, raw_text="帮我执行")
+    deps_mix = ToolContext(bot=None, ev=ev_master, events_by_seq={21: ev_master, 22: ev_member})
+    assert _bind_caller_deps(deps_mix, source_seq=0)[0] is None
+    assert _bind_caller_deps(deps_mix, source_seq=22, act_as_user_id="100000000")[0] is None
+    eff_master_proxy, clean_at, caller_uid, caller_seq, _ = _bind_caller_deps(
+        deps_mix, source_seq=21, at_user_id="@100000002", act_as_user_id="100000002"
+    )
+    assert eff_master_proxy is not None and eff_master_proxy.ev is not None
+    assert eff_master_proxy.ev.user_id == "100000002" and clean_at == "100000002"
+    assert caller_uid == "100000000" and caller_seq == 21
+    rctx = RunContext(deps=deps_mix, model=TestModel(), usage=RunUsage())
+    assert bind_run_context_caller(rctx, 0)[0] is None
+    neutral_ctx, _ = bind_run_context_caller(rctx, 0, neutral_group_fallback=True)
+    assert neutral_ctx is not None and neutral_ctx.deps.ev is not None
+    assert neutral_ctx.deps.ev.user_id == "__group_shared__" and neutral_ctx.deps.ev.user_pm == 6

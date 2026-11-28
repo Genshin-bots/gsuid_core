@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import asyncio
 from typing import Any, Set, Dict, List, Tuple, Optional, Sequence, TypedDict
-from collections import Counter
 
 from fastapi import Body, File, Form, Depends, WebSocket, UploadFile, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -690,12 +689,18 @@ async def get_chat_messages(
             if cached:
                 # 按条数扣减，不能只用一个 set：库里 1 条、内存 2 条同内容时，
                 # set 会把内存那两条都当重复丢掉，只剩一条
-                cached_left = Counter((item["role"], round(item["timestamp"], 3), item["content"]) for item in cached)
+                cached_by_fp: Dict[tuple[object, float, object], List[Dict[str, object]]] = {}
+                for row in cached:
+                    fp_row = (row["role"], round(row["timestamp"], 3), row["content"])
+                    cached_by_fp.setdefault(fp_row, []).append(row)
                 extra: List[Dict[str, Any]] = []
                 for item in messages:
                     fingerprint = (item["role"], round(item["timestamp"], 3), item["content"])
-                    if cached_left[fingerprint] > 0:
-                        cached_left[fingerprint] -= 1
+                    if fingerprint in cached_by_fp and cached_by_fp[fingerprint]:
+                        matched_row = cached_by_fp[fingerprint].pop(0)
+                        for k in ("link", "speech_channel", "source_label", "visual_digests"):
+                            if k in item and k not in matched_row:
+                                matched_row[k] = item[k]
                         continue
                     extra.append(item)
                 messages = sorted(cached + extra, key=lambda item: item["timestamp"])

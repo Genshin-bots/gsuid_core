@@ -632,7 +632,6 @@ async def _recall_turn_seeds_stage(
         ALIAS_ROUTE_TEXT_KEY,
         ALIAS_PLUGIN_EXTRA_KEY,
         ALIAS_PLUGIN_EXPLICIT_EXTRA_KEY,
-        plugins_in_text,
     )
 
     if st.ev is not None and st.ev.raw_text:
@@ -664,28 +663,12 @@ async def _recall_turn_seeds_stage(
         scope_key=ctx_scope_key,
         ignore_surfaces=ignore,
     )
-    found = recall.found
-    turn_seeds = recall.seeds
-    scan = recall.scan_text
     if recall.lock.plugin:
         st.run_extra[ALIAS_PLUGIN_EXTRA_KEY] = recall.lock.plugin
         st.run_extra[ALIAS_PLUGIN_EXPLICIT_EXTRA_KEY] = recall.lock.explicit
-        if scan:
-            st.run_extra[ALIAS_ROUTE_TEXT_KEY] = scan
-    if call_self and st.intent != "闲聊":
-        routed = plugins_in_text(scan)
-        # 向量检索命中不算。要实体路由真正装上该插件的工具。
-        if len(utter) >= 12 and routed:
-            wanted = {name for name in routed if name}
-
-            def _mounted(tool_name: str) -> bool:
-                base = find_tool_base(tool_name)
-                return base is not None and bool(base.plugin) and base.plugin in wanted
-
-            hit = any(_mounted(tool.name) for tool in found) or any(_mounted(name) for name in core_names)
-            if hit:
-                st.entity_routed = True
-    return turn_seeds, ctx_tags
+        if recall.scan_text:
+            st.run_extra[ALIAS_ROUTE_TEXT_KEY] = recall.scan_text
+    return recall.seeds, ctx_tags
 
 
 async def _collect_priority_seeds(

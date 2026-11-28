@@ -176,9 +176,9 @@ def format_retrieved_memory(ctx: AgentHookContext, mem: "MemoryContext") -> str:
 
 
 def should_prefetch_memory(ctx: AgentHookContext) -> bool:
-    """纯实时外部查数跳过个人历史预灌；其余交给 memory_intent 决定检索深度。"""
+    """私聊纯外部查数跳过个人历史预灌；群聊仍预取轻量记忆目录以防漏掉群内黑话/梗映射。"""
     decision = ctx.route_decision
-    if decision is not None and decision.is_live_lookup and decision.memory_intent == "none":
+    if decision is not None and decision.is_live_lookup and decision.memory_intent == "none" and not ctx.group_id:
         return False
     tg = ctx.turn_graph
     if tg is None or not tg.is_group:
@@ -285,6 +285,23 @@ def _image_urls(ev: Event) -> List[str]:
     return list(dict.fromkeys(url for url in candidates if isinstance(url, str) and url))
 
 
+def _event_own_image_ids(ev: Event) -> List[str]:
+    own = [i for i in (ev.image_id_list or []) if i and i not in (ev.reply_image_id_list or [])]
+    if not own and ev.image_id and ev.image_id not in (ev.reply_image_id_list or []):
+        own.append(ev.image_id)
+    return own
+
+
+def _compose_observed_text(ev: Event) -> str:
+    raw = (ev.raw_text or "").strip()
+    tags = [f"[图片 {iid}]" for iid in _event_own_image_ids(ev) if iid not in raw]
+    if raw and tags:
+        return f"{raw} {' '.join(tags)}"
+    if raw:
+        return raw
+    return " ".join(tags)
+
+
 class MemoryKit(AgentKit):
     """记忆：入站观察 + 认知检索 + 注入。"""
 
@@ -320,11 +337,12 @@ class MemoryKit(AgentKit):
         ):
             return
 
-        has_text = bool(ev.raw_text and ev.raw_text.strip())
+        obs_text = _compose_observed_text(ev)
+        own_ids = _event_own_image_ids(ev)
         image_urls = _image_urls(ev)
-        if has_text:
+        if obs_text:
             await observe(
-                content=ev.raw_text,
+                content=obs_text,
                 speaker_id=ctx.user_id,
                 group_id=ctx.group_id,
                 bot_self_id=str(ev.bot_self_id),
@@ -335,8 +353,7 @@ class MemoryKit(AgentKit):
                 message_id=str(ev.msg_id) if ev.msg_id else None,
                 **_observe_meta(ev, link=ctx.inbound_link),
             )
-        # 默认关闭：仅当「图片记忆」与「被动感知」同时勾选才静默读图入记忆，
-        # 避免后台对每张群图都发起一次视觉模型调用（Token + 日志噪声）。
+        # 默认关闭：仅当「图片记忆」与「被动感知」同时勾选才静默读图入记忆
         if image_urls and "图片记忆" in memory_config.memory_mode:
             from gsuid_core.ai_core.memory.ingestion.multimodal import submit_image_observation
 
@@ -347,6 +364,8 @@ class MemoryKit(AgentKit):
                 bot_self_id=str(ev.bot_self_id),
                 observer_blacklist=memory_config.observer_blacklist,
                 message_type="group_msg" if ctx.group_id else "private_msg",
+                session_id=str(ev.session_id or ""),
+                image_ids=own_ids,
             )
 
     async def observe_active_session(self, ctx: AgentHookContext) -> None:
@@ -361,8 +380,11 @@ class MemoryKit(AgentKit):
         modes = memory_config.memory_mode
         if "主动会话" not in modes or "被动感知" in modes:
             return
+        obs_text = _compose_observed_text(ev)
+        if not obs_text:
+            return
         await observe(
-            content=ev.raw_text,
+            content=obs_text,
             speaker_id=ctx.user_id,
             group_id=ctx.group_id,
             bot_self_id=str(ev.bot_self_id),

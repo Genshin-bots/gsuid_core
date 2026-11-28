@@ -26,13 +26,15 @@ async def _collect_event_image_payloads(ev: Event) -> list[tuple[bytes, str, str
     payloads: list[tuple[bytes, str, str]] = []
     seen_rm_ids: set[str] = set()
 
+    gid = str(ev.group_id or "")
+
     async def _append_rm_id(res_id: str) -> None:
         rid = res_id.strip()
-        if not rid or rid in seen_rm_ids or not RM.has(rid):
+        if not rid or rid in seen_rm_ids or not RM.has(rid, group_id=gid):
             return
         seen_rm_ids.add(rid)
         try:
-            raw = await RM.get(rid)
+            raw = await RM.get(rid, group_id=gid)
         except ValueError:
             return
         if not isinstance(raw, (bytes, bytearray)):

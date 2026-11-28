@@ -1,18 +1,4 @@
-"""Agent 上下文装配的共享层（§5.3 装配统一）。
-
-生产入口与评测入口共用 ``handle_ai.run_interactive_turn``；本模块是那一轮里
-system prompt / 每轮动态块的唯一装配点：
-
-- :func:`build_session_system_prompt`：persona + 群简介 + 稳定前缀（self_model/群画像）
-  → session 级 system prompt。ai_router 建会话 / TTL 刷新、评测端点共用。
-- :func:`assemble_dynamic_context`：每轮 user 侧动态注入的**唯一**顺序定义。块名与顺序
-  来自 ``kits.base.CONTEXT_BLOCK_ORDER``（跨计划冻结接口），各来源只填命名块。
-
-关系温度读入口是 ``relationship.fetch_relationship``（返回 ``RelationshipView``），
-不再是返回裸 int 的 ``fetch_favorability``——那个返回值让每个消费点自己划档。
-
-漂移防线：tests/test_context_assembly.py 以源码级断言锁定两个入口都消费本模块。
-"""
+"""Agent 上下文装配共享层（§5.3 装配统一）：生产与评测共用 build_session_system_prompt 与 assemble_dynamic_context。"""
 
 import asyncio
 from typing import TYPE_CHECKING, Dict, List, Tuple, Optional
@@ -98,16 +84,7 @@ async def fire_stable_context_hooks(event: Event, persona_name: str = "") -> str
 
 
 async def build_session_system_prompt(event: Event, persona_name: str, *, clock_date: str | None = None) -> str:
-    """session 级 system prompt 的唯一装配点：persona + 群简介 + 稳定前缀。
-
-    ai_router 的建会话与 TTL 刷新、评测端点共用；两处此前各写一份已漂移过（F9/§5.3）。
-    **不传 mood_key**：mood 每轮在 user 侧注入（:func:`assemble_dynamic_context`），
-    再进 system prompt 就是同一信息双写、且最多滞后一个 TTL 与每轮值互相矛盾；更关键的是
-    mood 常变会让 TTL 刷新必然产出不同的 system prompt 白白打掉 provider 前缀缓存——
-    不含 mood 时画像/自述未变的刷新产出逐字节相同的串，缓存自然保持。
-    ``clock_date`` 只许评测 HTTP 显式传入（``clock_at`` 字段）；生产 WS 不传。
-    禁止从用户原文解析（§1.7：动态日进 TTL=inf 的 system 会打掉前缀缓存）。
-    """
+    """session 级 system prompt 唯一装配点：persona + 群简介 + 稳定前缀（不含动态 mood，保前缀缓存）。"""
     from gsuid_core.ai_core.persona import build_persona_prompt
     from gsuid_core.ai_core.persona.group_context import get_group_context
 
@@ -168,17 +145,7 @@ async def assemble_dynamic_context(
     bot: Optional[object] = None,
     hook_ctx: Optional["AgentHookContext"] = None,
 ) -> Tuple[str, bool]:
-    """每轮 user 侧动态注入的唯一入口。返回 ``(full_context, has_actionable_task)``。
-
-    自身不再拼产品块：内核只填 ``history``（消息基础设施）与已检索好的 ``memory``
-    文本，其余块由各套件在 H06 ``set_context_block`` 贡献，顺序由
-    ``CONTEXT_BLOCK_ORDER`` 单源定义（情绪 → 关系 → 口吻 → 身份 → 历史 → 记忆 → 任务
-    → 闲聊风格 → 事务优先级 → 资料图标题 → 软触发 → 插件 hint）。
-
-    生产入口与评测入口共用本函数**且共用同一次 fire_hooks**，否则评测端点会变成
-    「有装配没套件」的第三套语义。``hook_ctx`` 允许调用方复用本轮已建好的 Context
-    （携带 H05 检索结果 / TurnGraph / 优先发言者等已填字段）。
-    """
+    """每轮 user 侧动态注入的唯一入口（块名与顺序由 CONTEXT_BLOCK_ORDER 单源定义）。"""
     from gsuid_core.ai_core.hooks import AgentHookPoint, AgentHookContext
     from gsuid_core.ai_core.kits.compose import compose_dynamic_context
 
@@ -207,9 +174,21 @@ async def assemble_dynamic_context(
     # 内核补齐无人认领的自有块，然后重拼。**不能**只在结果为空时兜底：
     # 总线关闭 / 槽位 off 时调用方传进来的记忆文本会被静默丢掉。
     _ensure_kernel_blocks(ctx)
+    memory_text = ctx.blocks["memory"] if "memory" in ctx.blocks else ""
+    await _populate_tail_blocks(
+        ctx,
+        query=query,
+        user_id=user_id,
+        bot_id=bot_id,
+        persona_name=persona_name,
+        group_id=group_id,
+        history_context=history_context,
+        intent=intent,
+        memory_text=memory_text,
+        event=event,
+    )
     _apply_suffix_block_policy(ctx)
     _inject_master_title_hint(ctx)
-    memory_text = ctx.blocks["memory"] if "memory" in ctx.blocks else ""
     text = join_context_blocks(
         ctx.blocks,
         query=ctx.query,
@@ -220,18 +199,40 @@ async def assemble_dynamic_context(
             memory_intent=ctx.route_decision.memory_intent if ctx.route_decision is not None else "point_latest",
         ),
     )
-    from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
+    return text, has_actionable
 
-    tail = await load_speaker_preference_tail(
-        bot_id,
-        persona_name or "",
-        user_id,
-        existing_text=memory_text,
-        query=query,
-        active_domains=ctx.assembled_domains,
-    )
-    if tail:
-        text = f"{text}\n\n{tail}" if text else tail
+
+async def _populate_tail_blocks(
+    ctx: "AgentHookContext",
+    *,
+    query: str,
+    user_id: str,
+    bot_id: str,
+    persona_name: Optional[str],
+    group_id: Optional[str],
+    history_context: str,
+    intent: str,
+    memory_text: str,
+    event: Optional[Event],
+) -> None:
+    """将说话人偏好、人物锚点、别名绑定与群提及统一写入命名块，走单源预算与顺序表。"""
+    from gsuid_core.ai_core.inbox.turn import current_turn
+    from gsuid_core.ai_core.entity_index import strip_surfaces, format_alias_bindings
+    from gsuid_core.ai_core.self_cognition import load_speaker_preference_tail
+    from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+
+    turn = current_turn()
+    if turn is None or len(turn.distinct_speaker_ids) <= 1:
+        tail = await load_speaker_preference_tail(
+            bot_id,
+            persona_name or "",
+            user_id,
+            existing_text=memory_text,
+            query=query,
+            active_domains=ctx.assembled_domains,
+        )
+        if tail:
+            ctx.blocks["speaker_preference"] = tail
 
     allowed_blocks = suffix_allowed_blocks(ctx)
     if (allowed_blocks is None or "memory" in allowed_blocks) and not ctx.skip_memory:
@@ -253,12 +254,8 @@ async def assemble_dynamic_context(
                 at_targets=at_targets,
             )
             if anchor_block:
-                text = f"{text}\n\n{anchor_block}" if text else anchor_block
-    from gsuid_core.ai_core.entity_index import strip_surfaces, format_alias_bindings
-    from gsuid_core.ai_core.memory.group_profile import collect_persona_surfaces
+                ctx.blocks["anchor_lore"] = anchor_block
 
-    # 实体别名绑定：优先当前提问匹配；无命中时仅限紧邻的同说话人追问行继承，防旁人闲聊串味。
-    # 叫人格名是在叫你，不是在问同名实体：先剥掉人格名和唤醒词再查别名表。
     persona_surfaces = collect_persona_surfaces(persona_name)
     alias_note = format_alias_bindings(strip_surfaces(query, persona_surfaces))
     if (
@@ -270,7 +267,6 @@ async def assemble_dynamic_context(
             or (ctx.turn_graph is not None and bool(ctx.turn_graph.ellipsis_followup))
         )
     ):
-        # 线程视图窗口：每行 #seq 开头；同说话人用户行才有别名继承意义。
         recent_user_lines: list[str] = []
         for line in reversed(history_context.splitlines()):
             stripped_line = line.strip()
@@ -284,7 +280,7 @@ async def assemble_dynamic_context(
         if recent_user_lines:
             alias_note = format_alias_bindings(strip_surfaces("\n".join(reversed(recent_user_lines)), persona_surfaces))
     if alias_note:
-        text = f"{text}\n\n{alias_note}" if text else alias_note
+        ctx.blocks["alias_binding"] = alias_note
         logger.debug(t("log.entity_index.alias_binding_injected", note=alias_note))
 
     if group_id:
@@ -297,9 +293,7 @@ async def assemble_dynamic_context(
             persona_name=persona_name,
         )
         if mention_hint:
-            text = f"{text}\n\n{mention_hint}" if text else mention_hint
-
-    return text, has_actionable
+            ctx.blocks["mention_hint"] = mention_hint
 
 
 def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
@@ -324,7 +318,7 @@ def _ensure_kernel_blocks(ctx: "AgentHookContext") -> None:
 
 
 # 收件箱结构块永远放行且不占产品帽：待回应列表与证据各有自身尺寸上限。
-_ALWAYS_SUFFIX_BLOCKS: frozenset[str] = frozenset({"inbox_pending", "evidence"})
+_ALWAYS_SUFFIX_BLOCKS: frozenset[str] = frozenset({"inbox_pending", "evidence", "alias_binding", "mention_hint"})
 _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
     {
         "voice_anchor",
@@ -334,13 +328,17 @@ _ADDRESSED_FULL_BLOCKS: frozenset[str] = frozenset(
         "memory",
         "history",
         "plugin_hints",
+        "speaker_preference",
+        "anchor_lore",
     }
     | _ALWAYS_SUFFIX_BLOCKS
 )
-# 点名 suffix 产品块合计帽。history 与单独预算的 memory 在帽外。
+# 点名 suffix 产品块合计帽。history、独立预算的 memory 及精准尾块在帽外。
 _SUFFIX_PRODUCT_CAP = 300
-_SUFFIX_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history"})
-_CAP_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history", "memory"}) | _ALWAYS_SUFFIX_BLOCKS
+_SUFFIX_EXEMPT_BLOCKS: frozenset[str] = frozenset({"voice_anchor", "history", "speaker_preference"})
+_CAP_EXEMPT_BLOCKS: frozenset[str] = (
+    frozenset({"voice_anchor", "history", "memory", "speaker_preference", "anchor_lore"}) | _ALWAYS_SUFFIX_BLOCKS
+)
 _SUFFIX_KEEP_ORDER: tuple[str, ...] = (
     "task",
     "relationship",
@@ -405,11 +403,18 @@ def _apply_suffix_block_policy(ctx: "AgentHookContext") -> None:
 
 
 def master_title_turn_hint(ctx: "AgentHookContext") -> str:
-    """非主人群聊轮：可剥的禁止 TITLE hint。真主人轮不写。"""
+    """含非主人的群聊轮：可剥的禁止 TITLE hint。纯主人轮不写。"""
     if ctx.ev is None or not ctx.ev.group_id:
         return ""
+    from gsuid_core.ai_core.utils import _is_master_user
+    from gsuid_core.ai_core.inbox.turn import current_turn
+
+    turn = current_turn()
     rel = ctx.relationship
-    if rel is None or rel.is_master:
+    if turn is not None and len(turn.distinct_speaker_ids) > 1:
+        if all(_is_master_user(u) for u in turn.distinct_speaker_ids):
+            return ""
+    elif rel is None or rel.is_master:
         return ""
     from gsuid_core.ai_core.persona.settings import get_master_title
 

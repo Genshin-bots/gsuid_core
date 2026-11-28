@@ -197,36 +197,6 @@ async def record_term_mappings(scope_key: str, mappings: Dict[str, str], batch_i
     logger.debug(i18n_t("log.memory.groupprofile_scope_key_vocabulary_update", scope_key=scope_key, mappings=mappings))
 
 
-async def record_entity_tags(scope_key: str, tags: List[str]) -> None:
-    """累计实体标签的出现频次，用于推断群组主要语境标签。
-
-    与 record_term_mappings 一样走 state_mutate 乐观锁——频次累加属于
-    典型的"读-改-写"，并发下若用简单 get→改→set 会丢失计数。
-    """
-    if not tags:
-        return
-    # 过滤掉对语境无意义的结构性标签（含 C3-b 的 Master 标记，它不是话题语境）
-    ignore = {"Speaker", "Nickname", "Entity", "Concept", "Master"}
-    meaningful = [t for t in tags if t and t not in ignore]
-    if not meaningful:
-        return
-
-    from gsuid_core.ai_core.state_store import state_mutate
-
-    def _mutate(current: object) -> GroupProfileData:
-        profile = _as_profile(current, scope_key)
-        tag_counts: Dict[str, int] = dict(profile["tag_counts"])
-        for t in meaningful:
-            tag_counts[t] = (tag_counts[t] if t in tag_counts else 0) + 1
-        # 容量控制：只保留频次最高的 N 个标签
-        if len(tag_counts) > _MAX_TAGS:
-            tag_counts = dict(sorted(tag_counts.items(), key=lambda kv: kv[1], reverse=True)[:_MAX_TAGS])
-        profile["tag_counts"] = tag_counts
-        return profile
-
-    await state_mutate(_PROFILE_SCOPE, scope_key, _mutate)
-
-
 async def get_term_mappings(scope_key: str) -> Dict[str, str]:
     """获取群组的词汇映射表。"""
     profile = await get_group_profile(scope_key)

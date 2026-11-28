@@ -53,12 +53,9 @@ async def render_evidence_block(
     target_uids: list[str],
     records: Sequence[MessageRecord],
 ) -> str:
-    from gsuid_core.ai_core.control.lines import (
-        EVIDENCE_LIVE_HEAD,
-        EVIDENCE_BLOCK_HEAD,
-        EVIDENCE_FOR_OTHERS_HEAD,
-        EVIDENCE_FOR_TARGETS_HEAD,
-    )
+    """仅输出 MCP 凭据状态与凭据级观测；普通工具依据已内联在时间线〔依据:…〕标签中。"""
+    from gsuid_core.ai_core.utils import sanitize_display_name
+    from gsuid_core.ai_core.control.lines import EVIDENCE_LIVE_HEAD, EVIDENCE_BLOCK_HEAD
     from gsuid_core.ai_core.evidence.store import get_evidence_store
     from gsuid_core.ai_core.evidence.providers import get_state_provider
 
@@ -68,33 +65,23 @@ async def render_evidence_block(
     if not obs_list:
         return ""
 
-    from gsuid_core.ai_core.utils import sanitize_display_name
-
     nicks = {
         rec.user_id: (sanitize_display_name(rec.user_name, str(rec.user_id)) or rec.user_id)
         for rec in records
         if rec.user_id and rec.role == "user"
     }
-    target_set = set(target_uids)
-    for_targets = [o for o in obs_list if o.requested_by in target_set]
-    for_others = [o for o in obs_list if o.requested_by not in target_set]
-
-    pieces = [EVIDENCE_BLOCK_HEAD]
-    if for_targets:
-        pieces.append(EVIDENCE_FOR_TARGETS_HEAD)
-        pieces.extend(_fmt_obs_line(o, store, bot_id, now, nicks) for o in for_targets)
-    if for_others:
-        pieces.append(EVIDENCE_FOR_OTHERS_HEAD)
-        pieces.extend(_fmt_obs_line(o, store, bot_id, now, nicks) for o in for_others)
-
-    # 实时状态：列内观测涉及的 MCP 服务 × 本轮目标用户，各查一次
+    cred_obs = [
+        o
+        for o in obs_list
+        if o.credential_owner is not None or o.outcome == "auth_required" or get_state_provider(o.service) is not None
+    ]
     services = sorted({o.service for o in obs_list})
     live_parts: list[str] = []
     for service in services:
         provider = get_state_provider(service)
         if provider is None:
             continue
-        checks = [uid for uid in dict.fromkeys(target_uids + [o.requested_by for o in obs_list])]
+        checks = list(dict.fromkeys(target_uids + [o.requested_by for o in obs_list]))
         pairs: list[str] = []
         for uid in checks:
             state = await provider.current(service, bot_id, uid)
@@ -103,6 +90,11 @@ async def render_evidence_block(
                 pairs.append(f"{who}={'已绑定' if state.value == 'bound' else '未绑定'}")
         if pairs:
             live_parts.append(f"{service}凭据 " + "，".join(pairs))
+
+    if not cred_obs and not live_parts:
+        return ""
+    pieces = [EVIDENCE_BLOCK_HEAD]
+    pieces.extend(_fmt_obs_line(o, store, bot_id, now, nicks) for o in cred_obs)
     if live_parts:
         pieces.append(EVIDENCE_LIVE_HEAD + "；".join(live_parts))
     return "\n".join(pieces)

@@ -518,10 +518,10 @@ _GROUP_REPEAT_BODY_N: int = 3
 
 
 def admit_pre_router(tg: TurnGraph) -> bool:
-    """一段结构准入门（零 DB / 零 LLM）：寻址门、多人无呼叫互聊与复读刷屏拦截。"""
+    """一段结构准入门（零 DB / 零 LLM）：@他人寻址硬门与同文复读刷屏拦截。"""
     if not tg.is_group:
         return True
-    if tg.address_gated or (tg.multi_speaker and not tg.call_to_self):
+    if tg.address_gated:
         return False
     if _same_body_repeat_count(tg) >= _GROUP_REPEAT_BODY_N:
         return False
@@ -559,8 +559,10 @@ def scaffold_hints_from_graph(
     persona_name: str | None = None,
     route_decision: "TurnRouteDecision | None" = None,
 ) -> List[str]:
-    """由 TurnGraph + 前置路由结论生成 user 侧脚手架提示（单一出口）。"""
+    """由 TurnGraph 生成硬边界脚手架提示（@他人寻址门 / 借楼消歧 / 省略跟进 / 漂移熔断）。"""
     from gsuid_core.ai_core.prompt_group.store import render_prompt
+
+    _ = (speaker_recall, intent, route_decision)
 
     def _turn(key: str) -> str:
         body = render_prompt(persona_name, key)
@@ -574,25 +576,8 @@ def scaffold_hints_from_graph(
         hints.append(_turn("quote_tome"))
     if tg.ellipsis_followup:
         hints.append(_turn("followup"))
-    if tg.multi_speaker and tg.call_to_self:
-        hints.append(_turn("multi_speaker"))
     if tg.style_push_count >= 2:
         hints.append(DRIFT_REMINDER)
-    if (not tg.is_group or tg.call_to_self) and speaker_recall:
-        if route_decision is None:
-            # 未接前置路由（第三方替换 classifier 槽）：只按既有 intent 结构分流。
-            if intent == "工具" and tg.is_group:
-                hints.append(_turn("speaker_recall"))
-            elif not tg.is_group and intent in ("问答", ""):
-                hints.append(_turn("memory_qa"))
-            return hints
-        # 纯实时查数不要催 search_cognition，否则会占满思考轮。
-        if route_decision.is_live_lookup and route_decision.memory_intent == "none":
-            pass
-        elif (intent == "工具" or route_decision.needs_committed_work) and tg.is_group:
-            hints.append(_turn("speaker_recall"))
-        elif route_decision.memory_intent != "none":
-            hints.append(_turn("memory_qa"))
     return hints
 
 
